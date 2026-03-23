@@ -1,19 +1,21 @@
 # MeshGuard
 
-Secure peer-to-peer encrypted messenger built on the Meshtastic LoRa mesh network. Connect two Sensecap P1000 devices and communicate privately — no internet, no servers, no third parties.
+Secure peer-to-peer encrypted messenger for Meshtastic devices. No internet, no servers, no third-party apps. MeshGuard replaces the official Meshtastic app entirely — it configures your device, pairs you with a specific peer, and provides private encrypted communication over the LoRa mesh.
 
 ```
-   You (Phone/Desktop)          Peer (Phone/Desktop)
-         │                              │
-    BLE ─┘                              └─ BLE
-         │                              │
-   ┌─────┴─────┐    LoRa Mesh    ┌─────┴─────┐
-   │ Sensecap  │ ◄──────────────►│ Sensecap  │
-   │   P1000   │   (up to 15km)  │   P1000   │
-   └───────────┘                 └───────────┘
+   You (Phone/Desktop)              Peer (Phone/Desktop)
+         │                                    │
+    BLE ─┘                                    └─ BLE
+         │                                    │
+   ┌─────┴──────┐      LoRa Mesh       ┌─────┴──────┐
+   │ Meshtastic │ ◄────────────────────►│ Meshtastic │
+   │   Device   │   encrypted channel   │   Device   │
+   └────────────┘     (up to 15km)      └────────────┘
 ```
 
-**Encryption**: X25519 key exchange + HKDF-SHA256 + AES-256-GCM. Keys are generated per session, never stored unencrypted, and zeroized from memory on disconnect.
+**No scanning. No discovery. No key exchange over the air.**
+
+Both peers enter each other's device name, serial number, and a passphrase they agreed on in person. MeshGuard derives identical encryption keys on both sides — nothing secret ever travels over the mesh.
 
 ## Downloads
 
@@ -27,110 +29,151 @@ Grab the latest build from [**Releases**](https://github.com/nemke82/meshguard/r
 | Linux (any) | `.AppImage` | `chmod +x meshguard-*.AppImage && ./meshguard-*.AppImage` |
 | macOS | `.dmg` | Open the DMG, drag MeshGuard to Applications |
 
-After installing, verify the download integrity:
+Verify integrity:
 ```bash
 sha256sum -c SHA256SUMS.txt
 ```
+
+---
 
 ## How to Connect Two Meshtastic Devices and Start Communicating
 
 ### What You Need
 
-- **2x Sensecap P1000** Meshtastic devices (or any Meshtastic-compatible hardware)
-- **2x phones or computers** — each running MeshGuard
-- Bluetooth enabled on both phones/computers
+- **2 Meshtastic devices** (Sensecap P1000, T-Beam, Heltec, RAK, or any Meshtastic-compatible hardware)
+- **2 phones or computers** running MeshGuard
+- Bluetooth enabled on both
+- Both devices must use the **same region frequency** (e.g., both EU868 or both US915)
 
-### Step 1 — Power On the Sensecap P1000 Devices
+### Step 1 — Find Your Device Info
 
-Turn on both Sensecap P1000 devices. Wait for the LED to show a steady blink — this means the device has booted and is advertising over Bluetooth.
+Before launching MeshGuard, note down each device's info:
 
-- The P1000 uses **LoRa** for device-to-device communication (range up to 15+ km line-of-sight)
-- It uses **Bluetooth Low Energy (BLE)** to connect to your phone or computer
+| Info | Where to find it |
+|------|-----------------|
+| **Device Name** | Printed on device, or shown on the device's screen / web interface |
+| **Device Serial** | Printed on the device label or in the Meshtastic device info page |
+| **BLE Address** | Shown in your phone's Bluetooth settings (e.g., `AA:BB:CC:DD:EE:FF`) |
 
-Make sure both devices are on the **same Meshtastic region and channel settings**. By default they ship with matching settings out of the box.
+Write these down for **both** devices. You'll need to share your info with your peer (in person, phone call, or any secure channel).
 
-### Step 2 — Install MeshGuard on Both Phones/Computers
+### Step 2 — Install MeshGuard on Both Devices
 
-Download MeshGuard from the [Releases page](https://github.com/nemke82/meshguard/releases) and install it on both devices. See the table above for platform-specific instructions.
+Download from the [Releases page](https://github.com/nemke82/meshguard/releases) and install on both phones/computers.
 
-### Step 3 — Pair Device A with Phone A
+### Step 3 — Configure Your Local Device
 
-1. Open MeshGuard on **Phone A**
-2. Make sure Bluetooth is turned on
-3. Tap **"Scan for Devices"**
-4. Your Sensecap P1000 will appear in the list (shown as "Meshtastic" or "P1000" with signal strength)
-5. Tap the device to connect
-6. The app will show **"Secure connection established"** with an encryption banner
+Open MeshGuard. The first screen asks for **your** device configuration:
 
-### Step 4 — Pair Device B with Phone B
+1. **Device Name** — enter your Meshtastic device's name (e.g., "Alice-P1000")
+2. **Device Serial** — enter the serial number from the device
+3. **BLE Address** — enter your device's Bluetooth address (you only do this once, it's saved)
+4. **Region** — select your LoRa region (must match your peer's region)
+5. **Modem Preset** — choose range vs. speed (Long Range recommended for maximum distance)
+6. **TX Power** — transmit power in dBm (default 20)
+7. **Hop Limit** — how many mesh hops allowed (1 = direct P2P only, 3 = default)
 
-Repeat Step 3 on **Phone B** with the second Sensecap P1000 device.
+Click **"Save & Continue to Pairing"**.
 
-### Step 5 — Start a Secure Session
+MeshGuard writes these settings directly to your Meshtastic device via Bluetooth — no need for the official Meshtastic app.
 
-Once both phones are connected to their respective P1000 devices:
+### Step 4 — Set Up P2P Pairing
 
-1. MeshGuard automatically initiates a **key exchange** (X25519 Diffie-Hellman) through the mesh
-2. Both devices derive a shared encryption key — this key never travels over the air in plain form
-3. The encryption banner shows: **"End-to-end encrypted with AES-256-GCM + X25519"**
-4. You're ready to chat
+The pairing screen is where privacy begins. Both you and your peer must enter:
 
-### Step 6 — Send Messages
+1. **Peer Device Name** — your peer's Meshtastic device name
+2. **Peer Device Serial** — your peer's device serial number
+3. **Shared Passphrase** — a secret passphrase you **both agreed on beforehand** (in person, phone call, etc.)
 
-- Type your message (up to 228 characters — this is the Meshtastic payload limit)
-- Press **Enter** or tap the **Send** button
-- Messages are encrypted on your phone before being sent to the P1000 via Bluetooth
-- The P1000 transmits the encrypted payload over LoRa to the other P1000
-- The receiving P1000 forwards it via Bluetooth to the other phone
-- MeshGuard decrypts and displays the message
-- You'll see delivery checkmarks: **✓** sent, **✓✓** delivered
+**Critical**: The passphrase must be identical on both sides. It is:
+- Never stored on disk
+- Never transmitted over the mesh
+- Never sent to any server
+- Cleared from memory after key derivation
 
-### Communication Flow
+Click **"Establish Secure Session"**. MeshGuard:
+1. Derives an AES-256 encryption key from both device identities + passphrase
+2. Derives a Meshtastic channel PSK from the same inputs
+3. Connects to your local device via Bluetooth
+4. Pushes the radio config and encrypted channel to the device
+5. Opens the chat screen
+
+### Step 5 — Start Communicating
+
+You're now in the encrypted chat. Type your message and send.
+
+**What happens when you send a message:**
 
 ```
-Phone A                    P1000 A              P1000 B                    Phone B
-   │                          │                    │                          │
-   │ 1. Type message          │                    │                          │
-   │ 2. Encrypt (AES-256)     │                    │                          │
-   │ 3. Send via BLE ────────►│                    │                          │
-   │                          │ 4. LoRa transmit ─►│                          │
-   │                          │                    │ 5. Forward via BLE ─────►│
-   │                          │                    │                          │ 6. Decrypt
-   │                          │                    │                          │ 7. Display
-   │                          │                    │◄─ 8. Receipt (LoRa) ─────│
-   │◄── 9. Receipt (BLE) ────│                    │                          │
-   │ ✓✓ Delivered             │                    │                          │
+Your Phone                  Your Device            Peer Device              Peer Phone
+    │                           │                       │                       │
+    │ 1. Type message           │                       │                       │
+    │ 2. Encrypt (AES-256-GCM)  │                       │                       │
+    │ 3. Send via BLE ─────────►│                       │                       │
+    │                           │ 4. Encrypt again with │                       │
+    │                           │    channel PSK        │                       │
+    │                           │ 5. LoRa transmit ────►│                       │
+    │                           │                       │ 6. Decrypt channel ──►│
+    │                           │                       │ 7. Forward via BLE    │
+    │                           │                       │                       │ 8. Decrypt AES-256
+    │                           │                       │                       │ 9. Display message
 ```
 
-### Troubleshooting
+Messages are **double-encrypted**:
+- **Layer 1**: AES-256-GCM encryption by MeshGuard (your phone → peer's phone)
+- **Layer 2**: Meshtastic channel PSK encryption (device → device over LoRa)
+
+Even if someone captures the LoRa signal AND knows the channel PSK, they still can't read the messages without the AES-256 key (which requires knowing the passphrase).
+
+### Step 6 — Reconnecting
+
+Your device config and peer info are saved (passphrase is NOT saved). Next time you open MeshGuard:
+- If you had a session: you'll go straight to chat (re-enter passphrase if app was restarted)
+- If you had device config: you'll go to the pairing screen
+- New install: you'll start at device setup
+
+---
+
+## Troubleshooting
 
 | Problem | Solution |
 |---------|----------|
-| Device not found during scan | Make sure Bluetooth is on and the P1000 LED is blinking. Move closer (BLE range is ~10m). |
-| Connection drops | The P1000 may have timed out. Power cycle the device and reconnect. |
-| Messages not delivering | Check that both P1000s are on the same Meshtastic channel and region. LoRa range depends on terrain — try line-of-sight. |
-| "No active session" error | The key exchange hasn't completed. Disconnect and reconnect both sides. |
-| Slow message delivery | LoRa is low-bandwidth by design. Messages may take 2-10 seconds depending on mesh conditions. |
+| Can't connect to local device | Verify the BLE address is correct. Make sure Bluetooth is on and the device is powered up within ~10m. |
+| Messages not arriving | Both devices must be on the same region and the same channel PSK. Re-enter the passphrase on both sides. |
+| "No session" error | The passphrase hasn't been entered this session. Go to settings and re-pair. |
+| Garbled messages | The passphrase doesn't match between peers. Both must enter the exact same passphrase. |
+| Short range | Use Long Range modem preset. Place devices high with line of sight. Use external antenna if available. |
 
-### Tips for Best Range
+## Tips for Best Performance
 
-- **Elevation matters** — place P1000 devices as high as possible
-- **Line of sight** — LoRa can reach 15+ km over water or flat terrain, 2-5 km in urban areas
-- **External antenna** — the P1000 supports an external antenna for dramatically better range
-- **Mesh hopping** — if you have additional Meshtastic devices between the two endpoints, messages will automatically hop through them
+- **Same passphrase** — triple-check both sides entered the identical passphrase
+- **Elevation** — place Meshtastic devices as high as possible
+- **Line of sight** — LoRa reaches 15+ km over water/flat terrain, 2-5 km in urban areas
+- **External antenna** — dramatically improves range on supported devices
+- **Hop limit 1** — for maximum privacy, set hop limit to 1 (direct only, no mesh relay)
+- **Message length** — keep messages under 200 characters for reliable single-packet delivery
+
+---
 
 ## Security Model
 
 | Layer | Protection |
 |-------|-----------|
-| Key exchange | X25519 Elliptic Curve Diffie-Hellman |
-| Key derivation | HKDF-SHA256 with application-specific context |
 | Message encryption | AES-256-GCM (authenticated encryption) |
+| Key derivation | HKDF-SHA256 from device identities + passphrase |
+| Channel encryption | Meshtastic PSK derived from same pairing inputs |
+| Key exchange | **None over the air** — keys derived locally from shared secret |
 | Memory safety | Rust (no buffer overflows); keys zeroized on drop |
+| Passphrase handling | Never stored, never transmitted, cleared after use |
 | Transport | LoRa mesh — no internet, no servers |
-| Forward secrecy | New keypair generated per session |
+| MQTT/uplink | Disabled — no data leaves the mesh |
 
-No message content ever exists in plaintext outside of the sender's and receiver's devices.
+**Threat model**: An attacker who captures LoRa packets would need to:
+1. Break the Meshtastic channel PSK (derived from identities + passphrase)
+2. Break the AES-256-GCM encryption (requires the same passphrase)
+3. Both are computationally infeasible without knowing the shared passphrase
+
+---
 
 ## Building from Source
 
@@ -158,10 +201,9 @@ xcode-select --install
 ### Build & Run
 
 ```bash
-# Install frontend dependencies
 cd ui && npm install && cd ..
 
-# Desktop (dev mode)
+# Desktop (dev)
 cargo tauri dev
 
 # Desktop (release)
@@ -169,19 +211,19 @@ cargo tauri build
 
 # Android
 cargo tauri android init
-cargo tauri android dev     # dev on connected device
-cargo tauri android build   # release APK
+cargo tauri android dev
+cargo tauri android build
 ```
 
 ### Creating a Release
 
-Tag a version to trigger the release pipeline:
+Tag with a date version:
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v2026.03.23
+git push origin v2026.03.23
 ```
 
-This builds all platforms (Android APK, .deb, .rpm, .AppImage, macOS .dmg) and publishes them as a GitHub Release with SHA256 checksums.
+The CI pipeline builds Android APK, .deb, .rpm, .AppImage, and macOS .dmg, then publishes them as a GitHub Release with SHA256 checksums.
 
 ## License
 

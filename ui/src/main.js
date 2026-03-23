@@ -1,30 +1,35 @@
 const { invoke } = window.__TAURI__.core;
 
 // ============================================================
+// DOM
+// ============================================================
+const $ = (sel) => document.querySelector(sel);
+
+const screenSetup = $("#screen-setup");
+const screenPairing = $("#screen-pairing");
+const screenChat = $("#screen-chat");
+
+const formDevice = $("#form-device");
+const formPairing = $("#form-pairing");
+
+const btnBackSetup = $("#btn-back-setup");
+const btnBackPairing = $("#btn-back-pairing");
+const btnSend = $("#btn-send");
+
+const messageInput = $("#message-input");
+const charCount = $("#char-count");
+const messagesContainer = $("#messages");
+const chatPeerName = $("#chat-peer-name");
+const connectionBadge = $("#connection-badge");
+const connectionText = $("#connection-text");
+
+// ============================================================
 // State
 // ============================================================
 const state = {
-  connected: false,
-  peerName: "",
   messages: [],
+  connected: false,
 };
-
-// ============================================================
-// DOM Elements
-// ============================================================
-const $ = (sel) => document.querySelector(sel);
-const screenConnect = $("#screen-connect");
-const screenChat = $("#screen-chat");
-const btnScan = $("#btn-scan");
-const btnBack = $("#btn-back");
-const btnSend = $("#btn-send");
-const deviceList = $("#device-list");
-const scanStatus = $("#scan-status");
-const messagesContainer = $("#messages");
-const messageInput = $("#message-input");
-const charCount = $("#char-count");
-const peerName = $("#peer-name");
-const signalIndicator = $("#signal-indicator");
 
 // ============================================================
 // Screen Navigation
@@ -35,104 +40,101 @@ function showScreen(screen) {
 }
 
 // ============================================================
-// Device Scanning
+// Screen 1: Device Setup
 // ============================================================
-btnScan.addEventListener("click", async () => {
-  btnScan.disabled = true;
-  btnScan.innerHTML = '<div class="spinner"></div> Scanning...';
-  scanStatus.textContent = "Looking for Meshtastic devices nearby...";
-  deviceList.innerHTML = "";
+formDevice.addEventListener("submit", async (e) => {
+  e.preventDefault();
+
+  const btn = formDevice.querySelector("button[type=submit]");
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Saving...';
 
   try {
-    const devices = await invoke("scan_devices");
-
-    if (devices.length === 0) {
-      scanStatus.textContent = "No Meshtastic devices found. Make sure your P1000 is on.";
-      // Demo mode: add a simulated device for UI testing
-      addDemoDevice();
-    } else {
-      scanStatus.textContent = `Found ${devices.length} device${devices.length > 1 ? "s" : ""}`;
-      devices.forEach(renderDevice);
-    }
+    await invoke("save_device_config", {
+      deviceName: $("#device-name").value.trim(),
+      deviceSerial: $("#device-serial").value.trim(),
+      bleAddress: $("#ble-address").value.trim(),
+      region: $("#region").value,
+      modemPreset: $("#modem-preset").value,
+      txPower: parseInt($("#tx-power").value),
+      hopLimit: parseInt($("#hop-limit").value),
+    });
+    showScreen(screenPairing);
   } catch (err) {
-    scanStatus.textContent = "Scan failed — check Bluetooth permissions.";
-    console.error("Scan error:", err);
-    // Fallback demo
-    addDemoDevice();
+    alert("Error: " + err);
   }
 
-  btnScan.disabled = false;
-  btnScan.innerHTML = '<span class="btn-icon">&#x1F50D;</span> Scan Again';
+  btn.disabled = false;
+  btn.innerHTML = "Save &amp; Continue to Pairing";
 });
 
-function addDemoDevice() {
-  renderDevice({
-    name: "Sensecap P1000 (Demo)",
-    address: "AA:BB:CC:DD:EE:FF",
-    rssi: -45,
-  });
-}
-
-function renderDevice(device) {
-  const card = document.createElement("div");
-  card.className = "device-card";
-  card.innerHTML = `
-    <div class="device-icon">&#x1F4E1;</div>
-    <div class="device-details">
-      <div class="device-name">${escapeHtml(device.name)}</div>
-      <div class="device-addr">${device.address}</div>
-    </div>
-    <div class="device-rssi">${device.rssi ? device.rssi + " dBm" : ""}</div>
-  `;
-  card.addEventListener("click", () => connectToDevice(device));
-  deviceList.appendChild(card);
-}
-
 // ============================================================
-// Connect to Device
+// Screen 2: P2P Pairing
 // ============================================================
-async function connectToDevice(device) {
-  scanStatus.textContent = `Connecting to ${device.name}...`;
+btnBackSetup.addEventListener("click", () => showScreen(screenSetup));
+
+formPairing.addEventListener("submit", async (e) => {
+  e.preventDefault();
+
+  const btn = formPairing.querySelector("button[type=submit]");
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Deriving keys...';
+
+  const peerName = $("#peer-name").value.trim();
+  const peerSerial = $("#peer-serial").value.trim();
+  const passphrase = $("#shared-passphrase").value;
 
   try {
-    await invoke("connect_device", { address: device.address });
-    state.connected = true;
-    state.peerName = device.name;
-    peerName.textContent = device.name;
-    updateSignal(device.rssi);
+    // 1. Set up P2P pairing (derives encryption key + channel PSK)
+    await invoke("setup_peer", {
+      peerDeviceName: peerName,
+      peerDeviceSerial: peerSerial,
+      sharedPassphrase: passphrase,
+    });
+
+    // 2. Connect to local Meshtastic device via BLE
+    btn.innerHTML = '<span class="spinner"></span> Connecting to device...';
+    try {
+      await invoke("connect_local_device");
+      state.connected = true;
+
+      // 3. Push config (region, channel, PSK) to the device
+      btn.innerHTML = '<span class="spinner"></span> Applying config...';
+      await invoke("apply_config_to_device");
+    } catch (bleErr) {
+      console.warn("BLE connection skipped (demo mode):", bleErr);
+      // Continue in demo mode
+    }
+
+    // Clear passphrase from DOM
+    $("#shared-passphrase").value = "";
+
+    // Switch to chat
+    chatPeerName.textContent = peerName;
+    updateConnectionStatus(state.connected);
     showScreen(screenChat);
-    addSystemMessage("Secure connection established. Messages are end-to-end encrypted.");
+    addSystemMessage("Secure session established. All messages are encrypted with AES-256-GCM.");
+    addSystemMessage("Encryption key derived from device identities + shared passphrase. No key data was sent over the mesh.");
+
   } catch (err) {
-    // Demo mode: connect anyway for UI preview
-    state.connected = true;
-    state.peerName = device.name;
-    peerName.textContent = device.name;
-    updateSignal(device.rssi);
-    showScreen(screenChat);
-    addSystemMessage("Connected in demo mode. Encryption active.");
+    alert("Pairing error: " + err);
   }
-}
+
+  btn.disabled = false;
+  btn.innerHTML = "Establish Secure Session";
+});
 
 // ============================================================
-// Signal Strength
+// Screen 3: Chat
 // ============================================================
-function updateSignal(rssi) {
-  signalIndicator.classList.remove("strong", "medium", "weak");
-  if (!rssi) return;
-  if (rssi > -50) signalIndicator.classList.add("strong");
-  else if (rssi > -70) signalIndicator.classList.add("medium");
-  else signalIndicator.classList.add("weak");
-}
+btnBackPairing.addEventListener("click", () => {
+  showScreen(screenPairing);
+});
 
-// ============================================================
-// Messaging
-// ============================================================
 messageInput.addEventListener("input", () => {
   const len = messageInput.value.length;
-  charCount.textContent = 228 - len;
+  charCount.textContent = 200 - len;
   btnSend.disabled = len === 0;
-
-  // Auto-resize
   messageInput.style.height = "auto";
   messageInput.style.height = Math.min(messageInput.scrollHeight, 100) + "px";
 });
@@ -164,7 +166,7 @@ async function sendMessage() {
   renderMessage(msg);
   messageInput.value = "";
   messageInput.style.height = "auto";
-  charCount.textContent = "228";
+  charCount.textContent = "200";
   btnSend.disabled = true;
 
   try {
@@ -172,24 +174,24 @@ async function sendMessage() {
     msg.status = "delivered";
     updateMessageStatus(msg.id, "delivered");
   } catch (err) {
-    // In demo mode, simulate delivery
+    // Demo mode: simulate delivery
     setTimeout(() => {
       msg.status = "delivered";
       updateMessageStatus(msg.id, "delivered");
-    }, 500);
+    }, 400);
 
-    // Demo: echo back after delay
+    // Demo: echo back
     setTimeout(() => {
       const echo = {
         id: crypto.randomUUID(),
-        text: `Echo: ${text}`,
+        text: `[Peer] ${text}`,
         timestamp: Date.now(),
         mine: false,
         status: "delivered",
       };
       state.messages.push(echo);
       renderMessage(echo);
-    }, 1500);
+    }, 1200);
   }
 }
 
@@ -210,7 +212,7 @@ function renderMessage(msg) {
 
 function addSystemMessage(text) {
   const el = document.createElement("div");
-  el.className = "time-divider";
+  el.className = "system-message";
   el.textContent = text;
   messagesContainer.appendChild(el);
 }
@@ -229,19 +231,55 @@ function statusIcon(status) {
   }
 }
 
+function updateConnectionStatus(connected) {
+  if (connected) {
+    connectionBadge.classList.add("connected");
+    connectionText.textContent = "Connected";
+  } else {
+    connectionBadge.classList.remove("connected");
+    connectionText.textContent = "Demo Mode";
+  }
+}
+
 // ============================================================
-// Disconnect
+// On Load: restore saved config
 // ============================================================
-btnBack.addEventListener("click", async () => {
+async function init() {
   try {
-    await invoke("disconnect_device");
-  } catch (_) {}
-  state.connected = false;
-  state.messages = [];
-  messagesContainer.innerHTML = "";
-  showScreen(screenConnect);
-  scanStatus.textContent = "";
-});
+    const device = await invoke("get_device_config");
+    if (device) {
+      $("#device-name").value = device.device_name || "";
+      $("#device-serial").value = device.device_serial || "";
+      $("#ble-address").value = device.ble_address || "";
+      if (device.radio) {
+        $("#region").value = device.radio.region || "EU868";
+        $("#modem-preset").value = device.radio.modem_preset || "LongRange";
+        $("#tx-power").value = device.radio.tx_power || 20;
+        $("#hop-limit").value = device.radio.hop_limit || 3;
+      }
+
+      // If peer is also configured, check if we have a session
+      const peer = await invoke("get_peer_config");
+      const hasSession = await invoke("has_session");
+      if (peer && hasSession) {
+        chatPeerName.textContent = peer.device_name;
+        showScreen(screenChat);
+        addSystemMessage("Session restored. Enter passphrase again to re-derive keys if needed.");
+        return;
+      }
+
+      if (peer) {
+        $("#peer-name").value = peer.device_name || "";
+        $("#peer-serial").value = peer.device_serial || "";
+        showScreen(screenPairing);
+        return;
+      }
+    }
+  } catch (_) {
+    // Fresh start
+  }
+  showScreen(screenSetup);
+}
 
 // ============================================================
 // Utilities
@@ -255,3 +293,5 @@ function escapeHtml(str) {
 function formatTime(ts) {
   return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
+
+init();
