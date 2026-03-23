@@ -1,0 +1,38 @@
+[package]
+name = "meshguard"
+version = "0.1.0"
+edition = "2021"
+description = "Secure P2P messenger for Meshtastic Sensecap P1000 devices"
+license = "MIT"
+
+[lib]
+name = "meshguard_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+btleplug = "0.11"               # BLE communication with Meshtastic devices
+prost = "0.13"                   # Protobuf for Meshtastic protocol
+aes-gcm = "0.10"                # AES-256-GCM encryption
+x25519-dalek = "2"              # X25519 key exchange
+ed25519-dalek = { version = "2", features = ["rand_core"] }  # Signatures
+rand = "0.8"
+sha2 = "0.10"
+hkdf = "0.12"
+base64 = "0.22"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+zeroize = { version = "1", features = ["derive"] }  # Secure memory cleanup
+
+[target.'cfg(target_os = "android")'.dependencies]
+tauri-plugin-barcode-scanner = "2"

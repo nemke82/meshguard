@@ -1,0 +1,319 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ──────────────────────────────────────────────
+  # Android APK
+  # ──────────────────────────────────────────────
+  build-android:
+    name: Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: sdkmanager "ndk;27.0.12077973"
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install frontend deps
+        working-directory: ui
+        run: npm install
+
+      - name: Build frontend
+        working-directory: ui
+        run: npm run build
+
+      - name: Initialize Android project
+        run: cargo tauri android init
+
+      - name: Build Android APK (release)
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
+        run: cargo tauri android build --apk
+
+      - name: Find and rename APK
+        id: apk
+        run: |
+          APK=$(find src-tauri/gen/android -name "*.apk" -type f | head -1)
+          VERSION=${GITHUB_REF_NAME#v}
+          DEST="meshguard-${VERSION}-android.apk"
+          cp "$APK" "$DEST"
+          echo "path=$DEST" >> "$GITHUB_OUTPUT"
+          echo "name=$DEST" >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: ${{ steps.apk.outputs.path }}
+
+  # ──────────────────────────────────────────────
+  # Linux — Ubuntu (.deb + .AppImage)
+  # ──────────────────────────────────────────────
+  build-linux-ubuntu:
+    name: Linux (Ubuntu — deb/AppImage)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libdbus-1-dev \
+            pkg-config \
+            libssl-dev
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install frontend deps & build
+        working-directory: ui
+        run: |
+          npm install
+          npm run build
+
+      - name: Build Tauri (deb + AppImage)
+        run: cargo tauri build
+
+      - name: Collect artifacts
+        id: artifacts
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          mkdir -p release-artifacts
+
+          # .deb
+          DEB=$(find src-tauri/target/release/bundle/deb -name "*.deb" | head -1)
+          if [ -n "$DEB" ]; then
+            cp "$DEB" "release-artifacts/meshguard-${VERSION}-amd64.deb"
+          fi
+
+          # .AppImage
+          AI=$(find src-tauri/target/release/bundle/appimage -name "*.AppImage" | head -1)
+          if [ -n "$AI" ]; then
+            cp "$AI" "release-artifacts/meshguard-${VERSION}-x86_64.AppImage"
+            chmod +x "release-artifacts/meshguard-${VERSION}-x86_64.AppImage"
+          fi
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-ubuntu
+          path: release-artifacts/
+
+  # ──────────────────────────────────────────────
+  # Linux — RHEL/Fedora (.rpm)
+  # ──────────────────────────────────────────────
+  build-linux-rpm:
+    name: Linux (RHEL/Fedora — RPM)
+    runs-on: ubuntu-22.04
+    container:
+      image: fedora:39
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          dnf install -y \
+            gcc gcc-c++ make \
+            webkit2gtk4.1-devel \
+            libappindicator-gtk3-devel \
+            librsvg2-devel \
+            patchelf \
+            dbus-devel \
+            openssl-devel \
+            pkg-config \
+            curl \
+            rpm-build \
+            nodejs npm \
+            git
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Install Tauri CLI
+        run: |
+          source "$HOME/.cargo/env"
+          cargo install tauri-cli --version "^2"
+
+      - name: Install frontend deps & build
+        working-directory: ui
+        run: |
+          npm install
+          npm run build
+
+      - name: Build Tauri (RPM)
+        run: |
+          source "$HOME/.cargo/env"
+          cargo tauri build --bundles rpm
+
+      - name: Collect RPM
+        id: rpm
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          mkdir -p release-artifacts
+          RPM=$(find src-tauri/target/release/bundle/rpm -name "*.rpm" | head -1)
+          if [ -n "$RPM" ]; then
+            cp "$RPM" "release-artifacts/meshguard-${VERSION}.x86_64.rpm"
+          fi
+
+      - name: Upload RPM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-rpm
+          path: release-artifacts/
+
+  # ──────────────────────────────────────────────
+  # macOS (.dmg + .app)
+  # ──────────────────────────────────────────────
+  build-macos:
+    name: macOS (dmg)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install frontend deps & build
+        working-directory: ui
+        run: |
+          npm install
+          npm run build
+
+      - name: Build Tauri (macOS universal)
+        run: cargo tauri build --target universal-apple-darwin
+
+      - name: Collect artifacts
+        id: artifacts
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          mkdir -p release-artifacts
+          DMG=$(find src-tauri/target/universal-apple-darwin/release/bundle/dmg -name "*.dmg" | head -1)
+          if [ -n "$DMG" ]; then
+            cp "$DMG" "release-artifacts/meshguard-${VERSION}-universal-macos.dmg"
+          fi
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: release-artifacts/
+
+  # ──────────────────────────────────────────────
+  # Create GitHub Release
+  # ──────────────────────────────────────────────
+  publish-release:
+    name: Publish Release
+    needs: [build-android, build-linux-ubuntu, build-linux-rpm, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: find artifacts -type f | sort
+
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/*
+          body: |
+            ## MeshGuard ${{ github.ref_name }}
+
+            Secure peer-to-peer encrypted messenger for Meshtastic Sensecap P1000 devices.
+
+            ### Downloads
+
+            | Platform | File |
+            |----------|------|
+            | Android | `meshguard-*-android.apk` |
+            | Ubuntu/Debian | `meshguard-*-amd64.deb` |
+            | RHEL/Fedora | `meshguard-*.x86_64.rpm` |
+            | Linux (universal) | `meshguard-*-x86_64.AppImage` |
+            | macOS (universal) | `meshguard-*-universal-macos.dmg` |
+
+            ### Verify integrity
+            ```bash
+            sha256sum -c SHA256SUMS.txt
+            ```
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
