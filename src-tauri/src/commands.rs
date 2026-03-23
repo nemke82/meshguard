@@ -3,7 +3,7 @@ use tauri::State;
 use crate::ble::BleManager;
 use crate::crypto;
 use crate::device_config::{
-    AppConfig, ChannelConfig, DeviceConfig, PeerConfig, RadioConfig,
+    ChannelConfig, DeviceConfig, PeerConfig, RadioConfig,
 };
 use crate::error::MeshGuardError;
 use crate::state::AppState;
