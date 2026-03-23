@@ -10,7 +10,6 @@
     "beforeBuildCommand": "cd ../ui && npm run build"
   },
   "app": {
-    "title": "MeshGuard",
     "windows": [
       {
         "title": "MeshGuard — Secure Mesh Messenger",
