@@ -1,10 +1,28 @@
 use tauri::State;
 
-use crate::ble::BleManager;
+use crate::ble::{BleManager, ScannedDevice};
 use crate::crypto;
 use crate::device_config::{DeviceConfig, PeerConfig, RadioConfig};
 use crate::error::MeshGuardError;
 use crate::state::AppState;
+
+// ── BLE Scanning ──────────────────────────────────────────────
+
+/// Scan for nearby Meshtastic BLE devices. Returns all found devices
+/// with Meshtastic devices sorted to the top.
+#[tauri::command]
+pub async fn scan_devices(
+    state: State<'_, AppState>,
+) -> Result<Vec<ScannedDevice>, MeshGuardError> {
+    // Create a temporary BLE manager for scanning
+    let ble = BleManager::new().await?;
+    let devices = ble.scan(5).await?;
+
+    // Store the manager so we can reuse the adapter
+    *state.ble.lock().await = Some(ble);
+
+    Ok(devices)
+}
 
 // ── Device Setup ──────────────────────────────────────────────
 
@@ -22,6 +40,7 @@ pub struct DeviceConfigInput {
 }
 
 /// Save local device configuration (name, serial, BLE address, radio settings).
+/// Rejects if a device is already configured — only one device allowed.
 #[tauri::command]
 pub async fn save_device_config(
     input: DeviceConfigInput,
@@ -31,6 +50,16 @@ pub async fn save_device_config(
     let modem = parse_modem(&input.modem_preset)?;
 
     let mut config = state.config.lock().await;
+
+    // Block adding a second device — only one allowed
+    if let Some(existing) = &config.device {
+        if existing.ble_address != input.ble_address && !existing.ble_address.is_empty() {
+            return Err(MeshGuardError::InvalidConfig(
+                "A device is already configured. Remove it first before adding a new one.".into(),
+            ));
+        }
+    }
+
     let device = config.device.get_or_insert_with(|| DeviceConfig {
         ble_address: String::new(),
         device_name: String::new(),
@@ -60,11 +89,40 @@ pub async fn get_device_config(
     Ok(config.device.clone())
 }
 
+/// Check if a device is already configured.
+#[tauri::command]
+pub async fn has_device(state: State<'_, AppState>) -> Result<bool, MeshGuardError> {
+    let config = state.config.lock().await;
+    Ok(config.device.is_some())
+}
+
+/// Remove the configured device (allows adding a new one).
+#[tauri::command]
+pub async fn remove_device(state: State<'_, AppState>) -> Result<(), MeshGuardError> {
+    // Disconnect first if connected
+    let mut ble = state.ble.lock().await;
+    if let Some(manager) = ble.as_ref() {
+        let _ = manager.disconnect().await;
+    }
+    *ble = None;
+    drop(ble);
+
+    // Clear session key
+    *state.session_key.lock().await = None;
+
+    // Remove device and peer from config
+    let mut config = state.config.lock().await;
+    config.device = None;
+    config.peer = None;
+    config.save(&state.config_dir)?;
+
+    tracing::info!("Device removed — ready for new device setup");
+    Ok(())
+}
+
 // ── P2P Pairing ───────────────────────────────────────────────
 
 /// Set up P2P pairing — enter peer device name, serial, and shared passphrase.
-/// This derives the encryption key and channel PSK. Both sides must enter
-/// the same info to get the same keys.
 #[tauri::command]
 pub async fn setup_peer(
     peer_device_name: String,
@@ -81,7 +139,6 @@ pub async fn setup_peer(
             "configure your local device first".into(),
         ))?;
 
-    // Derive the channel PSK from pairing info
     let psk = crypto::derive_channel_psk(
         &device.device_name,
         &device.device_serial,
@@ -90,7 +147,6 @@ pub async fn setup_peer(
         &shared_passphrase,
     )?;
 
-    // Derive the session encryption key
     let session_key = crypto::derive_p2p_key(
         &device.device_name,
         &device.device_serial,
@@ -99,7 +155,6 @@ pub async fn setup_peer(
         &shared_passphrase,
     )?;
 
-    // Update channel config with derived PSK
     if let Some(ref mut dev) = config.device {
         dev.channel.psk = psk;
         dev.channel.name = format!("MG-{}", &peer_device_name.chars().take(6).collect::<String>());
@@ -107,16 +162,13 @@ pub async fn setup_peer(
         dev.channel.downlink = false;
     }
 
-    // Save peer config (passphrase is NOT saved to disk)
     config.peer = Some(PeerConfig {
         device_name: peer_device_name,
         device_serial: peer_device_serial,
-        shared_passphrase: String::new(), // Never persist the passphrase
+        shared_passphrase: String::new(),
     });
 
     config.save(&state.config_dir)?;
-
-    // Store session key in memory
     *state.session_key.lock().await = Some(session_key);
 
     tracing::info!("P2P pairing complete — session key derived");
@@ -147,10 +199,14 @@ pub async fn connect_local_device(
     let address = device.ble_address.clone();
     drop(config);
 
-    let ble_manager = BleManager::new().await?;
-    ble_manager.connect_to_address(&address).await?;
+    let mut ble = state.ble.lock().await;
+    // Reuse existing manager if available, otherwise create new
+    if ble.is_none() {
+        *ble = Some(BleManager::new().await?);
+    }
+    let manager = ble.as_ref().unwrap();
+    manager.connect_to_address(&address).await?;
 
-    *state.ble.lock().await = Some(ble_manager);
     Ok(())
 }
 
@@ -188,7 +244,6 @@ pub async fn apply_config_to_device(
         .as_ref()
         .ok_or(MeshGuardError::InvalidConfig("no device configured".into()))?;
 
-    // Build Meshtastic config protobuf (simplified — real impl uses prost-generated types)
     let config_summary = serde_json::to_vec(device)
         .map_err(|e| MeshGuardError::Serialization(e.to_string()))?;
 

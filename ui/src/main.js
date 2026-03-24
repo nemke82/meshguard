@@ -12,9 +12,18 @@ const screenChat = $("#screen-chat");
 const formDevice = $("#form-device");
 const formPairing = $("#form-pairing");
 
+const btnScan = $("#btn-scan");
 const btnBackSetup = $("#btn-back-setup");
 const btnBackPairing = $("#btn-back-pairing");
 const btnSend = $("#btn-send");
+const btnRemoveDevice = $("#btn-remove-device");
+
+const scanStatus = $("#scan-status");
+const scanResults = $("#scan-results");
+const bleAddressInput = $("#ble-address");
+const deviceLockedBanner = $("#device-locked-banner");
+const lockedDeviceName = $("#locked-device-name");
+const lockedDeviceAddr = $("#locked-device-addr");
 
 const messageInput = $("#message-input");
 const charCount = $("#char-count");
@@ -29,6 +38,7 @@ const connectionText = $("#connection-text");
 const state = {
   messages: [],
   connected: false,
+  selectedBleAddress: "",
 };
 
 // ============================================================
@@ -40,10 +50,111 @@ function showScreen(screen) {
 }
 
 // ============================================================
-// Screen 1: Device Setup
+// BLE Scanning
+// ============================================================
+btnScan.addEventListener("click", async () => {
+  btnScan.disabled = true;
+  btnScan.innerHTML = '<span class="spinner"></span> Scanning (5s)...';
+  scanStatus.textContent = "Looking for Meshtastic devices nearby...";
+  scanResults.innerHTML = "";
+
+  try {
+    const devices = await invoke("scan_devices");
+
+    if (devices.length === 0) {
+      scanStatus.textContent = "No devices found. Make sure your device is powered on and Bluetooth is enabled.";
+    } else {
+      const meshCount = devices.filter((d) => d.is_meshtastic).length;
+      scanStatus.textContent = `Found ${devices.length} device${devices.length > 1 ? "s" : ""} (${meshCount} Meshtastic)`;
+      devices.forEach(renderScannedDevice);
+    }
+  } catch (err) {
+    scanStatus.textContent = "Scan failed — " + err;
+    console.error("Scan error:", err);
+  }
+
+  btnScan.disabled = false;
+  btnScan.innerHTML = `
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+    </svg>
+    Scan Again`;
+});
+
+function renderScannedDevice(device) {
+  const card = document.createElement("div");
+  card.className = `scan-card ${device.is_meshtastic ? "meshtastic" : ""}`;
+  card.innerHTML = `
+    <div class="scan-card-icon">${device.is_meshtastic ? "&#x1F4E1;" : "&#x1F4F6;"}</div>
+    <div class="scan-card-details">
+      <div class="scan-card-name">${escapeHtml(device.name)}</div>
+      <div class="scan-card-addr">${device.address}</div>
+    </div>
+    <div class="scan-card-meta">
+      ${device.rssi ? `<span class="scan-rssi">${device.rssi} dBm</span>` : ""}
+      ${device.is_meshtastic ? '<span class="scan-badge">Meshtastic</span>' : ""}
+    </div>
+  `;
+  card.addEventListener("click", () => selectScannedDevice(device, card));
+  scanResults.appendChild(card);
+}
+
+function selectScannedDevice(device, card) {
+  // Deselect previous
+  scanResults.querySelectorAll(".scan-card").forEach((c) => c.classList.remove("selected"));
+  card.classList.add("selected");
+
+  // Set the BLE address
+  state.selectedBleAddress = device.address;
+  bleAddressInput.value = device.address;
+
+  // Auto-fill device name if it's a Meshtastic device
+  if (device.is_meshtastic && device.name !== "Unknown Device") {
+    const nameField = $("#device-name");
+    if (!nameField.value) {
+      nameField.value = device.name;
+    }
+  }
+
+  scanStatus.textContent = `Selected: ${device.name} (${device.address})`;
+}
+
+// ============================================================
+// Device Lock — Remove Device
+// ============================================================
+btnRemoveDevice.addEventListener("click", async () => {
+  if (!confirm("Remove this device? This will clear your device config and peer pairing.")) {
+    return;
+  }
+
+  try {
+    await invoke("remove_device");
+    deviceLockedBanner.style.display = "none";
+    formDevice.style.display = "";
+    $("#device-name").value = "";
+    $("#device-serial").value = "";
+    bleAddressInput.value = "";
+    state.selectedBleAddress = "";
+    scanResults.innerHTML = "";
+    scanStatus.textContent = "";
+  } catch (err) {
+    alert("Error removing device: " + err);
+  }
+});
+
+// ============================================================
+// Screen 1: Device Setup — Submit
 // ============================================================
 formDevice.addEventListener("submit", async (e) => {
   e.preventDefault();
+
+  const bleAddr = bleAddressInput.value.trim();
+  if (!bleAddr) {
+    scanStatus.textContent = "Please scan and select a device first.";
+    scanStatus.style.color = "var(--danger)";
+    setTimeout(() => { scanStatus.style.color = ""; }, 3000);
+    return;
+  }
 
   const btn = formDevice.querySelector("button[type=submit]");
   btn.disabled = true;
@@ -54,7 +165,7 @@ formDevice.addEventListener("submit", async (e) => {
       input: {
         deviceName: $("#device-name").value.trim(),
         deviceSerial: $("#device-serial").value.trim(),
-        bleAddress: $("#ble-address").value.trim(),
+        bleAddress: bleAddr,
         region: $("#region").value,
         modemPreset: $("#modem-preset").value,
         txPower: parseInt($("#tx-power").value),
@@ -87,31 +198,25 @@ formPairing.addEventListener("submit", async (e) => {
   const passphrase = $("#shared-passphrase").value;
 
   try {
-    // 1. Set up P2P pairing (derives encryption key + channel PSK)
     await invoke("setup_peer", {
       peerDeviceName: peerName,
       peerDeviceSerial: peerSerial,
       sharedPassphrase: passphrase,
     });
 
-    // 2. Connect to local Meshtastic device via BLE
     btn.innerHTML = '<span class="spinner"></span> Connecting to device...';
     try {
       await invoke("connect_local_device");
       state.connected = true;
 
-      // 3. Push config (region, channel, PSK) to the device
       btn.innerHTML = '<span class="spinner"></span> Applying config...';
       await invoke("apply_config_to_device");
     } catch (bleErr) {
       console.warn("BLE connection skipped (demo mode):", bleErr);
-      // Continue in demo mode
     }
 
-    // Clear passphrase from DOM
     $("#shared-passphrase").value = "";
 
-    // Switch to chat
     chatPeerName.textContent = peerName;
     updateConnectionStatus(state.connected);
     showScreen(screenChat);
@@ -176,13 +281,11 @@ async function sendMessage() {
     msg.status = "delivered";
     updateMessageStatus(msg.id, "delivered");
   } catch (err) {
-    // Demo mode: simulate delivery
     setTimeout(() => {
       msg.status = "delivered";
       updateMessageStatus(msg.id, "delivered");
     }, 400);
 
-    // Demo: echo back
     setTimeout(() => {
       const echo = {
         id: crypto.randomUUID(),
@@ -244,15 +347,22 @@ function updateConnectionStatus(connected) {
 }
 
 // ============================================================
-// On Load: restore saved config
+// On Load: restore saved config, enforce single-device lock
 // ============================================================
 async function init() {
   try {
     const device = await invoke("get_device_config");
     if (device) {
+      // Show locked banner — device already configured
+      deviceLockedBanner.style.display = "";
+      lockedDeviceName.textContent = device.device_name || "Configured Device";
+      lockedDeviceAddr.textContent = device.ble_address || "";
+
+      // Fill form with existing values (for editing)
       $("#device-name").value = device.device_name || "";
       $("#device-serial").value = device.device_serial || "";
-      $("#ble-address").value = device.ble_address || "";
+      bleAddressInput.value = device.ble_address || "";
+      state.selectedBleAddress = device.ble_address || "";
       if (device.radio) {
         $("#region").value = device.radio.region || "EU868";
         $("#modem-preset").value = device.radio.modem_preset || "LongRange";
@@ -260,7 +370,10 @@ async function init() {
         $("#hop-limit").value = device.radio.hop_limit || 3;
       }
 
-      // If peer is also configured, check if we have a session
+      // Hide scan section since device is already set
+      $("#scan-section").style.display = "none";
+
+      // Check if peer is configured and session active
       const peer = await invoke("get_peer_config");
       const hasSession = await invoke("has_session");
       if (peer && hasSession) {
@@ -276,10 +389,17 @@ async function init() {
         showScreen(screenPairing);
         return;
       }
+
+      // Device configured but no peer yet — go to pairing
+      showScreen(screenPairing);
+      return;
     }
   } catch (_) {
     // Fresh start
   }
+
+  // No device configured — show setup with scan
+  deviceLockedBanner.style.display = "none";
   showScreen(screenSetup);
 }
 
