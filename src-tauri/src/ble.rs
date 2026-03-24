@@ -25,6 +25,103 @@ pub struct ScannedDevice {
     pub is_meshtastic: bool,
 }
 
+/// Bluetooth adapter status.
+#[derive(Debug, Clone, Serialize)]
+pub struct BluetoothStatus {
+    /// Whether a Bluetooth adapter was found on this system.
+    pub adapter_found: bool,
+    /// Whether the adapter appears to be powered on / functional.
+    pub powered_on: bool,
+    /// Human-readable status message.
+    pub message: String,
+}
+
+/// Check Bluetooth status without creating a full BleManager.
+pub async fn check_bluetooth() -> BluetoothStatus {
+    let manager = match Manager::new().await {
+        Ok(m) => m,
+        Err(e) => {
+            let msg = e.to_string().to_lowercase();
+            if msg.contains("permission") || msg.contains("denied") || msg.contains("not authorized") {
+                return BluetoothStatus {
+                    adapter_found: false,
+                    powered_on: false,
+                    message: "Bluetooth permissions not granted. Please allow Bluetooth access in your device settings.".into(),
+                };
+            }
+            return BluetoothStatus {
+                adapter_found: false,
+                powered_on: false,
+                message: format!("Cannot access Bluetooth: {}", e),
+            };
+        }
+    };
+
+    let adapters = match manager.adapters().await {
+        Ok(a) => a,
+        Err(e) => {
+            let msg = e.to_string().to_lowercase();
+            if msg.contains("turned off") || msg.contains("disabled") || msg.contains("not powered") {
+                return BluetoothStatus {
+                    adapter_found: true,
+                    powered_on: false,
+                    message: "Bluetooth is turned off. Please enable Bluetooth in your device settings.".into(),
+                };
+            }
+            return BluetoothStatus {
+                adapter_found: false,
+                powered_on: false,
+                message: format!("Cannot access Bluetooth adapter: {}", e),
+            };
+        }
+    };
+
+    if adapters.is_empty() {
+        return BluetoothStatus {
+            adapter_found: false,
+            powered_on: false,
+            message: "No Bluetooth adapter found on this device.".into(),
+        };
+    }
+
+    // Try a quick scan to verify the adapter is actually working
+    let adapter = &adapters[0];
+    match adapter.start_scan(ScanFilter::default()).await {
+        Ok(_) => {
+            let _ = adapter.stop_scan().await;
+            BluetoothStatus {
+                adapter_found: true,
+                powered_on: true,
+                message: "Bluetooth is ready.".into(),
+            }
+        }
+        Err(e) => {
+            let msg = e.to_string().to_lowercase();
+            if msg.contains("turned off") || msg.contains("disabled") || msg.contains("powered off")
+                || msg.contains("not powered") || msg.contains("no powered")
+            {
+                BluetoothStatus {
+                    adapter_found: true,
+                    powered_on: false,
+                    message: "Bluetooth is turned off. Please enable Bluetooth in your device settings.".into(),
+                }
+            } else if msg.contains("permission") || msg.contains("denied") {
+                BluetoothStatus {
+                    adapter_found: true,
+                    powered_on: false,
+                    message: "Bluetooth permissions not granted. Please allow Bluetooth access in your device settings.".into(),
+                }
+            } else {
+                BluetoothStatus {
+                    adapter_found: true,
+                    powered_on: false,
+                    message: format!("Bluetooth adapter error: {}", e),
+                }
+            }
+        }
+    }
+}
+
 /// Manages the BLE connection to the LOCAL Meshtastic device.
 pub struct BleManager {
     adapter: Adapter,
@@ -35,17 +132,31 @@ impl BleManager {
     pub async fn new() -> Result<Self, MeshGuardError> {
         let manager = Manager::new()
             .await
-            .map_err(|e| MeshGuardError::Ble(e.to_string()))?;
+            .map_err(|e| {
+                let msg = e.to_string().to_lowercase();
+                if msg.contains("permission") || msg.contains("denied") {
+                    MeshGuardError::BluetoothPermission
+                } else {
+                    MeshGuardError::Ble(e.to_string())
+                }
+            })?;
 
         let adapters = manager
             .adapters()
             .await
-            .map_err(|e| MeshGuardError::Ble(e.to_string()))?;
+            .map_err(|e| {
+                let msg = e.to_string().to_lowercase();
+                if msg.contains("turned off") || msg.contains("disabled") || msg.contains("not powered") {
+                    MeshGuardError::BluetoothDisabled
+                } else {
+                    MeshGuardError::Ble(e.to_string())
+                }
+            })?;
 
         let adapter = adapters
             .into_iter()
             .next()
-            .ok_or_else(|| MeshGuardError::Ble("no Bluetooth adapter found".into()))?;
+            .ok_or(MeshGuardError::BluetoothDisabled)?;
 
         Ok(Self {
             adapter,
@@ -54,13 +165,21 @@ impl BleManager {
     }
 
     /// Scan for nearby Meshtastic BLE devices.
-    /// Returns all discovered devices, with `is_meshtastic` flagged for those
-    /// advertising the Meshtastic service UUID or matching known device names.
+    /// Only returns devices that match Meshtastic identifiers.
     pub async fn scan(&self, duration_secs: u64) -> Result<Vec<ScannedDevice>, MeshGuardError> {
         self.adapter
             .start_scan(ScanFilter::default())
             .await
-            .map_err(|e| MeshGuardError::Ble(e.to_string()))?;
+            .map_err(|e| {
+                let msg = e.to_string().to_lowercase();
+                if msg.contains("turned off") || msg.contains("disabled") || msg.contains("not powered") {
+                    MeshGuardError::BluetoothDisabled
+                } else if msg.contains("permission") || msg.contains("denied") {
+                    MeshGuardError::BluetoothPermission
+                } else {
+                    MeshGuardError::Ble(format!("Failed to start scan: {}", e))
+                }
+            })?;
 
         tokio::time::sleep(std::time::Duration::from_secs(duration_secs)).await;
 
@@ -85,37 +204,38 @@ impl BleManager {
                     .clone()
                     .unwrap_or_default();
 
-                // Skip devices with no name and no services
-                if name.is_empty() && props.services.is_empty() {
-                    continue;
-                }
+                let name_lower = name.to_lowercase();
 
                 let is_meshtastic = props.services.contains(&service_uuid)
-                    || name.to_lowercase().contains("meshtastic")
-                    || name.to_lowercase().contains("p1000")
-                    || name.to_lowercase().contains("t-beam")
-                    || name.to_lowercase().contains("heltec")
-                    || name.to_lowercase().contains("rak")
-                    || name.to_lowercase().contains("sensecap");
+                    || name_lower.contains("meshtastic")
+                    || name_lower.contains("p1000")
+                    || name_lower.contains("t-beam")
+                    || name_lower.contains("heltec")
+                    || name_lower.contains("rak")
+                    || name_lower.contains("sensecap")
+                    || name_lower.contains("t-echo")
+                    || name_lower.contains("lora")
+                    || name_lower.contains("mesh");
 
-                devices.push(ScannedDevice {
-                    name: if name.is_empty() {
-                        "Unknown Device".to_string()
-                    } else {
-                        name
-                    },
-                    address: props.address.to_string(),
-                    rssi: props.rssi,
-                    is_meshtastic,
-                });
+                // Only include Meshtastic devices — filter out unrelated BLE noise
+                if is_meshtastic {
+                    devices.push(ScannedDevice {
+                        name: if name.is_empty() {
+                            "Meshtastic Device".to_string()
+                        } else {
+                            name
+                        },
+                        address: props.address.to_string(),
+                        rssi: props.rssi,
+                        is_meshtastic: true,
+                    });
+                }
             }
         }
 
-        // Sort: Meshtastic devices first, then by signal strength
+        // Sort by signal strength (strongest first)
         devices.sort_by(|a, b| {
-            b.is_meshtastic
-                .cmp(&a.is_meshtastic)
-                .then_with(|| b.rssi.unwrap_or(-100).cmp(&a.rssi.unwrap_or(-100)))
+            b.rssi.unwrap_or(-100).cmp(&a.rssi.unwrap_or(-100))
         });
 
         Ok(devices)
@@ -123,7 +243,6 @@ impl BleManager {
 
     /// Connect directly to a Meshtastic device by its known BLE address.
     pub async fn connect_to_address(&self, address: &str) -> Result<(), MeshGuardError> {
-        // Brief scan to populate the adapter's peripheral list
         self.adapter
             .start_scan(ScanFilter::default())
             .await

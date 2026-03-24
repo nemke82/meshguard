@@ -54,45 +54,97 @@ function showScreen(screen) {
 // ============================================================
 btnScan.addEventListener("click", async () => {
   btnScan.disabled = true;
-  btnScan.innerHTML = '<span class="spinner"></span> Scanning (5s)...';
-  scanStatus.textContent = "Looking for Meshtastic devices nearby...";
   scanResults.innerHTML = "";
+
+  // Step 1: Check Bluetooth status first
+  btnScan.innerHTML = '<span class="spinner"></span> Checking Bluetooth...';
+  scanStatus.textContent = "";
+  setScanStatusType("info");
+
+  try {
+    const btStatus = await invoke("check_bluetooth");
+
+    if (!btStatus.adapter_found) {
+      setScanStatusType("error");
+      scanStatus.innerHTML = `<strong>No Bluetooth adapter found.</strong><br>Make sure your device has Bluetooth hardware.`;
+      resetScanButton();
+      return;
+    }
+
+    if (!btStatus.powered_on) {
+      setScanStatusType("warning");
+      scanStatus.innerHTML = `<strong>Bluetooth is turned off.</strong><br>Please enable Bluetooth in your device settings, then tap Scan again.`;
+      resetScanButton();
+      return;
+    }
+  } catch (err) {
+    // check_bluetooth failed — try scanning anyway, it will give its own error
+    console.warn("Bluetooth check failed, attempting scan:", err);
+  }
+
+  // Step 2: Bluetooth is ready — scan for Meshtastic devices
+  btnScan.innerHTML = '<span class="spinner"></span> Scanning for Meshtastic devices (5s)...';
+  setScanStatusType("info");
+  scanStatus.textContent = "Searching for nearby Meshtastic devices...";
 
   try {
     const devices = await invoke("scan_devices");
 
     if (devices.length === 0) {
-      scanStatus.textContent = "No devices found. Make sure your device is powered on and Bluetooth is enabled.";
+      setScanStatusType("warning");
+      scanStatus.innerHTML = `<strong>No Meshtastic devices found.</strong><br>Make sure your device is:<br>
+        &bull; Powered on and fully booted (LED blinking)<br>
+        &bull; Within Bluetooth range (~10 meters)<br>
+        &bull; Not connected to another app`;
     } else {
-      const meshCount = devices.filter((d) => d.is_meshtastic).length;
-      scanStatus.textContent = `Found ${devices.length} device${devices.length > 1 ? "s" : ""} (${meshCount} Meshtastic)`;
+      setScanStatusType("success");
+      scanStatus.textContent = `Found ${devices.length} Meshtastic device${devices.length > 1 ? "s" : ""} — tap one to select it`;
       devices.forEach(renderScannedDevice);
     }
   } catch (err) {
-    scanStatus.textContent = "Scan failed — " + err;
+    const errMsg = String(err);
+    if (errMsg.includes("turned off") || errMsg.includes("Bluetooth is turned off")) {
+      setScanStatusType("warning");
+      scanStatus.innerHTML = `<strong>Bluetooth is turned off.</strong><br>Please enable Bluetooth in your device settings, then tap Scan again.`;
+    } else if (errMsg.includes("permission") || errMsg.includes("Permission")) {
+      setScanStatusType("error");
+      scanStatus.innerHTML = `<strong>Bluetooth permission denied.</strong><br>Please allow Bluetooth access in your device settings.`;
+    } else {
+      setScanStatusType("error");
+      scanStatus.innerHTML = `<strong>Scan failed.</strong><br>${escapeHtml(errMsg)}`;
+    }
     console.error("Scan error:", err);
   }
 
+  resetScanButton();
+});
+
+function resetScanButton() {
   btnScan.disabled = false;
   btnScan.innerHTML = `
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
       <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
     </svg>
     Scan Again`;
-});
+}
+
+function setScanStatusType(type) {
+  scanStatus.className = "scan-status";
+  if (type) scanStatus.classList.add(`scan-status-${type}`);
+}
 
 function renderScannedDevice(device) {
   const card = document.createElement("div");
-  card.className = `scan-card ${device.is_meshtastic ? "meshtastic" : ""}`;
+  card.className = "scan-card meshtastic";
   card.innerHTML = `
-    <div class="scan-card-icon">${device.is_meshtastic ? "&#x1F4E1;" : "&#x1F4F6;"}</div>
+    <div class="scan-card-icon">&#x1F4E1;</div>
     <div class="scan-card-details">
       <div class="scan-card-name">${escapeHtml(device.name)}</div>
       <div class="scan-card-addr">${device.address}</div>
     </div>
     <div class="scan-card-meta">
       ${device.rssi ? `<span class="scan-rssi">${device.rssi} dBm</span>` : ""}
-      ${device.is_meshtastic ? '<span class="scan-badge">Meshtastic</span>' : ""}
+      <span class="scan-badge">Meshtastic</span>
     </div>
   `;
   card.addEventListener("click", () => selectScannedDevice(device, card));

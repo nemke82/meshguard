@@ -1,20 +1,28 @@
 use tauri::State;
 
-use crate::ble::{BleManager, ScannedDevice};
+use crate::ble::{self, BleManager, BluetoothStatus, ScannedDevice};
 use crate::crypto;
 use crate::device_config::{DeviceConfig, PeerConfig, RadioConfig};
 use crate::error::MeshGuardError;
 use crate::state::AppState;
 
+// ── Bluetooth Status ──────────────────────────────────────────
+
+/// Check if Bluetooth is available and enabled.
+/// Returns detailed status so the UI can guide the user.
+#[tauri::command]
+pub async fn check_bluetooth() -> Result<BluetoothStatus, MeshGuardError> {
+    Ok(ble::check_bluetooth().await)
+}
+
 // ── BLE Scanning ──────────────────────────────────────────────
 
-/// Scan for nearby Meshtastic BLE devices. Returns all found devices
-/// with Meshtastic devices sorted to the top.
+/// Scan for nearby Meshtastic BLE devices.
+/// First checks Bluetooth status — returns clear error if BT is off or unavailable.
 #[tauri::command]
 pub async fn scan_devices(
     state: State<'_, AppState>,
 ) -> Result<Vec<ScannedDevice>, MeshGuardError> {
-    // Create a temporary BLE manager for scanning
     let ble = BleManager::new().await?;
     let devices = ble.scan(5).await?;
 
