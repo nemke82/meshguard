@@ -6,17 +6,11 @@ use uuid::Uuid;
 
 use crate::error::MeshGuardError;
 
-/// Meshtastic BLE service UUID.
-const MESHTASTIC_SERVICE: &str = "6ba1b218-15a8-461f-9fa8-5dcae273eafd";
-
 /// toRadio — phone writes to device.
 const TO_RADIO: &str = "f75c76d2-129e-4dad-a1dd-7866124401e7";
 
 /// fromRadio — phone reads from device.
 const FROM_RADIO: &str = "2c55e69e-4993-11ed-b878-0242ac120002";
-
-/// fromNum — notify characteristic, signals new data available.
-const FROM_NUM: &str = "ed9da18c-a800-4f66-a670-aa7547e34453";
 
 /// Manages the BLE connection to the LOCAL Meshtastic device.
 /// No scanning — connects directly to a known BLE address.
@@ -72,7 +66,7 @@ impl BleManager {
 
         let device = peripherals
             .into_iter()
-            .filter(|p| {
+            .find(|p| {
                 futures::executor::block_on(async {
                     p.properties()
                         .await
@@ -82,7 +76,6 @@ impl BleManager {
                         .unwrap_or(false)
                 })
             })
-            .next()
             .ok_or_else(|| MeshGuardError::DeviceNotFound(address.into()))?;
 
         device

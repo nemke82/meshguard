@@ -126,19 +126,10 @@ pub struct PeerConfig {
 }
 
 /// Persisted app configuration — saved to disk.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppConfig {
     pub device: Option<DeviceConfig>,
     pub peer: Option<PeerConfig>,
-}
-
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            device: None,
-            peer: None,
-        }
-    }
 }
 
 impl AppConfig {

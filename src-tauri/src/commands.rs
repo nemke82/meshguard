@@ -2,28 +2,33 @@ use tauri::State;
 
 use crate::ble::BleManager;
 use crate::crypto;
-use crate::device_config::{
-    ChannelConfig, DeviceConfig, PeerConfig, RadioConfig,
-};
+use crate::device_config::{DeviceConfig, PeerConfig, RadioConfig};
 use crate::error::MeshGuardError;
 use crate::state::AppState;
 
 // ── Device Setup ──────────────────────────────────────────────
 
+/// Input for save_device_config command.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceConfigInput {
+    pub device_name: String,
+    pub device_serial: String,
+    pub ble_address: String,
+    pub region: String,
+    pub modem_preset: String,
+    pub tx_power: u8,
+    pub hop_limit: u8,
+}
+
 /// Save local device configuration (name, serial, BLE address, radio settings).
 #[tauri::command]
 pub async fn save_device_config(
-    device_name: String,
-    device_serial: String,
-    ble_address: String,
-    region: String,
-    modem_preset: String,
-    tx_power: u8,
-    hop_limit: u8,
+    input: DeviceConfigInput,
     state: State<'_, AppState>,
 ) -> Result<(), MeshGuardError> {
-    let region = parse_region(&region)?;
-    let modem = parse_modem(&modem_preset)?;
+    let region = parse_region(&input.region)?;
+    let modem = parse_modem(&input.modem_preset)?;
 
     let mut config = state.config.lock().await;
     let device = config.device.get_or_insert_with(|| DeviceConfig {
@@ -31,16 +36,16 @@ pub async fn save_device_config(
         device_name: String::new(),
         device_serial: String::new(),
         radio: RadioConfig::default(),
-        channel: ChannelConfig::default(),
+        channel: crate::device_config::ChannelConfig::default(),
     });
 
-    device.ble_address = ble_address;
-    device.device_name = device_name;
-    device.device_serial = device_serial;
+    device.ble_address = input.ble_address;
+    device.device_name = input.device_name;
+    device.device_serial = input.device_serial;
     device.radio.region = region;
     device.radio.modem_preset = modem;
-    device.radio.tx_power = tx_power;
-    device.radio.hop_limit = hop_limit;
+    device.radio.tx_power = input.tx_power;
+    device.radio.hop_limit = input.hop_limit;
 
     config.save(&state.config_dir)?;
     Ok(())

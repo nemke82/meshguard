@@ -51,13 +51,15 @@ formDevice.addEventListener("submit", async (e) => {
 
   try {
     await invoke("save_device_config", {
-      deviceName: $("#device-name").value.trim(),
-      deviceSerial: $("#device-serial").value.trim(),
-      bleAddress: $("#ble-address").value.trim(),
-      region: $("#region").value,
-      modemPreset: $("#modem-preset").value,
-      txPower: parseInt($("#tx-power").value),
-      hopLimit: parseInt($("#hop-limit").value),
+      input: {
+        deviceName: $("#device-name").value.trim(),
+        deviceSerial: $("#device-serial").value.trim(),
+        bleAddress: $("#ble-address").value.trim(),
+        region: $("#region").value,
+        modemPreset: $("#modem-preset").value,
+        txPower: parseInt($("#tx-power").value),
+        hopLimit: parseInt($("#hop-limit").value),
+      },
     });
     showScreen(screenPairing);
   } catch (err) {
