@@ -1,4 +1,5 @@
 pub mod ble;
+pub mod ble_plugin;
 pub mod commands;
 pub mod crypto;
 pub mod device_config;
@@ -15,6 +16,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(ble_plugin::init())
         .setup(|app| {
             let config_dir = app
                 .path()
@@ -28,8 +30,6 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            commands::check_bluetooth,
-            commands::scan_devices,
             commands::save_device_config,
             commands::get_device_config,
             commands::has_device,

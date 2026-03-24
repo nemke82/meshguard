@@ -62,7 +62,7 @@ btnScan.addEventListener("click", async () => {
   setScanStatusType("info");
 
   try {
-    const btStatus = await invoke("check_bluetooth");
+    const btStatus = await invoke("plugin:ble-scanner|check_bluetooth");
 
     if (!btStatus.adapter_found) {
       setScanStatusType("error");
@@ -93,7 +93,9 @@ btnScan.addEventListener("click", async () => {
   scanStatus.textContent = "Searching for nearby Meshtastic devices...";
 
   try {
-    const devices = await invoke("scan_devices");
+    const scanResult = await invoke("plugin:ble-scanner|scan_devices");
+    // Desktop (Rust) returns { devices: [...] }, Android (Kotlin) also returns { devices: [...] }
+    const devices = scanResult.devices || scanResult || [];
 
     if (devices.length === 0) {
       setScanStatusType("warning");
