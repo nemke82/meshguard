@@ -54,6 +54,22 @@ jobs:
         working-directory: ui
         run: npm run build
 
+      - name: Generate signing keystore
+        run: |
+          # If repo has a KEYSTORE secret, decode it; otherwise generate a fresh one for CI
+          if [ -n "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" ]; then
+            echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > /tmp/meshguard.jks
+          else
+            keytool -genkeypair \
+              -keystore /tmp/meshguard.jks \
+              -alias meshguard \
+              -keyalg RSA -keysize 2048 \
+              -validity 10000 \
+              -storepass meshguard \
+              -keypass meshguard \
+              -dname "CN=MeshGuard, O=MeshGuard, L=Unknown, ST=Unknown, C=US"
+          fi
+
       - name: Initialize Android project
         run: cargo tauri android init
 
@@ -62,15 +78,49 @@ jobs:
           NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
         run: cargo tauri android build --apk
 
-      - name: Find and rename APK
+      - name: Sign APK
         id: apk
         run: |
-          APK=$(find src-tauri/gen/android -name "*.apk" -type f | head -1)
           VERSION=${GITHUB_REF_NAME#v}
+
+          # Find the unsigned APK
+          UNSIGNED=$(find src-tauri/gen/android -name "*-unsigned.apk" -type f | head -1)
+          if [ -z "$UNSIGNED" ]; then
+            UNSIGNED=$(find src-tauri/gen/android -name "*.apk" -type f | head -1)
+          fi
+
+          KEYSTORE_PASS="${{ secrets.ANDROID_KEYSTORE_PASSWORD }}"
+          KEY_PASS="${{ secrets.ANDROID_KEY_PASSWORD }}"
+          KEY_ALIAS="${{ secrets.ANDROID_KEY_ALIAS }}"
+
+          # Fall back to defaults if secrets aren't set
+          KEYSTORE_PASS="${KEYSTORE_PASS:-meshguard}"
+          KEY_PASS="${KEY_PASS:-meshguard}"
+          KEY_ALIAS="${KEY_ALIAS:-meshguard}"
+
+          # Align the APK (required before signing)
+          ALIGNED="/tmp/meshguard-aligned.apk"
+          "${ANDROID_HOME}/build-tools/$(ls ${ANDROID_HOME}/build-tools/ | tail -1)/zipalign" \
+            -v -p 4 "$UNSIGNED" "$ALIGNED"
+
+          # Sign with apksigner
           DEST="meshguard-${VERSION}-android.apk"
-          cp "$APK" "$DEST"
+          "${ANDROID_HOME}/build-tools/$(ls ${ANDROID_HOME}/build-tools/ | tail -1)/apksigner" sign \
+            --ks /tmp/meshguard.jks \
+            --ks-key-alias "$KEY_ALIAS" \
+            --ks-pass "pass:${KEYSTORE_PASS}" \
+            --key-pass "pass:${KEY_PASS}" \
+            --out "$DEST" \
+            "$ALIGNED"
+
+          # Verify
+          "${ANDROID_HOME}/build-tools/$(ls ${ANDROID_HOME}/build-tools/ | tail -1)/apksigner" verify "$DEST"
+
           echo "path=$DEST" >> "$GITHUB_OUTPUT"
           echo "name=$DEST" >> "$GITHUB_OUTPUT"
+
+          # Clean up keystore
+          rm -f /tmp/meshguard.jks /tmp/meshguard-aligned.apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
