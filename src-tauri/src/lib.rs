@@ -1,12 +1,13 @@
 pub mod ble;
 pub mod commands;
 pub mod crypto;
+pub mod device_config;
 pub mod error;
 pub mod protocol;
 pub mod state;
 
 use state::AppState;
-use uuid::Uuid;
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -15,33 +16,28 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
-            let device_id = Uuid::new_v4().to_string()[..8].to_string();
+            let config_dir = app
+                .path()
+                .app_config_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
 
-            // BLE initialization happens async; we spawn it
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                match ble::BleManager::new().await {
-                    Ok(ble_manager) => {
-                        let state = AppState::new(ble_manager, device_id);
-                        handle.manage(state);
-                        tracing::info!("MeshGuard BLE initialized");
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to initialize BLE: {}", e);
-                    }
-                }
-            });
+            let state = AppState::new(config_dir);
+            app.manage(state);
 
+            tracing::info!("MeshGuard started — configure your device to begin");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            commands::scan_devices,
-            commands::connect_device,
-            commands::disconnect_device,
+            commands::save_device_config,
+            commands::get_device_config,
+            commands::setup_peer,
+            commands::get_peer_config,
+            commands::connect_local_device,
+            commands::disconnect_local_device,
             commands::is_connected,
-            commands::start_secure_session,
+            commands::apply_config_to_device,
             commands::send_message,
-            commands::get_device_id,
+            commands::has_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running MeshGuard");

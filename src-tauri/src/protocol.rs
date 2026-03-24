@@ -5,30 +5,13 @@ use uuid::Uuid;
 use crate::crypto::SessionKey;
 use crate::error::MeshGuardError;
 
-/// Message types in the MeshGuard protocol.
+/// MeshGuard protocol messages — sent encrypted over the Meshtastic mesh.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum MeshMessage {
-    /// Initial key exchange — sends our X25519 public key.
-    KeyExchange {
+    /// Encrypted text message.
+    Text {
         id: String,
-        sender_id: String,
-        public_key: Vec<u8>,
-        timestamp: i64,
-    },
-
-    /// Key exchange acknowledgment from peer.
-    KeyExchangeAck {
-        id: String,
-        sender_id: String,
-        public_key: Vec<u8>,
-        timestamp: i64,
-    },
-
-    /// An encrypted text message.
-    EncryptedText {
-        id: String,
-        sender_id: String,
         ciphertext: Vec<u8>,
         timestamp: i64,
     },
@@ -36,23 +19,20 @@ pub enum MeshMessage {
     /// Delivery receipt.
     Receipt {
         id: String,
-        sender_id: String,
         message_id: String,
         status: DeliveryStatus,
         timestamp: i64,
     },
 
-    /// Ping to check if peer is alive.
+    /// Ping — check if peer is reachable.
     Ping {
         id: String,
-        sender_id: String,
         timestamp: i64,
     },
 
-    /// Pong response.
+    /// Pong — response to ping.
     Pong {
         id: String,
-        sender_id: String,
         timestamp: i64,
     },
 }
@@ -64,11 +44,10 @@ pub enum DeliveryStatus {
     Failed,
 }
 
-/// A decrypted, displayable message for the UI.
+/// A decrypted message ready for the UI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub id: String,
-    pub sender_id: String,
     pub text: String,
     pub timestamp: i64,
     pub is_mine: bool,
@@ -76,47 +55,39 @@ pub struct ChatMessage {
 }
 
 impl MeshMessage {
-    /// Create a new key exchange initiation message.
-    pub fn new_key_exchange(sender_id: &str, public_key: &[u8]) -> Self {
-        Self::KeyExchange {
-            id: Uuid::new_v4().to_string(),
-            sender_id: sender_id.to_string(),
-            public_key: public_key.to_vec(),
-            timestamp: Utc::now().timestamp(),
-        }
-    }
-
     /// Create an encrypted text message.
-    pub fn new_encrypted_text(
-        sender_id: &str,
-        plaintext: &str,
-        session_key: &SessionKey,
-    ) -> Result<Self, MeshGuardError> {
+    pub fn new_text(plaintext: &str, session_key: &SessionKey) -> Result<Self, MeshGuardError> {
         let ciphertext = session_key.encrypt(plaintext.as_bytes())?;
-        Ok(Self::EncryptedText {
+        Ok(Self::Text {
             id: Uuid::new_v4().to_string(),
-            sender_id: sender_id.to_string(),
             ciphertext,
             timestamp: Utc::now().timestamp(),
         })
     }
 
-    /// Serialize the message to bytes for transmission.
+    /// Decrypt a text message.
+    pub fn decrypt_text(&self, session_key: &SessionKey) -> Result<String, MeshGuardError> {
+        match self {
+            Self::Text { ciphertext, .. } => {
+                let plaintext = session_key.decrypt(ciphertext)?;
+                String::from_utf8(plaintext)
+                    .map_err(|e| MeshGuardError::Decryption(e.to_string()))
+            }
+            _ => Err(MeshGuardError::Protocol("not a text message".into())),
+        }
+    }
+
     pub fn to_bytes(&self) -> Result<Vec<u8>, MeshGuardError> {
         serde_json::to_vec(self).map_err(|e| MeshGuardError::Serialization(e.to_string()))
     }
 
-    /// Deserialize a message from bytes.
     pub fn from_bytes(data: &[u8]) -> Result<Self, MeshGuardError> {
         serde_json::from_slice(data).map_err(|e| MeshGuardError::Protocol(e.to_string()))
     }
 
-    /// Get the message ID.
     pub fn id(&self) -> &str {
         match self {
-            Self::KeyExchange { id, .. }
-            | Self::KeyExchangeAck { id, .. }
-            | Self::EncryptedText { id, .. }
+            Self::Text { id, .. }
             | Self::Receipt { id, .. }
             | Self::Ping { id, .. }
             | Self::Pong { id, .. } => id,

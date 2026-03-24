@@ -8,8 +8,11 @@ pub enum MeshGuardError {
     #[error("Device not found: {0}")]
     DeviceNotFound(String),
 
-    #[error("Not connected to any device")]
+    #[error("Not connected to local device")]
     NotConnected,
+
+    #[error("No peer configured")]
+    NoPeer,
 
     #[error("Key derivation failed")]
     KeyDerivation,
@@ -26,14 +29,16 @@ pub enum MeshGuardError {
     #[error("Serialization error: {0}")]
     Serialization(String),
 
-    #[error("Peer rejected connection")]
-    PeerRejected,
+    #[error("Invalid configuration: {0}")]
+    InvalidConfig(String),
 
-    #[error("Session expired")]
-    SessionExpired,
+    #[error("Session not established — complete P2P pairing first")]
+    NoSession,
+
+    #[error("IO error: {0}")]
+    Io(String),
 }
 
-// Allow Tauri to serialize our errors to the frontend.
 impl serde::Serialize for MeshGuardError {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where

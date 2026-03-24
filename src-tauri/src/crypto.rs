@@ -4,41 +4,88 @@ use aes_gcm::{
 };
 use hkdf::Hkdf;
 use rand::RngCore;
-use sha2::Sha256;
-use x25519_dalek::{EphemeralSecret, PublicKey, SharedSecret};
+use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
 use crate::error::MeshGuardError;
 
-/// Size of AES-256-GCM nonce in bytes.
 const NONCE_SIZE: usize = 12;
 
-/// Holds an identity keypair for X25519 key exchange.
-pub struct Identity {
-    secret: EphemeralSecret,
-    pub public_key: PublicKey,
+/// Derive a deterministic AES-256 session key from the P2P pairing info.
+///
+/// Both peers compute the same key because they both know:
+///   - Their own device name + serial
+///   - The peer's device name + serial
+///   - A shared passphrase they agreed on out-of-band
+///
+/// The inputs are sorted before hashing so that order doesn't matter —
+/// both sides arrive at the identical key.
+pub fn derive_p2p_key(
+    my_device_name: &str,
+    my_serial: &str,
+    peer_device_name: &str,
+    peer_serial: &str,
+    shared_passphrase: &str,
+) -> Result<SessionKey, MeshGuardError> {
+    // Sort the two device identities so both sides get the same order
+    let my_identity = format!("{}:{}", my_device_name.trim(), my_serial.trim());
+    let peer_identity = format!("{}:{}", peer_device_name.trim(), peer_serial.trim());
+
+    let (first, second) = if my_identity <= peer_identity {
+        (&my_identity, &peer_identity)
+    } else {
+        (&peer_identity, &my_identity)
+    };
+
+    // Build the input keying material: SHA-256(first || second || passphrase)
+    let mut hasher = Sha256::new();
+    hasher.update(first.as_bytes());
+    hasher.update(b"|");
+    hasher.update(second.as_bytes());
+    hasher.update(b"|");
+    hasher.update(shared_passphrase.as_bytes());
+    let ikm = hasher.finalize();
+
+    // HKDF to derive the actual AES-256 key
+    let hk = Hkdf::<Sha256>::new(Some(b"meshguard-p2p-v1"), &ikm);
+    let mut key_bytes = [0u8; 32];
+    hk.expand(b"aes-256-gcm-p2p-key", &mut key_bytes)
+        .map_err(|_| MeshGuardError::KeyDerivation)?;
+
+    Ok(SessionKey { key: key_bytes })
 }
 
-impl Identity {
-    /// Generate a new random X25519 identity.
-    pub fn generate() -> Self {
-        let secret = EphemeralSecret::random_from_rng(OsRng);
-        let public_key = PublicKey::from(&secret);
-        Self { secret, public_key }
-    }
+/// Derive a Meshtastic channel PSK (32 bytes) from the pairing info.
+/// This is set on the Meshtastic device so only paired devices can decode
+/// the LoRa frames. Our AES-256-GCM layer encrypts on top of this.
+pub fn derive_channel_psk(
+    my_device_name: &str,
+    my_serial: &str,
+    peer_device_name: &str,
+    peer_serial: &str,
+    shared_passphrase: &str,
+) -> Result<[u8; 32], MeshGuardError> {
+    let my_identity = format!("{}:{}", my_device_name.trim(), my_serial.trim());
+    let peer_identity = format!("{}:{}", peer_device_name.trim(), peer_serial.trim());
 
-    /// Perform X25519 Diffie-Hellman with a peer's public key and derive
-    /// an AES-256 key using HKDF-SHA256.
-    pub fn derive_shared_key(self, peer_public: &PublicKey) -> Result<SessionKey, MeshGuardError> {
-        let shared_secret: SharedSecret = self.secret.diffie_hellman(peer_public);
+    let (first, second) = if my_identity <= peer_identity {
+        (&my_identity, &peer_identity)
+    } else {
+        (&peer_identity, &my_identity)
+    };
 
-        let hk = Hkdf::<Sha256>::new(Some(b"meshguard-v1"), shared_secret.as_bytes());
-        let mut key_bytes = [0u8; 32];
-        hk.expand(b"aes-256-gcm-key", &mut key_bytes)
-            .map_err(|_| MeshGuardError::KeyDerivation)?;
+    let mut hasher = Sha256::new();
+    hasher.update(b"meshguard-channel-psk|");
+    hasher.update(first.as_bytes());
+    hasher.update(b"|");
+    hasher.update(second.as_bytes());
+    hasher.update(b"|");
+    hasher.update(shared_passphrase.as_bytes());
+    let result = hasher.finalize();
 
-        Ok(SessionKey { key: key_bytes })
-    }
+    let mut psk = [0u8; 32];
+    psk.copy_from_slice(&result);
+    Ok(psk)
 }
 
 /// A derived AES-256 session key. Zeroized on drop.
@@ -62,7 +109,6 @@ impl SessionKey {
             .encrypt(nonce, plaintext)
             .map_err(|e| MeshGuardError::Encryption(e.to_string()))?;
 
-        // Prepend nonce to ciphertext
         let mut output = Vec::with_capacity(NONCE_SIZE + ciphertext.len());
         output.extend_from_slice(&nonce_bytes);
         output.extend_from_slice(&ciphertext);
@@ -92,21 +138,52 @@ mod tests {
     use super::*;
 
     #[test]
-    fn roundtrip_encrypt_decrypt() {
-        let alice = Identity::generate();
-        let bob = Identity::generate();
+    fn p2p_key_derivation_is_symmetric() {
+        // Alice's side
+        let alice_key = derive_p2p_key(
+            "Alice-P1000", "ABCD1234",
+            "Bob-P1000", "EFGH5678",
+            "our-secret-phrase",
+        ).unwrap();
 
-        let alice_pub = alice.public_key;
-        let bob_pub = bob.public_key;
+        // Bob's side — same inputs but swapped my/peer
+        let bob_key = derive_p2p_key(
+            "Bob-P1000", "EFGH5678",
+            "Alice-P1000", "ABCD1234",
+            "our-secret-phrase",
+        ).unwrap();
 
-        // Both sides derive the same shared key
-        let alice_key = alice.derive_shared_key(&bob_pub).unwrap();
-        let bob_key = bob.derive_shared_key(&alice_pub).unwrap();
-
-        let message = b"Hello from MeshGuard!";
-        let encrypted = alice_key.encrypt(message).unwrap();
+        // Both must derive identical keys
+        let msg = b"Hello from MeshGuard P2P!";
+        let encrypted = alice_key.encrypt(msg).unwrap();
         let decrypted = bob_key.decrypt(&encrypted).unwrap();
+        assert_eq!(&decrypted, msg);
+    }
 
-        assert_eq!(&decrypted, message);
+    #[test]
+    fn channel_psk_is_symmetric() {
+        let psk_a = derive_channel_psk(
+            "Alice-P1000", "ABCD1234",
+            "Bob-P1000", "EFGH5678",
+            "our-secret",
+        ).unwrap();
+
+        let psk_b = derive_channel_psk(
+            "Bob-P1000", "EFGH5678",
+            "Alice-P1000", "ABCD1234",
+            "our-secret",
+        ).unwrap();
+
+        assert_eq!(psk_a, psk_b);
+    }
+
+    #[test]
+    fn different_passphrase_gives_different_key() {
+        let key_a = derive_p2p_key("A", "1", "B", "2", "pass1").unwrap();
+        let key_b = derive_p2p_key("A", "1", "B", "2", "pass2").unwrap();
+
+        let msg = b"test";
+        let encrypted = key_a.encrypt(msg).unwrap();
+        assert!(key_b.decrypt(&encrypted).is_err());
     }
 }

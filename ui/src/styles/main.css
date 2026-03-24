@@ -6,7 +6,8 @@
   --bg-primary: #0a0e17;
   --bg-secondary: #111827;
   --bg-tertiary: #1a2235;
-  --bg-card: #151d2e;
+  --bg-card: #131b2e;
+  --bg-input: #0f1726;
 
   --accent: #00d4aa;
   --accent-dim: #00a88a;
@@ -51,7 +52,6 @@ body {
   background: var(--bg-primary);
   color: var(--text-primary);
   -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
   user-select: none;
   -webkit-user-select: none;
 }
@@ -61,7 +61,8 @@ body {
   position: relative;
 }
 
-/* ---- Screens ---- */
+/* ── Screens ───────────────────────────────────────────── */
+
 .screen {
   position: absolute;
   inset: 0;
@@ -69,38 +70,47 @@ body {
   flex-direction: column;
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.35s ease, transform 0.35s ease;
-  transform: scale(0.97);
+  transition: opacity 0.3s ease, transform 0.3s ease;
+  transform: translateX(20px);
 }
 
 .screen.active {
   opacity: 1;
   pointer-events: all;
-  transform: scale(1);
+  transform: translateX(0);
 }
 
-/* ============================================================
-   Connect Screen
-   ============================================================ */
-.connect-container {
+.screen-scroll {
   flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 40px 24px;
-  gap: 48px;
+  overflow-y: auto;
+  padding: 24px 20px 40px;
 }
 
-.logo {
+.screen-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+
+.screen-scroll::-webkit-scrollbar-thumb {
+  background: var(--border-light);
+  border-radius: 4px;
+}
+
+.screen-header {
   text-align: center;
+  margin-bottom: 28px;
 }
 
 .logo-icon {
-  width: 80px;
-  height: 80px;
-  margin: 0 auto 16px;
+  width: 64px;
+  height: 64px;
+  margin: 0 auto 12px;
   color: var(--accent);
+  animation: pulse-glow 3s ease-in-out infinite;
+}
+
+.lock-icon {
+  color: var(--accent);
+  margin: 0 auto 12px;
   animation: pulse-glow 3s ease-in-out infinite;
 }
 
@@ -109,8 +119,8 @@ body {
   50% { filter: drop-shadow(0 0 20px var(--accent-glow-strong)); }
 }
 
-.logo h1 {
-  font-size: 32px;
+.logo-title {
+  font-size: 28px;
   font-weight: 700;
   letter-spacing: 2px;
   background: linear-gradient(135deg, var(--accent) 0%, #00e6c3 50%, #0099ff 100%);
@@ -121,29 +131,127 @@ body {
 
 .tagline {
   color: var(--text-secondary);
-  font-size: 14px;
-  margin-top: 6px;
+  font-size: 13px;
+  margin-top: 4px;
+  letter-spacing: 0.3px;
+}
+
+/* ── Forms ─────────────────────────────────────────────── */
+
+.form-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 24px 20px;
+}
+
+.section-title {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: var(--accent);
+  margin-bottom: 16px;
+  margin-top: 8px;
+}
+
+.section-title:first-child {
+  margin-top: 0;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 16px;
+}
+
+.field-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
   letter-spacing: 0.5px;
 }
 
-.device-section {
+.field input,
+.field select {
   width: 100%;
-  max-width: 360px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
+  padding: 11px 14px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color var(--transition);
 }
 
-/* ---- Buttons ---- */
+.field input:focus,
+.field select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.field input::placeholder {
+  color: var(--text-muted);
+}
+
+.field select {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg width='12' height='8' viewBox='0 0 12 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='%238892a4' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: 36px;
+}
+
+.field select option {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+.field-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.field-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.pairing-info {
+  background: var(--accent-glow);
+  border: 1px solid rgba(0, 212, 170, 0.2);
+  border-radius: 10px;
+  padding: 14px;
+  margin-bottom: 20px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.pairing-info strong {
+  color: var(--accent);
+}
+
+.pairing-info p + p {
+  margin-top: 8px;
+}
+
+/* ── Buttons ───────────────────────────────────────────── */
+
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 14px 28px;
+  padding: 13px 24px;
   border: none;
   border-radius: var(--radius);
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
   cursor: pointer;
   transition: all var(--transition);
@@ -164,12 +272,34 @@ body {
   transform: translateY(0);
 }
 
+.btn-secondary {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+
+.btn-secondary:hover {
+  border-color: var(--text-muted);
+  color: var(--text-primary);
+}
+
 .btn-glow {
   box-shadow: 0 4px 16px var(--accent-glow);
 }
 
-.btn-icon {
-  font-size: 16px;
+.btn-full {
+  width: 100%;
+  margin-top: 8px;
+}
+
+.btn-group {
+  display: flex;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.btn-group .btn {
+  flex: 1;
 }
 
 .btn-icon-only {
@@ -187,89 +317,8 @@ body {
   background: var(--bg-tertiary);
 }
 
-/* ---- Device List ---- */
-.device-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
+/* ── Chat Screen ───────────────────────────────────────── */
 
-.device-card {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 14px 16px;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  cursor: pointer;
-  transition: all var(--transition);
-}
-
-.device-card:hover {
-  border-color: var(--accent);
-  background: var(--bg-tertiary);
-  box-shadow: 0 0 0 1px var(--accent-glow);
-}
-
-.device-card .device-icon {
-  width: 40px;
-  height: 40px;
-  border-radius: 10px;
-  background: var(--accent-glow);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--accent);
-  font-size: 18px;
-  flex-shrink: 0;
-}
-
-.device-card .device-details {
-  flex: 1;
-  min-width: 0;
-}
-
-.device-card .device-name {
-  font-weight: 600;
-  font-size: 14px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.device-card .device-addr {
-  font-size: 12px;
-  color: var(--text-secondary);
-  font-family: 'SF Mono', 'Fira Code', monospace;
-}
-
-.device-card .device-rssi {
-  font-size: 12px;
-  color: var(--text-muted);
-}
-
-.status-text {
-  text-align: center;
-  font-size: 13px;
-  color: var(--text-secondary);
-  min-height: 20px;
-}
-
-/* Scanning animation */
-.scanning .btn-primary {
-  pointer-events: none;
-  opacity: 0.7;
-}
-
-@keyframes scan-pulse {
-  0% { box-shadow: 0 0 0 0 var(--accent-glow-strong); }
-  100% { box-shadow: 0 0 0 20px transparent; }
-}
-
-/* ============================================================
-   Chat Screen
-   ============================================================ */
 .chat-header {
   display: flex;
   align-items: center;
@@ -311,34 +360,29 @@ body {
   50% { opacity: 0.3; }
 }
 
-/* Signal Indicator */
-.signal-indicator {
+.connection-badge {
   display: flex;
-  align-items: flex-end;
-  gap: 2px;
-  height: 18px;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
 }
 
-.signal-bar {
-  width: 3px;
-  border-radius: 1px;
-  background: var(--text-muted);
-  transition: background var(--transition);
+.connection-badge .badge-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warning);
 }
 
-.signal-bar.bar-1 { height: 4px; }
-.signal-bar.bar-2 { height: 8px; }
-.signal-bar.bar-3 { height: 12px; }
-.signal-bar.bar-4 { height: 16px; }
+.connection-badge.connected .badge-dot {
+  background: var(--accent);
+}
 
-.signal-indicator.strong .signal-bar { background: var(--accent); }
-.signal-indicator.medium .bar-1,
-.signal-indicator.medium .bar-2,
-.signal-indicator.medium .bar-3 { background: var(--accent); }
-.signal-indicator.weak .bar-1,
-.signal-indicator.weak .bar-2 { background: var(--warning); }
-
-/* Encryption Banner */
 .encryption-banner {
   display: flex;
   align-items: center;
@@ -352,7 +396,8 @@ body {
   letter-spacing: 0.3px;
 }
 
-/* ---- Messages ---- */
+/* ── Messages ──────────────────────────────────────────── */
+
 .messages-container {
   flex: 1;
   overflow-y: auto;
@@ -422,11 +467,16 @@ body {
   color: var(--text-muted);
 }
 
-.message .msg-status {
+.system-message {
+  text-align: center;
   font-size: 12px;
+  color: var(--text-muted);
+  padding: 12px 0;
+  line-height: 1.4;
 }
 
-/* ---- Input Area ---- */
+/* ── Input Area ────────────────────────────────────────── */
+
 .input-area {
   display: flex;
   align-items: flex-end;
@@ -507,45 +557,26 @@ body {
   transform: scale(0.95);
 }
 
-/* ---- Timestamp Dividers ---- */
-.time-divider {
-  text-align: center;
-  font-size: 11px;
-  color: var(--text-muted);
-  padding: 8px 0;
-  position: relative;
-}
+/* ── Spinner ───────────────────────────────────────────── */
 
-.time-divider::before,
-.time-divider::after {
-  content: '';
-  position: absolute;
-  top: 50%;
-  width: 30%;
-  height: 1px;
-  background: var(--border);
-}
-
-.time-divider::before { left: 0; }
-.time-divider::after { right: 0; }
-
-/* ---- Loading Spinner ---- */
 .spinner {
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
   border: 2px solid var(--border);
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
-  margin: 0 auto;
+  display: inline-block;
 }
 
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
 
-/* ---- Mobile Adjustments ---- */
+/* ── Mobile ────────────────────────────────────────────── */
+
 @media (max-width: 480px) {
-  .logo h1 { font-size: 28px; }
-  .message { max-width: 85%; }
+  .logo-title { font-size: 24px; }
+  .message { max-width: 88%; }
+  .form-card { padding: 20px 16px; }
 }

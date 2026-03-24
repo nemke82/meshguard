@@ -8,10 +8,13 @@
   </head>
   <body>
     <div id="app">
-      <!-- Screen: Splash / Connect -->
-      <div id="screen-connect" class="screen active">
-        <div class="connect-container">
-          <div class="logo">
+
+      <!-- ═══════════════════════════════════════════════
+           Screen 1: Device Setup
+           ═══════════════════════════════════════════════ -->
+      <div id="screen-setup" class="screen active">
+        <div class="screen-scroll">
+          <div class="screen-header">
             <div class="logo-icon">
               <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <circle cx="32" cy="32" r="28" stroke="currentColor" stroke-width="2" opacity="0.3"/>
@@ -24,56 +27,166 @@
                 <circle cx="32" cy="32" r="6" fill="currentColor" opacity="0.8"/>
               </svg>
             </div>
-            <h1>MeshGuard</h1>
-            <p class="tagline">Encrypted Mesh Communication</p>
+            <h1 class="logo-title">MeshGuard</h1>
+            <p class="tagline">Configure Your Meshtastic Device</p>
           </div>
 
-          <div class="device-section">
-            <button id="btn-scan" class="btn btn-primary btn-glow">
-              <span class="btn-icon">&#x1F50D;</span>
-              Scan for Devices
+          <form id="form-device" class="form-card">
+            <h2 class="section-title">Your Device</h2>
+
+            <label class="field">
+              <span class="field-label">Device Name</span>
+              <input type="text" id="device-name" placeholder="e.g. Alice-P1000" required />
+              <span class="field-hint">Your Meshtastic device's name</span>
+            </label>
+
+            <label class="field">
+              <span class="field-label">Device Serial</span>
+              <input type="text" id="device-serial" placeholder="e.g. ABCD1234" required />
+              <span class="field-hint">Printed on the device or shown in device info</span>
+            </label>
+
+            <label class="field">
+              <span class="field-label">BLE Address</span>
+              <input type="text" id="ble-address" placeholder="e.g. AA:BB:CC:DD:EE:FF" required />
+              <span class="field-hint">Bluetooth address of YOUR local device (entered once)</span>
+            </label>
+
+            <h2 class="section-title">Radio Settings</h2>
+
+            <label class="field">
+              <span class="field-label">Region</span>
+              <select id="region">
+                <option value="US">US (915 MHz)</option>
+                <option value="EU868" selected>EU 868 MHz</option>
+                <option value="EU433">EU 433 MHz</option>
+                <option value="CN">China (470 MHz)</option>
+                <option value="JP">Japan (920 MHz)</option>
+                <option value="ANZ">Australia/NZ (915 MHz)</option>
+                <option value="KR">Korea (920 MHz)</option>
+                <option value="TW">Taiwan (923 MHz)</option>
+                <option value="RU">Russia (868 MHz)</option>
+                <option value="IN">India (865 MHz)</option>
+                <option value="NZ865">NZ 865 MHz</option>
+                <option value="TH">Thailand (920 MHz)</option>
+                <option value="UA868">Ukraine 868 MHz</option>
+                <option value="UA433">Ukraine 433 MHz</option>
+              </select>
+              <span class="field-hint">Must match between both peers</span>
+            </label>
+
+            <label class="field">
+              <span class="field-label">Modem Preset</span>
+              <select id="modem-preset">
+                <option value="LongRange">Long Range (~40 bps, max distance)</option>
+                <option value="LongModerate">Long Moderate (~150 bps)</option>
+                <option value="MediumRange">Medium Range (~1 kbps)</option>
+                <option value="ShortRange">Short Range (~5 kbps)</option>
+                <option value="ShortFast">Short Fast (~18 kbps)</option>
+              </select>
+            </label>
+
+            <div class="field-row">
+              <label class="field">
+                <span class="field-label">TX Power (dBm)</span>
+                <input type="number" id="tx-power" value="20" min="1" max="30" />
+              </label>
+              <label class="field">
+                <span class="field-label">Hop Limit</span>
+                <input type="number" id="hop-limit" value="3" min="1" max="7" />
+                <span class="field-hint">1 = direct only</span>
+              </label>
+            </div>
+
+            <button type="submit" class="btn btn-primary btn-glow btn-full">
+              Save &amp; Continue to Pairing
             </button>
-            <div id="device-list" class="device-list"></div>
-            <div id="scan-status" class="status-text"></div>
-          </div>
+          </form>
         </div>
       </div>
 
-      <!-- Screen: Chat -->
+      <!-- ═══════════════════════════════════════════════
+           Screen 2: P2P Pairing
+           ═══════════════════════════════════════════════ -->
+      <div id="screen-pairing" class="screen">
+        <div class="screen-scroll">
+          <div class="screen-header">
+            <div class="lock-icon">
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2z"/>
+              </svg>
+            </div>
+            <h1 class="logo-title">P2P Pairing</h1>
+            <p class="tagline">Enter your peer's device info and a shared secret</p>
+          </div>
+
+          <form id="form-pairing" class="form-card">
+            <div class="pairing-info">
+              <p>Both you and your peer must enter each other's device name and serial, plus a <strong>shared passphrase</strong> you agreed on (in person, phone call, etc).</p>
+              <p>This derives a unique encryption key — no data is exchanged over the mesh to set up the session.</p>
+            </div>
+
+            <label class="field">
+              <span class="field-label">Peer Device Name</span>
+              <input type="text" id="peer-name" placeholder="e.g. Bob-P1000" required />
+              <span class="field-hint">Your peer's Meshtastic device name</span>
+            </label>
+
+            <label class="field">
+              <span class="field-label">Peer Device Serial</span>
+              <input type="text" id="peer-serial" placeholder="e.g. EFGH5678" required />
+              <span class="field-hint">Your peer's device serial number</span>
+            </label>
+
+            <label class="field">
+              <span class="field-label">Shared Passphrase</span>
+              <input type="password" id="shared-passphrase" placeholder="Enter the secret you both agreed on" required minlength="8" />
+              <span class="field-hint">Min 8 characters — never stored, never transmitted</span>
+            </label>
+
+            <div class="btn-group">
+              <button type="button" id="btn-back-setup" class="btn btn-secondary">Back</button>
+              <button type="submit" class="btn btn-primary btn-glow">
+                Establish Secure Session
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- ═══════════════════════════════════════════════
+           Screen 3: Encrypted Chat
+           ═══════════════════════════════════════════════ -->
       <div id="screen-chat" class="screen">
         <header class="chat-header">
-          <button id="btn-back" class="btn-icon-only" title="Disconnect">
+          <button id="btn-back-pairing" class="btn-icon-only" title="Settings">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M19 12H5M12 19l-7-7 7-7"/>
+              <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
             </svg>
           </button>
           <div class="peer-info">
-            <div class="peer-name" id="peer-name">Peer Device</div>
+            <div class="peer-name" id="chat-peer-name">Peer Device</div>
             <div class="peer-status" id="peer-status">
               <span class="status-dot"></span>
-              <span>Encrypted &bull; P2P</span>
+              <span>Encrypted P2P</span>
             </div>
           </div>
           <div class="header-actions">
-            <div class="signal-indicator" id="signal-indicator" title="Signal strength">
-              <div class="signal-bar bar-1"></div>
-              <div class="signal-bar bar-2"></div>
-              <div class="signal-bar bar-3"></div>
-              <div class="signal-bar bar-4"></div>
+            <div class="connection-badge" id="connection-badge">
+              <span class="badge-dot"></span>
+              <span id="connection-text">Connecting...</span>
             </div>
           </div>
         </header>
 
-        <div class="encryption-banner" id="encryption-banner">
+        <div class="encryption-banner">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
             <path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2z"/>
           </svg>
-          <span>End-to-end encrypted with AES-256-GCM + X25519</span>
+          <span>End-to-end encrypted — AES-256-GCM + HKDF — no key exchange over mesh</span>
         </div>
 
-        <div class="messages-container" id="messages">
-          <!-- Messages will be inserted here -->
-        </div>
+        <div class="messages-container" id="messages"></div>
 
         <div class="input-area">
           <div class="input-wrapper">
@@ -81,9 +194,9 @@
               id="message-input"
               placeholder="Type a secure message..."
               rows="1"
-              maxlength="228"
+              maxlength="200"
             ></textarea>
-            <span class="char-count" id="char-count">228</span>
+            <span class="char-count" id="char-count">200</span>
           </div>
           <button id="btn-send" class="btn-send" disabled>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
@@ -92,8 +205,8 @@
           </button>
         </div>
       </div>
-    </div>
 
+    </div>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>
