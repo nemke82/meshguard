@@ -35,6 +35,12 @@ pub enum MeshGuardError {
     #[error("Session not established — complete P2P pairing first")]
     NoSession,
 
+    #[error("Bluetooth is turned off. Please enable Bluetooth in your device settings and try again.")]
+    BluetoothDisabled,
+
+    #[error("Bluetooth permissions not granted. Please allow Bluetooth access in your device settings.")]
+    BluetoothPermission,
+
     #[error("IO error: {0}")]
     Io(String),
 }
