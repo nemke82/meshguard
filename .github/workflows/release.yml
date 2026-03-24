@@ -73,6 +73,9 @@ jobs:
       - name: Initialize Android project
         run: cargo tauri android init
 
+      - name: Patch Android project with BLE permissions
+        run: bash scripts/patch-android.sh
+
       - name: Build Android APK (release)
         env:
           NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973

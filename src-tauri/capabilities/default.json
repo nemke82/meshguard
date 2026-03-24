@@ -1,0 +1,10 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicegram/nicegram-app-ios-nicegram-assistant-lib/master/.github/.cache/nicegram-app-ios-nicegram-assistant-lib/nicegram-app-ios-nicegram-assistant-lib/schema.json",
+  "identifier": "default",
+  "description": "Default capabilities for MeshGuard",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "shell:allow-open"
+  ]
+}

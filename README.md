@@ -209,10 +209,11 @@ cargo tauri dev
 # Desktop (release)
 cargo tauri build
 
-# Android
+# Android (must patch for BLE permissions)
 cargo tauri android init
-cargo tauri android dev
-cargo tauri android build
+bash scripts/patch-android.sh
+cargo tauri android dev     # dev on connected device
+cargo tauri android build   # release APK
 ```
 
 ### Creating a Release
