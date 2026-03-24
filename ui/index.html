@@ -31,8 +31,36 @@
             <p class="tagline">Configure Your Meshtastic Device</p>
           </div>
 
+          <!-- Device already configured banner -->
+          <div id="device-locked-banner" class="locked-banner" style="display: none;">
+            <div class="locked-info">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
+              </svg>
+              <div>
+                <div class="locked-name" id="locked-device-name">Device Name</div>
+                <div class="locked-addr" id="locked-device-addr">AA:BB:CC:DD:EE:FF</div>
+              </div>
+            </div>
+            <button type="button" id="btn-remove-device" class="btn btn-danger-sm" title="Remove device to add a different one">Remove</button>
+          </div>
+
           <form id="form-device" class="form-card">
             <h2 class="section-title">Your Device</h2>
+
+            <!-- BLE Scan Section -->
+            <div class="field" id="scan-section">
+              <span class="field-label">Find Your Device</span>
+              <button type="button" id="btn-scan" class="btn btn-scan">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                </svg>
+                Scan for Bluetooth Devices
+              </button>
+              <div id="scan-status" class="field-hint"></div>
+              <div id="scan-results" class="scan-results"></div>
+              <input type="hidden" id="ble-address" required />
+            </div>
 
             <label class="field">
               <span class="field-label">Device Name</span>
@@ -44,12 +72,6 @@
               <span class="field-label">Device Serial</span>
               <input type="text" id="device-serial" placeholder="e.g. ABCD1234" required />
               <span class="field-hint">Printed on the device or shown in device info</span>
-            </label>
-
-            <label class="field">
-              <span class="field-label">BLE Address</span>
-              <input type="text" id="ble-address" placeholder="e.g. AA:BB:CC:DD:EE:FF" required />
-              <span class="field-hint">Bluetooth address of YOUR local device (entered once)</span>
             </label>
 
             <h2 class="section-title">Radio Settings</h2>

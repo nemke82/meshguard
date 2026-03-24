@@ -1,10 +1,14 @@
-use btleplug::api::{Central, Manager as _, Peripheral as _, WriteType};
+use btleplug::api::{Central, Manager as _, Peripheral as _, ScanFilter, WriteType};
 use btleplug::platform::{Adapter, Manager, Peripheral};
+use serde::Serialize;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::error::MeshGuardError;
+
+/// Meshtastic BLE service UUID.
+const MESHTASTIC_SERVICE: &str = "6ba1b218-15a8-461f-9fa8-5dcae273eafd";
 
 /// toRadio — phone writes to device.
 const TO_RADIO: &str = "f75c76d2-129e-4dad-a1dd-7866124401e7";
@@ -12,8 +16,16 @@ const TO_RADIO: &str = "f75c76d2-129e-4dad-a1dd-7866124401e7";
 /// fromRadio — phone reads from device.
 const FROM_RADIO: &str = "2c55e69e-4993-11ed-b878-0242ac120002";
 
+/// Info about a discovered BLE device.
+#[derive(Debug, Clone, Serialize)]
+pub struct ScannedDevice {
+    pub name: String,
+    pub address: String,
+    pub rssi: Option<i16>,
+    pub is_meshtastic: bool,
+}
+
 /// Manages the BLE connection to the LOCAL Meshtastic device.
-/// No scanning — connects directly to a known BLE address.
 pub struct BleManager {
     adapter: Adapter,
     connected_device: Arc<Mutex<Option<Peripheral>>>,
@@ -41,11 +53,77 @@ impl BleManager {
         })
     }
 
+    /// Scan for nearby Meshtastic BLE devices.
+    /// Returns all discovered devices, with `is_meshtastic` flagged for those
+    /// advertising the Meshtastic service UUID or matching known device names.
+    pub async fn scan(&self, duration_secs: u64) -> Result<Vec<ScannedDevice>, MeshGuardError> {
+        self.adapter
+            .start_scan(ScanFilter::default())
+            .await
+            .map_err(|e| MeshGuardError::Ble(e.to_string()))?;
+
+        tokio::time::sleep(std::time::Duration::from_secs(duration_secs)).await;
+
+        self.adapter
+            .stop_scan()
+            .await
+            .map_err(|e| MeshGuardError::Ble(e.to_string()))?;
+
+        let peripherals = self
+            .adapter
+            .peripherals()
+            .await
+            .map_err(|e| MeshGuardError::Ble(e.to_string()))?;
+
+        let service_uuid = Uuid::parse_str(MESHTASTIC_SERVICE).unwrap();
+        let mut devices = Vec::new();
+
+        for p in peripherals {
+            if let Ok(Some(props)) = p.properties().await {
+                let name = props
+                    .local_name
+                    .clone()
+                    .unwrap_or_default();
+
+                // Skip devices with no name and no services
+                if name.is_empty() && props.services.is_empty() {
+                    continue;
+                }
+
+                let is_meshtastic = props.services.contains(&service_uuid)
+                    || name.to_lowercase().contains("meshtastic")
+                    || name.to_lowercase().contains("p1000")
+                    || name.to_lowercase().contains("t-beam")
+                    || name.to_lowercase().contains("heltec")
+                    || name.to_lowercase().contains("rak")
+                    || name.to_lowercase().contains("sensecap");
+
+                devices.push(ScannedDevice {
+                    name: if name.is_empty() {
+                        "Unknown Device".to_string()
+                    } else {
+                        name
+                    },
+                    address: props.address.to_string(),
+                    rssi: props.rssi,
+                    is_meshtastic,
+                });
+            }
+        }
+
+        // Sort: Meshtastic devices first, then by signal strength
+        devices.sort_by(|a, b| {
+            b.is_meshtastic
+                .cmp(&a.is_meshtastic)
+                .then_with(|| b.rssi.unwrap_or(-100).cmp(&a.rssi.unwrap_or(-100)))
+        });
+
+        Ok(devices)
+    }
+
     /// Connect directly to a Meshtastic device by its known BLE address.
-    /// The address is entered once by the user and saved in config.
     pub async fn connect_to_address(&self, address: &str) -> Result<(), MeshGuardError> {
         // Brief scan to populate the adapter's peripheral list
-        use btleplug::api::ScanFilter;
         self.adapter
             .start_scan(ScanFilter::default())
             .await
@@ -134,7 +212,6 @@ impl BleManager {
     }
 
     /// Write a Meshtastic admin message to configure the device.
-    /// This sends a ToRadio { packet: MeshPacket { admin_message } }.
     pub async fn write_config(&self, config_data: &[u8]) -> Result<(), MeshGuardError> {
         self.write_to_radio(config_data).await
     }
