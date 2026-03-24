@@ -78,8 +78,13 @@ btnScan.addEventListener("click", async () => {
       return;
     }
   } catch (err) {
-    // check_bluetooth failed — try scanning anyway, it will give its own error
-    console.warn("Bluetooth check failed, attempting scan:", err);
+    // check_bluetooth invoke itself failed — show the error, don't silently continue
+    const errMsg = String(err);
+    console.warn("Bluetooth check error:", errMsg);
+    setScanStatusType("warning");
+    scanStatus.innerHTML = `<strong>Could not check Bluetooth status.</strong><br>${escapeHtml(errMsg)}<br><br>Attempting scan anyway...`;
+    // Brief pause so user sees the message, then try scanning
+    await new Promise(r => setTimeout(r, 1500));
   }
 
   // Step 2: Bluetooth is ready — scan for Meshtastic devices
