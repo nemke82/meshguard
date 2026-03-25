@@ -30,6 +30,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::check_bluetooth,
+            commands::scan_devices,
             commands::save_device_config,
             commands::get_device_config,
             commands::has_device,

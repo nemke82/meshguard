@@ -1,10 +1,104 @@
-use tauri::State;
+use serde::{Deserialize, Serialize};
+use tauri::{Runtime, State};
 
 use crate::ble::BleManager;
 use crate::crypto;
 use crate::device_config::{DeviceConfig, PeerConfig, RadioConfig};
 use crate::error::MeshGuardError;
 use crate::state::AppState;
+
+// ── BLE response types ───────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BluetoothStatusResponse {
+    pub adapter_found: bool,
+    pub powered_on: bool,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScannedDeviceInfo {
+    pub name: String,
+    pub address: String,
+    pub rssi: Option<i32>,
+    pub is_meshtastic: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ScanResponse {
+    pub devices: Vec<ScannedDeviceInfo>,
+}
+
+// ── Bluetooth Status ──────────────────────────────────────────
+
+#[tauri::command]
+pub async fn check_bluetooth<R: Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<BluetoothStatusResponse, MeshGuardError> {
+    do_check_bluetooth(app).await
+}
+
+#[cfg(target_os = "android")]
+async fn do_check_bluetooth<R: Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<BluetoothStatusResponse, MeshGuardError> {
+    use tauri::Manager;
+    app.state::<crate::ble_plugin::BlePluginState<R>>()
+        .0
+        .run_mobile_plugin("checkBluetooth", ())
+        .map_err(|e| MeshGuardError::Ble(format!("Android BLE check: {e}")))
+}
+
+#[cfg(not(target_os = "android"))]
+async fn do_check_bluetooth<R: Runtime>(
+    _app: tauri::AppHandle<R>,
+) -> Result<BluetoothStatusResponse, MeshGuardError> {
+    let s = crate::ble::check_bluetooth().await;
+    Ok(BluetoothStatusResponse {
+        adapter_found: s.adapter_found,
+        powered_on: s.powered_on,
+        message: s.message,
+    })
+}
+
+// ── BLE Scanning ──────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn scan_devices<R: Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<ScanResponse, MeshGuardError> {
+    do_scan_devices(app).await
+}
+
+#[cfg(target_os = "android")]
+async fn do_scan_devices<R: Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<ScanResponse, MeshGuardError> {
+    use tauri::Manager;
+    app.state::<crate::ble_plugin::BlePluginState<R>>()
+        .0
+        .run_mobile_plugin("scanDevices", ())
+        .map_err(|e| MeshGuardError::Ble(format!("Android BLE scan: {e}")))
+}
+
+#[cfg(not(target_os = "android"))]
+async fn do_scan_devices<R: Runtime>(
+    _app: tauri::AppHandle<R>,
+) -> Result<ScanResponse, MeshGuardError> {
+    let ble = BleManager::new().await?;
+    let devices = ble.scan(5).await?;
+    Ok(ScanResponse {
+        devices: devices
+            .into_iter()
+            .map(|d| ScannedDeviceInfo {
+                name: d.name,
+                address: d.address,
+                rssi: d.rssi.map(|r| r as i32),
+                is_meshtastic: d.is_meshtastic,
+            })
+            .collect(),
+    })
+}
 
 // ── Device Setup ──────────────────────────────────────────────
 

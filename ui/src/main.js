@@ -75,7 +75,7 @@ btnScan.addEventListener("click", async () => {
 
   try {
     console.log("[MeshGuard] Checking Bluetooth status...");
-    const btStatus = await invokeWithTimeout("plugin:ble-scanner|check_bluetooth", undefined, 10000);
+    const btStatus = await invokeWithTimeout("check_bluetooth", undefined, 10000);
     console.log("[MeshGuard] Bluetooth status:", JSON.stringify(btStatus));
 
     if (!btStatus.adapter_found) {
@@ -108,7 +108,7 @@ btnScan.addEventListener("click", async () => {
 
   try {
     console.log("[MeshGuard] Starting BLE scan...");
-    const scanResult = await invokeWithTimeout("plugin:ble-scanner|scan_devices", undefined, 20000);
+    const scanResult = await invokeWithTimeout("scan_devices", undefined, 20000);
     console.log("[MeshGuard] Scan result:", JSON.stringify(scanResult));
     const devices = scanResult.devices || scanResult || [];
 
