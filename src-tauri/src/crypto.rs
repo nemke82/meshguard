@@ -14,27 +14,25 @@ const NONCE_SIZE: usize = 12;
 /// Derive a deterministic AES-256 session key from the P2P pairing info.
 ///
 /// Both peers compute the same key because they both know:
-///   - Their own device name + serial
-///   - The peer's device name + serial
+///   - Their own device name
+///   - The peer's device name
 ///   - A shared passphrase they agreed on out-of-band
 ///
 /// The inputs are sorted before hashing so that order doesn't matter —
 /// both sides arrive at the identical key.
 pub fn derive_p2p_key(
     my_device_name: &str,
-    my_serial: &str,
     peer_device_name: &str,
-    peer_serial: &str,
     shared_passphrase: &str,
 ) -> Result<SessionKey, MeshGuardError> {
-    // Sort the two device identities so both sides get the same order
-    let my_identity = format!("{}:{}", my_device_name.trim(), my_serial.trim());
-    let peer_identity = format!("{}:{}", peer_device_name.trim(), peer_serial.trim());
+    // Sort the two device names so both sides get the same order
+    let my_name = my_device_name.trim();
+    let peer_name = peer_device_name.trim();
 
-    let (first, second) = if my_identity <= peer_identity {
-        (&my_identity, &peer_identity)
+    let (first, second) = if my_name <= peer_name {
+        (my_name, peer_name)
     } else {
-        (&peer_identity, &my_identity)
+        (peer_name, my_name)
     };
 
     // Build the input keying material: SHA-256(first || second || passphrase)
@@ -60,18 +58,16 @@ pub fn derive_p2p_key(
 /// the LoRa frames. Our AES-256-GCM layer encrypts on top of this.
 pub fn derive_channel_psk(
     my_device_name: &str,
-    my_serial: &str,
     peer_device_name: &str,
-    peer_serial: &str,
     shared_passphrase: &str,
 ) -> Result<[u8; 32], MeshGuardError> {
-    let my_identity = format!("{}:{}", my_device_name.trim(), my_serial.trim());
-    let peer_identity = format!("{}:{}", peer_device_name.trim(), peer_serial.trim());
+    let my_name = my_device_name.trim();
+    let peer_name = peer_device_name.trim();
 
-    let (first, second) = if my_identity <= peer_identity {
-        (&my_identity, &peer_identity)
+    let (first, second) = if my_name <= peer_name {
+        (my_name, peer_name)
     } else {
-        (&peer_identity, &my_identity)
+        (peer_name, my_name)
     };
 
     let mut hasher = Sha256::new();
@@ -141,15 +137,15 @@ mod tests {
     fn p2p_key_derivation_is_symmetric() {
         // Alice's side
         let alice_key = derive_p2p_key(
-            "Alice-P1000", "ABCD1234",
-            "Bob-P1000", "EFGH5678",
+            "Alice-P1000",
+            "Bob-P1000",
             "our-secret-phrase",
         ).unwrap();
 
         // Bob's side — same inputs but swapped my/peer
         let bob_key = derive_p2p_key(
-            "Bob-P1000", "EFGH5678",
-            "Alice-P1000", "ABCD1234",
+            "Bob-P1000",
+            "Alice-P1000",
             "our-secret-phrase",
         ).unwrap();
 
@@ -163,14 +159,14 @@ mod tests {
     #[test]
     fn channel_psk_is_symmetric() {
         let psk_a = derive_channel_psk(
-            "Alice-P1000", "ABCD1234",
-            "Bob-P1000", "EFGH5678",
+            "Alice-P1000",
+            "Bob-P1000",
             "our-secret",
         ).unwrap();
 
         let psk_b = derive_channel_psk(
-            "Bob-P1000", "EFGH5678",
-            "Alice-P1000", "ABCD1234",
+            "Bob-P1000",
+            "Alice-P1000",
             "our-secret",
         ).unwrap();
 
@@ -179,8 +175,8 @@ mod tests {
 
     #[test]
     fn different_passphrase_gives_different_key() {
-        let key_a = derive_p2p_key("A", "1", "B", "2", "pass1").unwrap();
-        let key_b = derive_p2p_key("A", "1", "B", "2", "pass2").unwrap();
+        let key_a = derive_p2p_key("A", "B", "pass1").unwrap();
+        let key_b = derive_p2p_key("A", "B", "pass2").unwrap();
 
         let msg = b"test";
         let encrypted = key_a.encrypt(msg).unwrap();

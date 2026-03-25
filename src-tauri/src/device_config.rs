@@ -10,9 +10,6 @@ pub struct DeviceConfig {
     /// Human-readable device name (e.g. "Alice-P1000").
     pub device_name: String,
 
-    /// Device serial number (printed on the device or shown in Meshtastic info).
-    pub device_serial: String,
-
     /// Radio configuration.
     pub radio: RadioConfig,
 
@@ -51,7 +48,7 @@ pub struct ChannelConfig {
     /// Private channel name — auto-generated from pairing, but editable.
     pub name: String,
 
-    /// 256-bit PSK — derived from the P2P pairing (device names + serial + passphrase).
+    /// 256-bit PSK — derived from the P2P pairing (device names + passphrase).
     /// This is written to the Meshtastic device so LoRa frames are encrypted at the mesh layer.
     #[serde(with = "hex_bytes")]
     pub psk: [u8; 32],
@@ -117,9 +114,6 @@ pub enum ModemPreset {
 pub struct PeerConfig {
     /// Peer's device name.
     pub device_name: String,
-
-    /// Peer's device serial.
-    pub device_serial: String,
 
     /// Shared passphrase — agreed upon by both users (in person, phone, etc).
     pub shared_passphrase: String,

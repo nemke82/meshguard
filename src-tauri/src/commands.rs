@@ -107,7 +107,6 @@ async fn do_scan_devices<R: Runtime>(
 #[serde(rename_all = "camelCase")]
 pub struct DeviceConfigInput {
     pub device_name: String,
-    pub device_serial: String,
     pub ble_address: String,
     pub region: String,
     pub modem_preset: String,
@@ -139,14 +138,12 @@ pub async fn save_device_config(
     let device = config.device.get_or_insert_with(|| DeviceConfig {
         ble_address: String::new(),
         device_name: String::new(),
-        device_serial: String::new(),
         radio: RadioConfig::default(),
         channel: crate::device_config::ChannelConfig::default(),
     });
 
     device.ble_address = input.ble_address;
     device.device_name = input.device_name;
-    device.device_serial = input.device_serial;
     device.radio.region = region;
     device.radio.modem_preset = modem;
     device.radio.tx_power = input.tx_power;
@@ -198,11 +195,10 @@ pub async fn remove_device(state: State<'_, AppState>) -> Result<(), MeshGuardEr
 
 // ── P2P Pairing ───────────────────────────────────────────────
 
-/// Set up P2P pairing — enter peer device name, serial, and shared passphrase.
+/// Set up P2P pairing — enter peer device name and shared passphrase.
 #[tauri::command]
 pub async fn setup_peer(
     peer_device_name: String,
-    peer_device_serial: String,
     shared_passphrase: String,
     state: State<'_, AppState>,
 ) -> Result<(), MeshGuardError> {
@@ -217,17 +213,13 @@ pub async fn setup_peer(
 
     let psk = crypto::derive_channel_psk(
         &device.device_name,
-        &device.device_serial,
         &peer_device_name,
-        &peer_device_serial,
         &shared_passphrase,
     )?;
 
     let session_key = crypto::derive_p2p_key(
         &device.device_name,
-        &device.device_serial,
         &peer_device_name,
-        &peer_device_serial,
         &shared_passphrase,
     )?;
 
@@ -240,7 +232,6 @@ pub async fn setup_peer(
 
     config.peer = Some(PeerConfig {
         device_name: peer_device_name,
-        device_serial: peer_device_serial,
         shared_passphrase: String::new(),
     });
 

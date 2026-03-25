@@ -210,7 +210,6 @@ btnRemoveDevice.addEventListener("click", async () => {
     deviceLockedBanner.style.display = "none";
     formDevice.style.display = "";
     $("#device-name").value = "";
-    $("#device-serial").value = "";
     bleAddressInput.value = "";
     state.selectedBleAddress = "";
     scanResults.innerHTML = "";
@@ -242,7 +241,6 @@ formDevice.addEventListener("submit", async (e) => {
     await invoke("save_device_config", {
       input: {
         deviceName: $("#device-name").value.trim(),
-        deviceSerial: $("#device-serial").value.trim(),
         bleAddress: bleAddr,
         region: $("#region").value,
         modemPreset: $("#modem-preset").value,
@@ -272,13 +270,11 @@ formPairing.addEventListener("submit", async (e) => {
   btn.innerHTML = '<span class="spinner"></span> Deriving keys...';
 
   const peerName = $("#peer-name").value.trim();
-  const peerSerial = $("#peer-serial").value.trim();
   const passphrase = $("#shared-passphrase").value;
 
   try {
     await invoke("setup_peer", {
       peerDeviceName: peerName,
-      peerDeviceSerial: peerSerial,
       sharedPassphrase: passphrase,
     });
 
@@ -438,7 +434,6 @@ async function init() {
 
       // Fill form with existing values (for editing)
       $("#device-name").value = device.device_name || "";
-      $("#device-serial").value = device.device_serial || "";
       bleAddressInput.value = device.ble_address || "";
       state.selectedBleAddress = device.ble_address || "";
       if (device.radio) {
@@ -463,7 +458,6 @@ async function init() {
 
       if (peer) {
         $("#peer-name").value = peer.device_name || "";
-        $("#peer-serial").value = peer.device_serial || "";
         showScreen(screenPairing);
         return;
       }
