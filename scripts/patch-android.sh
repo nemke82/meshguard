@@ -276,7 +276,7 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
     @SuppressLint("MissingPermission")
     @Command
     fun bondDevice(invoke: Invoke) {
-        val addressStr: String = invoke.getString("address", "") ?: ""
+        val addressStr: String = invoke.getArgs().getString("address", "") ?: ""
         if (addressStr.isEmpty()) {
             invoke.reject("No device address provided.")
             return
