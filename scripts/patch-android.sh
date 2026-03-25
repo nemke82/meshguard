@@ -99,18 +99,20 @@ cat > "$PLUGIN_DIR/BlePlugin.kt" << 'KOTLIN'
 package com.meshguard.app
 
 import android.annotation.SuppressLint
+import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
-import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import android.os.ParcelUuid
 import android.util.Log
 import androidx.core.content.ContextCompat
 import app.tauri.annotation.Command
@@ -160,7 +162,6 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
             return
         }
 
-        // Check permissions
         if (!hasScanPermission()) {
             result.put("adapter_found", true)
             result.put("powered_on", false)
@@ -216,8 +217,6 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
                 } ?: result.scanRecord?.deviceName ?: ""
 
                 val isMeshtastic = isMeshtasticDevice(name, result)
-
-                // Only include Meshtastic devices
                 if (!isMeshtastic) return
 
                 val displayName = name.ifEmpty { "Meshtastic Device" }
@@ -228,7 +227,6 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
                 device.put("rssi", result.rssi)
                 device.put("is_meshtastic", true)
 
-                // Keep strongest signal per address
                 val existing = foundDevices[address]
                 if (existing == null || result.rssi > existing.optInt("rssi", -999)) {
                     foundDevices[address] = device
@@ -240,14 +238,11 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
             }
         }
 
-        // Scan with both: service UUID filter AND general scan (some devices
-        // don't advertise the service UUID in their scan response)
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
 
         try {
-            // Start general scan (filter by name in callback)
             scanner.startScan(null, settings, callback)
             Log.d(TAG, "BLE scan started")
         } catch (e: SecurityException) {
@@ -255,7 +250,6 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
             return
         }
 
-        // Stop after 5 seconds and return results
         Handler(Looper.getMainLooper()).postDelayed({
             try {
                 scanner.stopScan(callback)
@@ -263,9 +257,7 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
                 Log.w(TAG, "Could not stop scan: ${e.message}")
             }
 
-            // Sort by RSSI (strongest first)
             val sorted = foundDevices.values.sortedByDescending { it.optInt("rssi", -100) }
-
             val devicesArray = JSONArray()
             for (d in sorted) {
                 devicesArray.put(d)
@@ -279,10 +271,114 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
         }, 5000)
     }
 
+    // ── bond_device — trigger system BLE pairing dialog ─────────
+
+    @SuppressLint("MissingPermission")
+    @Command
+    fun bondDevice(invoke: Invoke) {
+        val address = invoke.getString("address")
+        if (address.isNullOrEmpty()) {
+            invoke.reject("No device address provided.")
+            return
+        }
+
+        val btManager = activity.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+        val adapter = btManager?.adapter
+        if (adapter == null) {
+            invoke.reject("No Bluetooth adapter found.")
+            return
+        }
+
+        if (!hasConnectPermission()) {
+            val result = JSObject()
+            result.put("success", false)
+            result.put("message", "BLUETOOTH_CONNECT permission not granted.")
+            invoke.resolve(result)
+            return
+        }
+
+        val remoteDevice: BluetoothDevice
+        try {
+            remoteDevice = adapter.getRemoteDevice(address)
+        } catch (e: IllegalArgumentException) {
+            invoke.reject("Invalid Bluetooth address: $address")
+            return
+        }
+
+        // Already bonded?
+        if (remoteDevice.bondState == BluetoothDevice.BOND_BONDED) {
+            val result = JSObject()
+            result.put("success", true)
+            result.put("message", "Device is already paired.")
+            invoke.resolve(result)
+            return
+        }
+
+        // Register receiver to listen for bond state changes
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                if (intent.action != BluetoothDevice.ACTION_BOND_STATE_CHANGED) return
+                val device = intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE)
+                    ?: return
+                if (device.address != address) return
+
+                val bondState = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE)
+                val prevState = intent.getIntExtra(BluetoothDevice.EXTRA_PREVIOUS_BOND_STATE, BluetoothDevice.BOND_NONE)
+
+                Log.d(TAG, "Bond state changed: $prevState -> $bondState for ${device.address}")
+
+                when (bondState) {
+                    BluetoothDevice.BOND_BONDED -> {
+                        try { activity.unregisterReceiver(this) } catch (_: Exception) {}
+                        val result = JSObject()
+                        result.put("success", true)
+                        result.put("message", "Device paired successfully.")
+                        invoke.resolve(result)
+                    }
+                    BluetoothDevice.BOND_NONE -> {
+                        if (prevState == BluetoothDevice.BOND_BONDING) {
+                            try { activity.unregisterReceiver(this) } catch (_: Exception) {}
+                            val result = JSObject()
+                            result.put("success", false)
+                            result.put("message", "Pairing was rejected or failed.")
+                            invoke.resolve(result)
+                        }
+                    }
+                }
+            }
+        }
+
+        val filter = IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
+        activity.registerReceiver(receiver, filter)
+
+        // Initiate bonding — this shows the system pairing dialog
+        val started = remoteDevice.createBond()
+        if (!started) {
+            try { activity.unregisterReceiver(receiver) } catch (_: Exception) {}
+            val result = JSObject()
+            result.put("success", false)
+            result.put("message", "Failed to initiate pairing. Try again.")
+            invoke.resolve(result)
+            return
+        }
+
+        Log.d(TAG, "Bonding initiated for $address — waiting for system dialog...")
+
+        // Timeout after 30 seconds
+        Handler(Looper.getMainLooper()).postDelayed({
+            try { activity.unregisterReceiver(receiver) } catch (_: Exception) {}
+            if (remoteDevice.bondState != BluetoothDevice.BOND_BONDED) {
+                val result = JSObject()
+                result.put("success", false)
+                result.put("message", "Pairing timed out. Please try again.")
+                invoke.resolve(result)
+            }
+        }, 30000)
+    }
+
     // ── Helpers ─────────────────────────────────────────────────
 
     private fun isMeshtasticDevice(name: String, result: ScanResult): Boolean {
-        // Check service UUIDs
         val serviceUuids = result.scanRecord?.serviceUuids
         if (serviceUuids != null) {
             for (uuid in serviceUuids) {
@@ -290,7 +386,6 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
             }
         }
 
-        // Check name
         val lower = name.lowercase()
         for (hint in MESHTASTIC_NAME_HINTS) {
             if (lower.contains(hint)) return true
@@ -301,15 +396,22 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
 
     private fun hasScanPermission(): Boolean {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            // Android 12+
             return ContextCompat.checkSelfPermission(
                 activity, android.Manifest.permission.BLUETOOTH_SCAN
             ) == PackageManager.PERMISSION_GRANTED
         }
-        // Below Android 12 — location permission needed for BLE scan
         return ContextCompat.checkSelfPermission(
             activity, android.Manifest.permission.ACCESS_FINE_LOCATION
         ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun hasConnectPermission(): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            return ContextCompat.checkSelfPermission(
+                activity, android.Manifest.permission.BLUETOOTH_CONNECT
+            ) == PackageManager.PERMISSION_GRANTED
+        }
+        return true
     }
 }
 KOTLIN

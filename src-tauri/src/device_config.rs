@@ -10,6 +10,10 @@ pub struct DeviceConfig {
     /// Human-readable device name (e.g. "Alice-P1000").
     pub device_name: String,
 
+    /// Whether the device has been BLE-bonded (paired).
+    #[serde(default)]
+    pub bonded: bool,
+
     /// Radio configuration.
     pub radio: RadioConfig,
 
@@ -109,21 +113,23 @@ pub enum ModemPreset {
     ShortFast,
 }
 
-/// P2P pairing configuration — the info both sides exchange out-of-band.
+/// P2P peer configuration — one per conversation partner.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerConfig {
+    /// Unique peer ID (auto-generated UUID).
+    pub id: String,
+
     /// Peer's device name.
     pub device_name: String,
-
-    /// Shared passphrase — agreed upon by both users (in person, phone, etc).
-    pub shared_passphrase: String,
 }
 
 /// Persisted app configuration — saved to disk.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppConfig {
     pub device: Option<DeviceConfig>,
-    pub peer: Option<PeerConfig>,
+    /// Multiple peers — each is a separate conversation.
+    #[serde(default)]
+    pub peers: Vec<PeerConfig>,
 }
 
 impl AppConfig {

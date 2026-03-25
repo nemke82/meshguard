@@ -122,9 +122,9 @@
       </div>
 
       <!-- ═══════════════════════════════════════════════
-           Screen 2: P2P Pairing
+           Screen 2: Peers — manage conversations
            ═══════════════════════════════════════════════ -->
-      <div id="screen-pairing" class="screen">
+      <div id="screen-peers" class="screen">
         <div class="screen-scroll">
           <div class="screen-header">
             <div class="lock-icon">
@@ -132,14 +132,20 @@
                 <path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2z"/>
               </svg>
             </div>
-            <h1 class="logo-title">P2P Pairing</h1>
-            <p class="tagline">Enter your peer's device info and a shared secret</p>
+            <h1 class="logo-title">Conversations</h1>
+            <p class="tagline">Add peers to start secure P2P chats</p>
           </div>
 
-          <form id="form-pairing" class="form-card">
+          <!-- Existing peers list -->
+          <div id="peers-list" class="peers-list"></div>
+
+          <!-- Add new peer form -->
+          <form id="form-add-peer" class="form-card">
+            <h2 class="section-title">Add New Peer</h2>
+
             <div class="pairing-info">
-              <p>Both you and your peer must enter each other's device name and serial, plus a <strong>shared passphrase</strong> you agreed on (in person, phone call, etc).</p>
-              <p>This derives a unique encryption key — no data is exchanged over the mesh to set up the session.</p>
+              <p>Enter your peer's <strong>device name</strong> and a <strong>shared passphrase</strong> you both agreed on (in person, phone call, etc).</p>
+              <p>Both sides must use the same passphrase — it derives the encryption key locally.</p>
             </div>
 
             <label class="field">
@@ -157,7 +163,39 @@
             <div class="btn-group">
               <button type="button" id="btn-back-setup" class="btn btn-secondary">Back</button>
               <button type="submit" class="btn btn-primary btn-glow">
-                Establish Secure Session
+                Add Peer
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- ═══════════════════════════════════════════════
+           Screen 2b: Enter passphrase for existing peer
+           ═══════════════════════════════════════════════ -->
+      <div id="screen-unlock" class="screen">
+        <div class="screen-scroll">
+          <div class="screen-header">
+            <div class="lock-icon">
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2z"/>
+              </svg>
+            </div>
+            <h1 class="logo-title">Unlock Chat</h1>
+            <p class="tagline" id="unlock-peer-label">Enter passphrase for peer</p>
+          </div>
+
+          <form id="form-unlock" class="form-card">
+            <label class="field">
+              <span class="field-label">Shared Passphrase</span>
+              <input type="password" id="unlock-passphrase" placeholder="Enter the shared passphrase" required minlength="8" />
+              <span class="field-hint">Same passphrase you used when adding this peer</span>
+            </label>
+
+            <div class="btn-group">
+              <button type="button" id="btn-back-peers" class="btn btn-secondary">Back</button>
+              <button type="submit" class="btn btn-primary btn-glow">
+                Unlock
               </button>
             </div>
           </form>
@@ -169,7 +207,7 @@
            ═══════════════════════════════════════════════ -->
       <div id="screen-chat" class="screen">
         <header class="chat-header">
-          <button id="btn-back-pairing" class="btn-icon-only" title="Settings">
+          <button id="btn-back-peers-chat" class="btn-icon-only" title="Back to conversations">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
             </svg>

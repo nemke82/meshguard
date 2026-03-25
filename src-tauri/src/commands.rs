@@ -100,6 +100,82 @@ async fn do_scan_devices<R: Runtime>(
     })
 }
 
+// ── BLE Bonding ──────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize)]
+pub struct BondResult {
+    pub success: bool,
+    pub message: String,
+}
+
+/// Bond (pair) with a Meshtastic device via BLE.
+/// On Android this triggers the system pairing dialog.
+/// On desktop, bonding happens automatically during connect.
+#[tauri::command]
+pub async fn bond_device<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    address: String,
+    state: State<'_, AppState>,
+) -> Result<BondResult, MeshGuardError> {
+    do_bond_device(app, address, state).await
+}
+
+#[cfg(target_os = "android")]
+async fn do_bond_device<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    address: String,
+    state: State<'_, AppState>,
+) -> Result<BondResult, MeshGuardError> {
+    use tauri::Manager;
+    #[derive(Serialize)]
+    struct BondArgs {
+        address: String,
+    }
+    let result: BondResult = app
+        .state::<crate::ble_plugin::BlePluginState<R>>()
+        .0
+        .run_mobile_plugin("bondDevice", BondArgs { address: address.clone() })
+        .map_err(|e| MeshGuardError::Ble(format!("Android BLE bond: {e}")))?;
+
+    if result.success {
+        let mut config = state.config.lock().await;
+        if let Some(ref mut dev) = config.device {
+            dev.bonded = true;
+        }
+        config.save(&state.config_dir)?;
+    }
+    Ok(result)
+}
+
+#[cfg(not(target_os = "android"))]
+async fn do_bond_device<R: Runtime>(
+    _app: tauri::AppHandle<R>,
+    address: String,
+    state: State<'_, AppState>,
+) -> Result<BondResult, MeshGuardError> {
+    // On desktop, btleplug handles bonding during connect().
+    // We try connecting to verify the device is reachable and bonding works.
+    let ble = BleManager::new().await?;
+    match ble.connect_to_address(&address).await {
+        Ok(_) => {
+            let _ = ble.disconnect().await;
+            let mut config = state.config.lock().await;
+            if let Some(ref mut dev) = config.device {
+                dev.bonded = true;
+            }
+            config.save(&state.config_dir)?;
+            Ok(BondResult {
+                success: true,
+                message: "Device paired successfully.".into(),
+            })
+        }
+        Err(e) => Ok(BondResult {
+            success: false,
+            message: format!("Pairing failed: {}", e),
+        }),
+    }
+}
+
 // ── Device Setup ──────────────────────────────────────────────
 
 /// Input for save_device_config command.
@@ -114,8 +190,8 @@ pub struct DeviceConfigInput {
     pub hop_limit: u8,
 }
 
-/// Save local device configuration (name, serial, BLE address, radio settings).
-/// Rejects if a device is already configured — only one device allowed.
+/// Save local device configuration.
+/// Rejects if a different device is already configured — only one device allowed.
 #[tauri::command]
 pub async fn save_device_config(
     input: DeviceConfigInput,
@@ -138,6 +214,7 @@ pub async fn save_device_config(
     let device = config.device.get_or_insert_with(|| DeviceConfig {
         ble_address: String::new(),
         device_name: String::new(),
+        bonded: false,
         radio: RadioConfig::default(),
         channel: crate::device_config::ChannelConfig::default(),
     });
@@ -180,28 +257,30 @@ pub async fn remove_device(state: State<'_, AppState>) -> Result<(), MeshGuardEr
     *ble = None;
     drop(ble);
 
-    // Clear session key
-    *state.session_key.lock().await = None;
+    // Clear all session keys
+    state.session_keys.lock().await.clear();
+    *state.active_peer_id.lock().await = None;
 
-    // Remove device and peer from config
+    // Remove device and all peers from config
     let mut config = state.config.lock().await;
     config.device = None;
-    config.peer = None;
+    config.peers.clear();
     config.save(&state.config_dir)?;
 
     tracing::info!("Device removed — ready for new device setup");
     Ok(())
 }
 
-// ── P2P Pairing ───────────────────────────────────────────────
+// ── Multi-Peer Management ─────────────────────────────────────
 
-/// Set up P2P pairing — enter peer device name and shared passphrase.
+/// Add a new peer and derive the session key.
+/// Returns the peer's ID for future reference.
 #[tauri::command]
-pub async fn setup_peer(
+pub async fn add_peer(
     peer_device_name: String,
     shared_passphrase: String,
     state: State<'_, AppState>,
-) -> Result<(), MeshGuardError> {
+) -> Result<PeerConfig, MeshGuardError> {
     let mut config = state.config.lock().await;
 
     let device = config
@@ -211,11 +290,12 @@ pub async fn setup_peer(
             "configure your local device first".into(),
         ))?;
 
-    let psk = crypto::derive_channel_psk(
-        &device.device_name,
-        &peer_device_name,
-        &shared_passphrase,
-    )?;
+    // Check for duplicate peer name
+    if config.peers.iter().any(|p| p.device_name == peer_device_name) {
+        return Err(MeshGuardError::InvalidConfig(
+            format!("A peer named '{}' already exists.", peer_device_name),
+        ));
+    }
 
     let session_key = crypto::derive_p2p_key(
         &device.device_name,
@@ -223,32 +303,122 @@ pub async fn setup_peer(
         &shared_passphrase,
     )?;
 
+    let peer_id = uuid::Uuid::new_v4().to_string();
+    let peer = PeerConfig {
+        id: peer_id.clone(),
+        device_name: peer_device_name.clone(),
+    };
+
+    config.peers.push(peer.clone());
+    config.save(&state.config_dir)?;
+
+    // Store session key in memory
+    state.session_keys.lock().await.insert(peer_id.clone(), session_key);
+
+    // Auto-select as active peer
+    *state.active_peer_id.lock().await = Some(peer_id);
+
+    // Update channel PSK for the new active peer
+    let psk = crypto::derive_channel_psk(
+        &config.device.as_ref().unwrap().device_name,
+        &peer_device_name,
+        &shared_passphrase,
+    )?;
     if let Some(ref mut dev) = config.device {
         dev.channel.psk = psk;
         dev.channel.name = format!("MG-{}", &peer_device_name.chars().take(6).collect::<String>());
         dev.channel.uplink = false;
         dev.channel.downlink = false;
     }
-
-    config.peer = Some(PeerConfig {
-        device_name: peer_device_name,
-        shared_passphrase: String::new(),
-    });
-
     config.save(&state.config_dir)?;
-    *state.session_key.lock().await = Some(session_key);
 
-    tracing::info!("P2P pairing complete — session key derived");
+    tracing::info!("Peer added: {} — session key derived", peer_device_name);
+    Ok(peer)
+}
+
+/// Remove a peer by ID.
+#[tauri::command]
+pub async fn remove_peer(
+    peer_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), MeshGuardError> {
+    let mut config = state.config.lock().await;
+    config.peers.retain(|p| p.id != peer_id);
+    config.save(&state.config_dir)?;
+
+    // Remove session key
+    state.session_keys.lock().await.remove(&peer_id);
+
+    // Clear active peer if it was the removed one
+    let mut active = state.active_peer_id.lock().await;
+    if active.as_deref() == Some(&peer_id) {
+        *active = None;
+    }
+
+    tracing::info!("Peer removed: {}", peer_id);
     Ok(())
 }
 
-/// Get current peer config (without passphrase).
+/// List all configured peers.
 #[tauri::command]
-pub async fn get_peer_config(
+pub async fn list_peers(
     state: State<'_, AppState>,
-) -> Result<Option<PeerConfig>, MeshGuardError> {
+) -> Result<Vec<PeerConfig>, MeshGuardError> {
     let config = state.config.lock().await;
-    Ok(config.peer.clone())
+    Ok(config.peers.clone())
+}
+
+/// Activate a peer for messaging. Requires passphrase to derive session key
+/// if not already in memory.
+#[tauri::command]
+pub async fn activate_peer(
+    peer_id: String,
+    shared_passphrase: String,
+    state: State<'_, AppState>,
+) -> Result<(), MeshGuardError> {
+    let config = state.config.lock().await;
+
+    let device = config
+        .device
+        .as_ref()
+        .ok_or(MeshGuardError::InvalidConfig("no device configured".into()))?;
+
+    let peer = config
+        .peers
+        .iter()
+        .find(|p| p.id == peer_id)
+        .ok_or(MeshGuardError::InvalidConfig("peer not found".into()))?;
+
+    let session_key = crypto::derive_p2p_key(
+        &device.device_name,
+        &peer.device_name,
+        &shared_passphrase,
+    )?;
+
+    state.session_keys.lock().await.insert(peer_id.clone(), session_key);
+    *state.active_peer_id.lock().await = Some(peer_id);
+
+    tracing::info!("Peer activated: {}", peer.device_name);
+    Ok(())
+}
+
+/// Check if a peer has an active session key in memory.
+#[tauri::command]
+pub async fn peer_has_session(
+    peer_id: String,
+    state: State<'_, AppState>,
+) -> Result<bool, MeshGuardError> {
+    let keys = state.session_keys.lock().await;
+    Ok(keys.contains_key(&peer_id))
+}
+
+/// Get the currently active peer ID.
+#[tauri::command]
+pub async fn get_active_peer(
+    state: State<'_, AppState>,
+) -> Result<Option<String>, MeshGuardError> {
+    let active = state.active_peer_id.lock().await;
+    Ok(active.clone())
 }
 
 // ── Connection ────────────────────────────────────────────────
@@ -267,7 +437,6 @@ pub async fn connect_local_device(
     drop(config);
 
     let mut ble = state.ble.lock().await;
-    // Reuse existing manager if available, otherwise create new
     if ble.is_none() {
         *ble = Some(BleManager::new().await?);
     }
@@ -324,14 +493,17 @@ pub async fn apply_config_to_device(
 
 // ── Messaging ─────────────────────────────────────────────────
 
-/// Send an encrypted message to the peer via the Meshtastic mesh.
+/// Send an encrypted message to the active peer via the Meshtastic mesh.
 #[tauri::command]
 pub async fn send_message(
     text: String,
     state: State<'_, AppState>,
 ) -> Result<(), MeshGuardError> {
-    let session = state.session_key.lock().await;
-    let session_key = session.as_ref().ok_or(MeshGuardError::NoSession)?;
+    let active_peer = state.active_peer_id.lock().await;
+    let peer_id = active_peer.as_ref().ok_or(MeshGuardError::NoSession)?;
+
+    let keys = state.session_keys.lock().await;
+    let session_key = keys.get(peer_id).ok_or(MeshGuardError::NoSession)?;
 
     let msg = crate::protocol::MeshMessage::new_text(&text, session_key)?;
     let data = msg.to_bytes()?;
@@ -341,11 +513,16 @@ pub async fn send_message(
     manager.write_to_radio(&data).await
 }
 
-/// Check if a P2P session is active (keys derived).
+/// Check if any P2P session is active (active peer with derived key).
 #[tauri::command]
 pub async fn has_session(state: State<'_, AppState>) -> Result<bool, MeshGuardError> {
-    let session = state.session_key.lock().await;
-    Ok(session.is_some())
+    let active = state.active_peer_id.lock().await;
+    if let Some(peer_id) = active.as_ref() {
+        let keys = state.session_keys.lock().await;
+        Ok(keys.contains_key(peer_id))
+    } else {
+        Ok(false)
+    }
 }
 
 // ── Helpers ───────────────────────────────────────────────────
