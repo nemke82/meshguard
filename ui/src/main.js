@@ -1,6 +1,18 @@
 const { invoke } = window.__TAURI__.core;
 
 // ============================================================
+// Helpers — invoke with timeout (prevents UI from hanging)
+// ============================================================
+function invokeWithTimeout(cmd, args, ms = 15000) {
+  return Promise.race([
+    invoke(cmd, args),
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`Command timed out after ${ms / 1000}s: ${cmd}`)), ms)
+    ),
+  ]);
+}
+
+// ============================================================
 // DOM
 // ============================================================
 const $ = (sel) => document.querySelector(sel);
@@ -62,7 +74,9 @@ btnScan.addEventListener("click", async () => {
   setScanStatusType("info");
 
   try {
-    const btStatus = await invoke("plugin:ble-scanner|check_bluetooth");
+    console.log("[MeshGuard] Checking Bluetooth status...");
+    const btStatus = await invokeWithTimeout("plugin:ble-scanner|check_bluetooth", undefined, 10000);
+    console.log("[MeshGuard] Bluetooth status:", JSON.stringify(btStatus));
 
     if (!btStatus.adapter_found) {
       setScanStatusType("error");
@@ -93,8 +107,9 @@ btnScan.addEventListener("click", async () => {
   scanStatus.textContent = "Searching for nearby Meshtastic devices...";
 
   try {
-    const scanResult = await invoke("plugin:ble-scanner|scan_devices");
-    // Desktop (Rust) returns { devices: [...] }, Android (Kotlin) also returns { devices: [...] }
+    console.log("[MeshGuard] Starting BLE scan...");
+    const scanResult = await invokeWithTimeout("plugin:ble-scanner|scan_devices", undefined, 20000);
+    console.log("[MeshGuard] Scan result:", JSON.stringify(scanResult));
     const devices = scanResult.devices || scanResult || [];
 
     if (devices.length === 0) {
