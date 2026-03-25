@@ -276,8 +276,8 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
     @SuppressLint("MissingPermission")
     @Command
     fun bondDevice(invoke: Invoke) {
-        val address = invoke.getString("address")
-        if (address.isNullOrEmpty()) {
+        val addressStr: String = invoke.getString("address", "") ?: ""
+        if (addressStr.isEmpty()) {
             invoke.reject("No device address provided.")
             return
         }
@@ -299,9 +299,9 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
 
         val remoteDevice: BluetoothDevice
         try {
-            remoteDevice = adapter.getRemoteDevice(address)
+            remoteDevice = adapter.getRemoteDevice(addressStr)
         } catch (e: IllegalArgumentException) {
-            invoke.reject("Invalid Bluetooth address: $address")
+            invoke.reject("Invalid Bluetooth address: $addressStr")
             return
         }
 
@@ -318,9 +318,14 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
                 if (intent.action != BluetoothDevice.ACTION_BOND_STATE_CHANGED) return
-                val device = intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE)
-                    ?: return
-                if (device.address != address) return
+                val device: BluetoothDevice? = if (Build.VERSION.SDK_INT >= 33) {
+                    intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+                }
+                if (device == null) return
+                if (device.address != addressStr) return
 
                 val bondState = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE)
                 val prevState = intent.getIntExtra(BluetoothDevice.EXTRA_PREVIOUS_BOND_STATE, BluetoothDevice.BOND_NONE)
@@ -362,7 +367,7 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
             return
         }
 
-        Log.d(TAG, "Bonding initiated for $address — waiting for system dialog...")
+        Log.d(TAG, "Bonding initiated for $addressStr — waiting for system dialog...")
 
         // Timeout after 30 seconds
         Handler(Looper.getMainLooper()).postDelayed({
