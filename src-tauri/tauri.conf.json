@@ -10,6 +10,7 @@
     "beforeBuildCommand": "cd ../ui && npm run build"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "title": "MeshGuard — Secure Mesh Messenger",

@@ -1,3 +1,7 @@
+if (!window.__TAURI__ || !window.__TAURI__.core) {
+  document.body.innerHTML = '<div style="color:red;padding:2em;font-family:monospace;">ERROR: Tauri bridge not loaded. Check withGlobalTauri in tauri.conf.json</div>';
+  throw new Error("Tauri bridge not available");
+}
 const { invoke } = window.__TAURI__.core;
 
 // ============================================================

@@ -291,7 +291,7 @@ jobs:
           mkdir -p release-artifacts
           RPM=$(find src-tauri/target/release/bundle/rpm -name "*.rpm" | head -1)
           if [ -n "$RPM" ]; then
-            cp "$RPM" "release-artifacts/meshguard-${FILEVER}.x86_64.rpm"
+            cp "$RPM" "release-artifacts/meshguard-${FILEVER}-x86_64.rpm"
           fi
 
       - name: Upload RPM artifact
@@ -405,7 +405,7 @@ jobs:
             |----------|------|
             | Android | `meshguard-*-android.apk` |
             | Ubuntu/Debian | `meshguard-*-amd64.deb` |
-            | RHEL/Fedora | `meshguard-*.x86_64.rpm` |
+            | RHEL/Fedora | `meshguard-*-x86_64.rpm` |
             | Linux (universal) | `meshguard-*-x86_64.AppImage` |
             | macOS (universal) | `meshguard-*-universal-macos.dmg` |
 
