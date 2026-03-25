@@ -23,11 +23,15 @@ jobs:
 
       - name: Set version from tag
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
-          echo "Setting version to $VERSION"
-          sed -i "s/\"version\": \".*\"/\"version\": \"$VERSION\"/" src-tauri/tauri.conf.json
-          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" src-tauri/Cargo.toml
-          grep version src-tauri/tauri.conf.json src-tauri/Cargo.toml
+          # Semver for Cargo/Tauri (strip leading zeros): v2026.03.25 → 2026.3.25
+          RAW=${GITHUB_REF_NAME#v}
+          MAJOR=$(echo "$RAW" | cut -d. -f1)
+          MINOR=$(echo "$RAW" | cut -d. -f2 | sed 's/^0*//' | sed 's/^$/0/')
+          PATCH=$(echo "$RAW" | cut -d. -f3 | sed 's/^0*//' | sed 's/^$/0/')
+          SEMVER="${MAJOR}.${MINOR}.${PATCH}"
+          echo "Setting semver to $SEMVER"
+          sed -i "s/\"version\": \".*\"/\"version\": \"$SEMVER\"/" src-tauri/tauri.conf.json
+          sed -i "s/^version = \".*\"/version = \"$SEMVER\"/" src-tauri/Cargo.toml
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
@@ -92,7 +96,9 @@ jobs:
       - name: Sign APK
         id: apk
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
+          # File name: YYYYMMDD format (no dots)
+          RAW=${GITHUB_REF_NAME#v}
+          FILEVER=$(echo "$RAW" | tr -d '.')
 
           # Find the unsigned APK
           UNSIGNED=$(find src-tauri/gen/android -name "*-unsigned.apk" -type f | head -1)
@@ -115,7 +121,7 @@ jobs:
             -v -p 4 "$UNSIGNED" "$ALIGNED"
 
           # Sign with apksigner
-          DEST="meshguard-${VERSION}-android.apk"
+          DEST="meshguard-${FILEVER}-android.apk"
           "${ANDROID_HOME}/build-tools/$(ls ${ANDROID_HOME}/build-tools/ | tail -1)/apksigner" sign \
             --ks /tmp/meshguard.jks \
             --ks-key-alias "$KEY_ALIAS" \
@@ -150,9 +156,13 @@ jobs:
 
       - name: Set version from tag
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
-          sed -i "s/\"version\": \".*\"/\"version\": \"$VERSION\"/" src-tauri/tauri.conf.json
-          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" src-tauri/Cargo.toml
+          RAW=${GITHUB_REF_NAME#v}
+          MAJOR=$(echo "$RAW" | cut -d. -f1)
+          MINOR=$(echo "$RAW" | cut -d. -f2 | sed 's/^0*//' | sed 's/^$/0/')
+          PATCH=$(echo "$RAW" | cut -d. -f3 | sed 's/^0*//' | sed 's/^$/0/')
+          SEMVER="${MAJOR}.${MINOR}.${PATCH}"
+          sed -i "s/\"version\": \".*\"/\"version\": \"$SEMVER\"/" src-tauri/tauri.conf.json
+          sed -i "s/^version = \".*\"/version = \"$SEMVER\"/" src-tauri/Cargo.toml
 
       - name: Install system dependencies
         run: |
@@ -194,20 +204,20 @@ jobs:
       - name: Collect artifacts
         id: artifacts
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
+          FILEVER=$(echo "${GITHUB_REF_NAME#v}" | tr -d '.')
           mkdir -p release-artifacts
 
           # .deb
           DEB=$(find src-tauri/target/release/bundle/deb -name "*.deb" | head -1)
           if [ -n "$DEB" ]; then
-            cp "$DEB" "release-artifacts/meshguard-${VERSION}-amd64.deb"
+            cp "$DEB" "release-artifacts/meshguard-${FILEVER}-amd64.deb"
           fi
 
           # .AppImage
           AI=$(find src-tauri/target/release/bundle/appimage -name "*.AppImage" | head -1)
           if [ -n "$AI" ]; then
-            cp "$AI" "release-artifacts/meshguard-${VERSION}-x86_64.AppImage"
-            chmod +x "release-artifacts/meshguard-${VERSION}-x86_64.AppImage"
+            cp "$AI" "release-artifacts/meshguard-${FILEVER}-x86_64.AppImage"
+            chmod +x "release-artifacts/meshguard-${FILEVER}-x86_64.AppImage"
           fi
 
       - name: Upload Linux artifacts
@@ -229,9 +239,13 @@ jobs:
 
       - name: Set version from tag
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
-          sed -i "s/\"version\": \".*\"/\"version\": \"$VERSION\"/" src-tauri/tauri.conf.json
-          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" src-tauri/Cargo.toml
+          RAW=${GITHUB_REF_NAME#v}
+          MAJOR=$(echo "$RAW" | cut -d. -f1)
+          MINOR=$(echo "$RAW" | cut -d. -f2 | sed 's/^0*//' | sed 's/^$/0/')
+          PATCH=$(echo "$RAW" | cut -d. -f3 | sed 's/^0*//' | sed 's/^$/0/')
+          SEMVER="${MAJOR}.${MINOR}.${PATCH}"
+          sed -i "s/\"version\": \".*\"/\"version\": \"$SEMVER\"/" src-tauri/tauri.conf.json
+          sed -i "s/^version = \".*\"/version = \"$SEMVER\"/" src-tauri/Cargo.toml
 
       - name: Install system dependencies
         run: |
@@ -273,11 +287,11 @@ jobs:
       - name: Collect RPM
         id: rpm
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
+          FILEVER=$(echo "${GITHUB_REF_NAME#v}" | tr -d '.')
           mkdir -p release-artifacts
           RPM=$(find src-tauri/target/release/bundle/rpm -name "*.rpm" | head -1)
           if [ -n "$RPM" ]; then
-            cp "$RPM" "release-artifacts/meshguard-${VERSION}.x86_64.rpm"
+            cp "$RPM" "release-artifacts/meshguard-${FILEVER}.x86_64.rpm"
           fi
 
       - name: Upload RPM artifact
@@ -297,9 +311,14 @@ jobs:
 
       - name: Set version from tag
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
-          sed -i '' "s/\"version\": \".*\"/\"version\": \"$VERSION\"/" src-tauri/tauri.conf.json
-          sed -i '' "s/^version = \".*\"/version = \"$VERSION\"/" src-tauri/Cargo.toml
+          RAW=${GITHUB_REF_NAME#v}
+          MAJOR=$(echo "$RAW" | cut -d. -f1)
+          MINOR=$(echo "$RAW" | cut -d. -f2 | sed 's/^0*//' | sed 's/^$/0/')
+          PATCH=$(echo "$RAW" | cut -d. -f3 | sed 's/^0*//' | sed 's/^$/0/')
+          SEMVER="${MAJOR}.${MINOR}.${PATCH}"
+          echo "Setting semver to $SEMVER"
+          sed -i '' "s/\"version\": \".*\"/\"version\": \"$SEMVER\"/" src-tauri/tauri.conf.json
+          sed -i '' "s/^version = \".*\"/version = \"$SEMVER\"/" src-tauri/Cargo.toml
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -331,11 +350,11 @@ jobs:
       - name: Collect artifacts
         id: artifacts
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
+          FILEVER=$(echo "${GITHUB_REF_NAME#v}" | tr -d '.')
           mkdir -p release-artifacts
           DMG=$(find src-tauri/target/universal-apple-darwin/release/bundle/dmg -name "*.dmg" | head -1)
           if [ -n "$DMG" ]; then
-            cp "$DMG" "release-artifacts/meshguard-${VERSION}-universal-macos.dmg"
+            cp "$DMG" "release-artifacts/meshguard-${FILEVER}-universal-macos.dmg"
           fi
 
       - name: Upload macOS artifacts
@@ -378,7 +397,7 @@ jobs:
           body: |
             ## MeshGuard ${{ github.ref_name }}
 
-            Secure peer-to-peer encrypted messenger for Meshtastic Sensecap P1000 devices.
+            Secure peer-to-peer encrypted messenger for Meshtastic devices.
 
             ### Downloads
 
