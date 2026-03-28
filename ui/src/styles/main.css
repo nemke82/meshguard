@@ -251,6 +251,57 @@ body {
   margin-top: 8px;
 }
 
+/* ── Connection Tabs ──────────────────────────────────────── */
+
+.conn-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 16px;
+  background: var(--bg-input);
+  border-radius: 10px;
+  padding: 3px;
+}
+
+.conn-tab {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 9px 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition);
+  font-family: inherit;
+}
+
+.conn-tab:hover {
+  color: var(--text-secondary);
+}
+
+.conn-tab.active {
+  background: var(--bg-tertiary);
+  color: var(--accent);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+}
+
+.conn-tab svg {
+  flex-shrink: 0;
+}
+
+.conn-tab-content {
+  display: none;
+}
+
+.conn-tab-content.active {
+  display: block;
+}
+
 /* ── BLE Scan ─────────────────────────────────────────────── */
 
 .btn-scan {

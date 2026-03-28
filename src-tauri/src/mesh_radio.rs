@@ -19,14 +19,30 @@ use tokio::sync::Mutex;
 use crate::error::MeshGuardError;
 use crate::state::MeshNodeInfo;
 
-/// Serializable BLE device info for the frontend.
+/// The BLE service UUID that all Meshtastic firmware advertises,
+/// regardless of device brand or custom name.
+const MESHTASTIC_SERVICE_UUID: uuid::Uuid =
+    uuid::Uuid::from_bytes([0x6b, 0xa1, 0xb2, 0x18, 0x15, 0xa8, 0x46, 0x1f,
+                            0x9f, 0xa8, 0x5d, 0xca, 0xe2, 0x73, 0xea, 0xfd]);
+
+/// Known name prefixes for Meshtastic-firmware devices.
+const MESHTASTIC_NAME_HINTS: &[&str] = &[
+    "meshtastic", "sensecap", "t1000", "rak", "heltec",
+    "tbeam", "t-beam", "tlora", "t-lora", "station-g",
+    "nano-g", "wio-tracker", "trackerd", "meshcore",
+];
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ScannedBleDevice {
     pub name: String,
     pub address: String,
 }
 
-/// Get the first BLE adapter and ensure no scan is running on it.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SerialPortInfo {
+    pub name: String,
+}
+
 async fn stop_any_active_scan() -> Result<(), MeshGuardError> {
     let manager = Manager::new()
         .await
@@ -42,13 +58,20 @@ async fn stop_any_active_scan() -> Result<(), MeshGuardError> {
     Ok(())
 }
 
+fn is_meshtastic_device(name: &str, services: &[uuid::Uuid]) -> bool {
+    if services.iter().any(|s| *s == MESHTASTIC_SERVICE_UUID) {
+        return true;
+    }
+    let lower = name.to_lowercase();
+    MESHTASTIC_NAME_HINTS.iter().any(|hint| lower.contains(hint))
+}
+
 /// Scan for nearby Meshtastic BLE devices.
 ///
-/// Uses btleplug directly (rather than the meshtastic crate's
-/// `available_ble_devices`) so we can:
-///   1. Filter results to only Meshtastic devices
-///   2. Explicitly stop the scan afterward (avoids BlueZ
-///      "Operation already in progress" when connecting later)
+/// Detects Meshtastic devices by the BLE service UUID
+/// (`6ba1b218-15a8-461f-9fa8-5dcae273eafd`) that all Meshtastic
+/// firmware advertises, plus name-pattern fallback for SenseCAP,
+/// RAK, Heltec, T-Beam, etc.
 pub async fn scan_ble_devices(timeout_secs: u64) -> Result<Vec<ScannedBleDevice>, MeshGuardError> {
     let manager = Manager::new()
         .await
@@ -62,7 +85,6 @@ pub async fn scan_ble_devices(timeout_secs: u64) -> Result<Vec<ScannedBleDevice>
         .next()
         .ok_or_else(|| MeshGuardError::Ble("No Bluetooth adapter found".into()))?;
 
-    // Stop any lingering scan from a previous invocation
     let _ = adapter.stop_scan().await;
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -78,7 +100,6 @@ pub async fn scan_ble_devices(timeout_secs: u64) -> Result<Vec<ScannedBleDevice>
         .await
         .map_err(|e| MeshGuardError::Ble(e.to_string()))?;
 
-    // Always stop the scan so the adapter is free for the next operation
     let _ = adapter.stop_scan().await;
 
     let mut devices = Vec::new();
@@ -88,8 +109,7 @@ pub async fn scan_ble_devices(timeout_secs: u64) -> Result<Vec<ScannedBleDevice>
                 Some(ref n) if !n.is_empty() => n.clone(),
                 _ => continue,
             };
-            // Only include Meshtastic devices
-            if !name.to_lowercase().contains("meshtastic") {
+            if !is_meshtastic_device(&name, &props.services) {
                 continue;
             }
             devices.push(ScannedBleDevice {
@@ -102,7 +122,18 @@ pub async fn scan_ble_devices(timeout_secs: u64) -> Result<Vec<ScannedBleDevice>
     Ok(devices)
 }
 
-/// Router that the meshtastic crate needs when sending packets.
+/// List available serial ports.
+pub fn list_serial_ports() -> Result<Vec<SerialPortInfo>, MeshGuardError> {
+    let ports = utils::stream::available_serial_ports()
+        .map_err(|e| MeshGuardError::Ble(format!("Serial port enumeration failed: {e}")))?;
+    Ok(ports
+        .into_iter()
+        .map(|name| SerialPortInfo { name })
+        .collect())
+}
+
+// ── PacketRouter ──────────────────────────────────────────────
+
 pub struct MeshGuardRouter {
     node_id: u32,
 }
@@ -144,35 +175,95 @@ impl PacketRouter<(), RouterError> for MeshGuardRouter {
     }
 }
 
-/// Wraps the meshtastic crate's ConnectedStreamApi to provide
-/// a simpler interface for MeshGuard.
+// ── MeshRadio ─────────────────────────────────────────────────
+
+/// Shared state refs passed to each connect method.
+pub struct ConnectParams {
+    pub app_handle: tauri::AppHandle,
+    pub mesh_nodes: Arc<Mutex<HashMap<u32, MeshNodeInfo>>>,
+    pub my_node_num: Arc<Mutex<Option<u32>>>,
+    pub my_device_name: Arc<Mutex<Option<String>>>,
+    pub session_keys: Arc<Mutex<HashMap<u32, crate::crypto::SessionKey>>>,
+    pub pending_pair_requests: Arc<Mutex<HashMap<u32, Vec<u8>>>>,
+}
+
 pub struct MeshRadio {
     api: ConnectedStreamApi<Configured>,
     router: MeshGuardRouter,
 }
 
-impl MeshRadio {
-    /// Connect to a Meshtastic device by BLE name and run the config handshake.
-    /// Returns the MeshRadio and a background listener handle.
-    pub async fn connect_ble(
-        ble_name: &str,
-        app_handle: tauri::AppHandle,
-        mesh_nodes: Arc<Mutex<HashMap<u32, MeshNodeInfo>>>,
-        my_node_num: Arc<Mutex<Option<u32>>>,
-        my_device_name: Arc<Mutex<Option<String>>>,
-        session_keys: Arc<Mutex<HashMap<u32, crate::crypto::SessionKey>>>,
-        pending_pair_requests: Arc<Mutex<HashMap<u32, Vec<u8>>>>,
-    ) -> Result<Self, MeshGuardError> {
-        emit_connection_state(&app_handle, "connecting");
+/// Run config handshake, collect NodeDB, spawn background listener.
+/// Called after stream_api.connect() for any transport.
+async fn run_config_and_listen(
+    configured_api: ConnectedStreamApi<Configured>,
+    decoded_listener: &mut meshtastic::packet::PacketReceiver,
+    p: &ConnectParams,
+) -> Result<(u32, ConnectedStreamApi<Configured>), MeshGuardError> {
+    emit_connection_state(&p.app_handle, "configuring");
 
-        // Stop any lingering BlueZ scan left over from the device-scan step.
-        // build_ble_stream starts its own scan internally; BlueZ only allows
-        // one active scan per adapter, so a stale scan causes
-        // "Operation already in progress" errors.
+    let mut found_node_num: Option<u32> = None;
+    let mut found_device_name: Option<String> = None;
+    let mut nodes: HashMap<u32, MeshNodeInfo> = HashMap::new();
+
+    loop {
+        match tokio::time::timeout(Duration::from_secs(5), decoded_listener.recv()).await {
+            Ok(Some(from_radio)) => {
+                if let Some(variant) = from_radio.payload_variant {
+                    match variant {
+                        PayloadVariant::MyInfo(my_info) => {
+                            found_node_num = Some(my_info.my_node_num);
+                            tracing::info!("My node num: {}", my_info.my_node_num);
+                        }
+                        PayloadVariant::NodeInfo(node_info) => {
+                            let node = node_info_to_mesh_node(&node_info);
+                            if Some(node.node_num) == found_node_num {
+                                if let Some(ref user) = node_info.user {
+                                    found_device_name = Some(user.long_name.clone());
+                                }
+                            }
+                            nodes.insert(node.node_num, node);
+                        }
+                        PayloadVariant::ConfigCompleteId(id) => {
+                            tracing::info!("Config complete (id={})", id);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Ok(None) => break,
+            Err(_) => break,
+        }
+    }
+
+    let node_num = found_node_num
+        .ok_or_else(|| MeshGuardError::MeshRadio("Radio did not report MyNodeInfo".into()))?;
+
+    nodes.remove(&node_num);
+
+    *p.mesh_nodes.lock().await = nodes;
+    *p.my_node_num.lock().await = Some(node_num);
+    *p.my_device_name.lock().await = found_device_name;
+
+    emit_connection_state(&p.app_handle, "connected");
+    let _ = p.app_handle.emit("mesh-nodes-updated", ());
+
+    Ok((node_num, configured_api))
+}
+
+impl MeshRadio {
+    fn from_configured(api: ConnectedStreamApi<Configured>, node_num: u32) -> Self {
+        Self {
+            api,
+            router: MeshGuardRouter::new(node_num),
+        }
+    }
+
+    /// Connect via Bluetooth LE.
+    pub async fn connect_ble(ble_name: &str, p: ConnectParams) -> Result<Self, MeshGuardError> {
+        emit_connection_state(&p.app_handle, "connecting");
         stop_any_active_scan().await?;
 
         let stream_api = StreamApi::new();
-
         let ble_stream =
             utils::stream::build_ble_stream(BleId::from_name(ble_name), Duration::from_secs(15))
                 .await
@@ -180,7 +271,34 @@ impl MeshRadio {
 
         let (mut decoded_listener, connected_api) = stream_api.connect(ble_stream).await;
 
-        emit_connection_state(&app_handle, "configuring");
+        let config_id = utils::generate_rand_id();
+        let configured_api = connected_api
+            .configure(config_id)
+            .await
+            .map_err(|e| MeshGuardError::MeshRadio(format!("Config handshake failed: {e}")))?;
+
+        let (node_num, configured_api) =
+            run_config_and_listen(configured_api, &mut decoded_listener, &p).await?;
+
+        spawn_listener(
+            decoded_listener, p.app_handle.clone(), p.mesh_nodes.clone(),
+            node_num, p.session_keys.clone(), p.pending_pair_requests.clone(),
+        );
+
+        Ok(Self::from_configured(configured_api, node_num))
+    }
+
+    /// Connect via TCP / WiFi.
+    pub async fn connect_tcp(address: &str, p: ConnectParams) -> Result<Self, MeshGuardError> {
+        emit_connection_state(&p.app_handle, "connecting");
+
+        let stream_api = StreamApi::new();
+        let tcp_stream =
+            utils::stream::build_tcp_stream(address.to_string())
+                .await
+                .map_err(|e| MeshGuardError::Ble(format!("TCP connect failed: {e}")))?;
+
+        let (mut decoded_listener, connected_api) = stream_api.connect(tcp_stream).await;
 
         let config_id = utils::generate_rand_id();
         let configured_api = connected_api
@@ -188,76 +306,45 @@ impl MeshRadio {
             .await
             .map_err(|e| MeshGuardError::MeshRadio(format!("Config handshake failed: {e}")))?;
 
-        // Drain the initial config/node dump from the radio.
-        // The meshtastic crate streams FromRadio packets through decoded_listener;
-        // we collect NodeInfo and MyNodeInfo during this phase.
-        let mut found_node_num: Option<u32> = None;
-        let mut found_device_name: Option<String> = None;
-        let mut nodes: HashMap<u32, MeshNodeInfo> = HashMap::new();
+        let (node_num, configured_api) =
+            run_config_and_listen(configured_api, &mut decoded_listener, &p).await?;
 
-        // Read packets with a timeout — once the stream goes quiet, config is done.
-        loop {
-            match tokio::time::timeout(Duration::from_secs(5), decoded_listener.recv()).await {
-                Ok(Some(from_radio)) => {
-                    if let Some(variant) = from_radio.payload_variant {
-                        match variant {
-                            PayloadVariant::MyInfo(my_info) => {
-                                found_node_num = Some(my_info.my_node_num);
-                                tracing::info!("My node num: {}", my_info.my_node_num);
-                            }
-                            PayloadVariant::NodeInfo(node_info) => {
-                                let node = node_info_to_mesh_node(&node_info);
-                                if Some(node.node_num) == found_node_num {
-                                    if let Some(ref user) = node_info.user {
-                                        found_device_name = Some(user.long_name.clone());
-                                    }
-                                }
-                                nodes.insert(node.node_num, node);
-                            }
-                            PayloadVariant::ConfigCompleteId(id) => {
-                                tracing::info!("Config complete (id={})", id);
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                Ok(None) => break,
-                Err(_) => break, // timeout — config dump is complete
-            }
-        }
-
-        let node_num = found_node_num
-            .ok_or_else(|| MeshGuardError::MeshRadio("Radio did not report MyNodeInfo".into()))?;
-
-        // Remove ourselves from the mesh nodes list
-        nodes.remove(&node_num);
-
-        // Store results
-        *mesh_nodes.lock().await = nodes.clone();
-        *my_node_num.lock().await = Some(node_num);
-        *my_device_name.lock().await = found_device_name;
-
-        // Spawn background listener for ongoing packets
         spawn_listener(
-            decoded_listener,
-            app_handle.clone(),
-            mesh_nodes,
-            node_num,
-            session_keys,
-            pending_pair_requests,
+            decoded_listener, p.app_handle.clone(), p.mesh_nodes.clone(),
+            node_num, p.session_keys.clone(), p.pending_pair_requests.clone(),
         );
 
-        emit_connection_state(&app_handle, "connected");
-
-        let _ = app_handle.emit("mesh-nodes-updated", ());
-
-        Ok(Self {
-            api: configured_api,
-            router: MeshGuardRouter::new(node_num),
-        })
+        Ok(Self::from_configured(configured_api, node_num))
     }
 
-    /// Send raw bytes on PortNum::PrivateApp to a specific node.
+    /// Connect via USB serial.
+    pub async fn connect_serial(port_name: &str, p: ConnectParams) -> Result<Self, MeshGuardError> {
+        emit_connection_state(&p.app_handle, "connecting");
+
+        let stream_api = StreamApi::new();
+        let serial_stream =
+            utils::stream::build_serial_stream(port_name.to_string(), None, None, None)
+                .map_err(|e| MeshGuardError::Ble(format!("Serial connect failed: {e}")))?;
+
+        let (mut decoded_listener, connected_api) = stream_api.connect(serial_stream).await;
+
+        let config_id = utils::generate_rand_id();
+        let configured_api = connected_api
+            .configure(config_id)
+            .await
+            .map_err(|e| MeshGuardError::MeshRadio(format!("Config handshake failed: {e}")))?;
+
+        let (node_num, configured_api) =
+            run_config_and_listen(configured_api, &mut decoded_listener, &p).await?;
+
+        spawn_listener(
+            decoded_listener, p.app_handle.clone(), p.mesh_nodes.clone(),
+            node_num, p.session_keys.clone(), p.pending_pair_requests.clone(),
+        );
+
+        Ok(Self::from_configured(configured_api, node_num))
+    }
+
     pub async fn send_private_app(
         &mut self,
         data: Vec<u8>,
@@ -271,11 +358,11 @@ impl MeshRadio {
                 protobufs::PortNum::PrivateApp,
                 PacketDestination::Node(destination_node.into()),
                 MeshChannel::new(0).unwrap(),
-                true,  // want_ack
-                false, // want_response
-                true,  // echo_response
-                None,  // reply_id
-                None,  // emoji
+                true,
+                false,
+                true,
+                None,
+                None,
             )
             .await
             .map_err(|e| MeshGuardError::MeshRadio(format!("Send failed: {e}")))
@@ -342,13 +429,11 @@ fn spawn_listener(
                 }
             }
         }
-
         tracing::warn!("Mesh radio listener ended — radio disconnected");
         emit_connection_state(&app_handle, "disconnected");
     });
 }
 
-/// Event payload for incoming messages sent to the frontend.
 #[derive(Clone, serde::Serialize)]
 pub struct IncomingMessageEvent {
     pub from_node: u32,
@@ -358,7 +443,6 @@ pub struct IncomingMessageEvent {
     pub message_id: String,
 }
 
-/// Event payload for pair requests sent to the frontend.
 #[derive(Clone, serde::Serialize)]
 pub struct PairRequestEvent {
     pub from_node: u32,
@@ -388,7 +472,6 @@ async fn handle_incoming_packet(
         return;
     }
 
-    // Try to decrypt with a known session key
     let keys = session_keys.lock().await;
     if let Some(key) = keys.get(&from_node) {
         match crate::protocol::MeshMessage::decrypt_envelope(payload, key) {
@@ -441,7 +524,6 @@ async fn handle_incoming_packet(
     }
     drop(keys);
 
-    // Unknown sender or decryption failed — store as pending pair request
     pending_pair_requests
         .lock()
         .await

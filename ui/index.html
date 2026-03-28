@@ -33,17 +33,62 @@
 
           <div class="form-card">
             <h2 class="section-title">Connect Your Device</h2>
-            <p class="connect-info">Scan for nearby Meshtastic devices via Bluetooth. Tap a device to connect.</p>
 
-            <button type="button" id="btn-scan" class="btn btn-scan">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-              </svg>
-              Scan for Devices
-            </button>
+            <div class="conn-tabs">
+              <button type="button" class="conn-tab active" data-tab="ble">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M17.71 7.71L12 2h-1v7.59L6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 11 14.41V22h1l5.71-5.71-4.3-4.29 4.3-4.29zM13 5.83l1.88 1.88L13 9.59V5.83zm1.88 10.46L13 18.17v-3.76l1.88 1.88z"/></svg>
+                Bluetooth
+              </button>
+              <button type="button" class="conn-tab" data-tab="wifi">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M1 9l2 2c4.97-4.97 13.03-4.97 18 0l2-2C16.93 2.93 7.08 2.93 1 9zm8 8l3 3 3-3a4.237 4.237 0 00-6 0zm-4-4l2 2a7.074 7.074 0 0110 0l2-2C15.14 9.14 8.87 9.14 5 13z"/></svg>
+                WiFi
+              </button>
+              <button type="button" class="conn-tab" data-tab="usb">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M15 7v4h1v2h-3V5h2l-3-4-3 4h2v8H8v-2.07c.7-.37 1.2-1.08 1.2-1.93 0-1.21-.99-2.2-2.2-2.2-1.21 0-2.2.99-2.2 2.2 0 .85.5 1.56 1.2 1.93V13c0 1.11.89 2 2 2h3v3.05c-.71.37-1.2 1.1-1.2 1.95a2.2 2.2 0 004.4 0c0-.85-.49-1.58-1.2-1.95V15h3c1.11 0 2-.89 2-2v-2h1V7h-4z"/></svg>
+                USB
+              </button>
+            </div>
 
-            <div id="scan-status" class="scan-status"></div>
-            <div id="scan-results" class="scan-results"></div>
+            <!-- Bluetooth tab -->
+            <div id="tab-ble" class="conn-tab-content active">
+              <p class="connect-info">Scan for nearby Meshtastic devices via Bluetooth. Detects all devices running Meshtastic firmware (SenseCAP, RAK, Heltec, T-Beam, etc).</p>
+              <button type="button" id="btn-scan" class="btn btn-scan">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                </svg>
+                Scan for Devices
+              </button>
+              <div id="scan-status" class="scan-status"></div>
+              <div id="scan-results" class="scan-results"></div>
+            </div>
+
+            <!-- WiFi tab -->
+            <div id="tab-wifi" class="conn-tab-content">
+              <p class="connect-info">Connect to a Meshtastic device over WiFi. Enter the device IP address (the device must have WiFi enabled and be on the same network).</p>
+              <label class="field">
+                <span class="field-label">Device IP Address</span>
+                <input type="text" id="wifi-address" placeholder="192.168.1.100" />
+                <span class="field-hint">Default Meshtastic port 4403 is used automatically</span>
+              </label>
+              <button type="button" id="btn-connect-wifi" class="btn btn-primary btn-full">Connect via WiFi</button>
+            </div>
+
+            <!-- USB tab -->
+            <div id="tab-usb" class="conn-tab-content">
+              <p class="connect-info">Connect to a Meshtastic device via USB serial cable. Select the serial port your device is connected to.</p>
+              <label class="field">
+                <span class="field-label">Serial Port</span>
+                <select id="serial-port"><option value="">Loading ports...</option></select>
+              </label>
+              <button type="button" id="btn-refresh-ports" class="btn btn-scan" style="margin-bottom:8px;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>
+                  <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                </svg>
+                Refresh Ports
+              </button>
+              <button type="button" id="btn-connect-serial" class="btn btn-primary btn-full">Connect via USB</button>
+            </div>
 
             <div id="connect-progress" class="connect-progress" style="display:none;">
               <span class="spinner"></span>

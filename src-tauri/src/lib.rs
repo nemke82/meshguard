@@ -31,7 +31,10 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::scan_ble_devices,
+            commands::get_serial_ports,
             commands::connect_device,
+            commands::connect_tcp,
+            commands::connect_serial,
             commands::disconnect_device,
             commands::is_connected,
             commands::get_mesh_nodes,

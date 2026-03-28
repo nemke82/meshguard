@@ -35,6 +35,12 @@ const scanResults = $("#scan-results");
 const connectProgress = $("#connect-progress");
 const connectProgressText = $("#connect-progress-text");
 
+const wifiAddress = $("#wifi-address");
+const btnConnectWifi = $("#btn-connect-wifi");
+const serialPort = $("#serial-port");
+const btnRefreshPorts = $("#btn-refresh-ports");
+const btnConnectSerial = $("#btn-connect-serial");
+
 const btnDisconnect = $("#btn-disconnect");
 const btnRefreshNodes = $("#btn-refresh-nodes");
 const myDeviceLabel = $("#my-device-label");
@@ -80,6 +86,21 @@ function showScreen(screen) {
   document.querySelectorAll(".screen").forEach((s) => s.classList.remove("active"));
   screen.classList.add("active");
 }
+
+// ============================================================
+// Connection Type Tabs
+// ============================================================
+document.querySelectorAll(".conn-tab").forEach((tab) => {
+  tab.addEventListener("click", () => {
+    document.querySelectorAll(".conn-tab").forEach((t) => t.classList.remove("active"));
+    document.querySelectorAll(".conn-tab-content").forEach((c) => c.classList.remove("active"));
+    tab.classList.add("active");
+    const target = document.getElementById("tab-" + tab.dataset.tab);
+    if (target) target.classList.add("active");
+
+    if (tab.dataset.tab === "usb") loadSerialPorts();
+  });
+});
 
 // ============================================================
 // BLE Scanning + Connection
@@ -163,6 +184,76 @@ async function connectToDevice(device) {
 
   connectProgress.style.display = "none";
 }
+
+// ============================================================
+// WiFi Connection
+// ============================================================
+btnConnectWifi.addEventListener("click", async () => {
+  let addr = wifiAddress.value.trim();
+  if (!addr) { alert("Enter a device IP address"); return; }
+  if (!addr.includes(":")) addr += ":4403";
+
+  connectProgress.style.display = "flex";
+  connectProgressText.textContent = "Connecting via WiFi to " + addr + "...";
+  btnConnectWifi.disabled = true;
+
+  try {
+    await invokeWithTimeout("connect_tcp", { address: addr }, 30000);
+    await loadMeshData();
+    showScreen(screenMesh);
+  } catch (err) {
+    connectProgress.style.display = "none";
+    alert("WiFi connection failed: " + err);
+  }
+
+  connectProgress.style.display = "none";
+  btnConnectWifi.disabled = false;
+});
+
+// ============================================================
+// USB Serial Connection
+// ============================================================
+async function loadSerialPorts() {
+  try {
+    const ports = await invoke("get_serial_ports");
+    serialPort.innerHTML = "";
+    if (ports.length === 0) {
+      serialPort.innerHTML = '<option value="">No serial ports found</option>';
+    } else {
+      for (const p of ports) {
+        const opt = document.createElement("option");
+        opt.value = p.name;
+        opt.textContent = p.name;
+        serialPort.appendChild(opt);
+      }
+    }
+  } catch (err) {
+    serialPort.innerHTML = '<option value="">Error listing ports</option>';
+  }
+}
+
+btnRefreshPorts.addEventListener("click", loadSerialPorts);
+
+btnConnectSerial.addEventListener("click", async () => {
+  const port = serialPort.value;
+  if (!port) { alert("Select a serial port"); return; }
+
+  connectProgress.style.display = "flex";
+  connectProgressText.textContent = "Connecting via USB to " + port + "...";
+  btnConnectSerial.disabled = true;
+
+  try {
+    await invokeWithTimeout("connect_serial", { portName: port }, 30000);
+    await loadMeshData();
+    showScreen(screenMesh);
+  } catch (err) {
+    connectProgress.style.display = "none";
+    alert("USB connection failed: " + err);
+  }
+
+  connectProgress.style.display = "none";
+  btnConnectSerial.disabled = false;
+});
 
 // ============================================================
 // Mesh Nodes Screen

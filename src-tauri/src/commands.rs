@@ -4,7 +4,7 @@ use tauri::State;
 use crate::crypto;
 use crate::device_config::PeerConfig;
 use crate::error::MeshGuardError;
-use crate::mesh_radio::{MeshRadio, ScannedBleDevice};
+use crate::mesh_radio::{ConnectParams, MeshRadio, ScannedBleDevice, SerialPortInfo};
 use crate::protocol::MeshMessage;
 use crate::state::{AppState, MeshNodeInfo};
 
@@ -22,39 +22,26 @@ pub async fn scan_ble_devices() -> Result<ScanResponse, MeshGuardError> {
     Ok(ScanResponse { devices })
 }
 
+// ── Serial Ports ──────────────────────────────────────────────
+
+/// List available serial ports (for USB connection).
+#[tauri::command]
+pub async fn get_serial_ports() -> Result<Vec<SerialPortInfo>, MeshGuardError> {
+    crate::mesh_radio::list_serial_ports()
+}
+
 // ── Connection ────────────────────────────────────────────────
 
-/// Connect to a Meshtastic device by BLE name, run config handshake,
-/// and start background listener.
-#[tauri::command]
-pub async fn connect_device(
-    ble_name: String,
-    app_handle: tauri::AppHandle,
-    state: State<'_, AppState>,
+/// Disconnect any existing connection and store the new radio.
+async fn store_radio(
+    radio: MeshRadio,
+    state: &AppState,
+    connection_label: String,
 ) -> Result<(), MeshGuardError> {
-    // Disconnect existing connection if any
-    let mut radio_guard = state.radio.lock().await;
-    if radio_guard.is_some() {
-        *radio_guard = None;
-    }
-    drop(radio_guard);
-
-    let radio = MeshRadio::connect_ble(
-        &ble_name,
-        app_handle,
-        state.mesh_nodes.clone(),
-        state.my_node_num.clone(),
-        state.my_device_name.clone(),
-        state.session_keys.clone(),
-        state.pending_pair_requests.clone(),
-    )
-    .await?;
-
     *state.radio.lock().await = Some(radio);
 
-    // Persist the BLE name for future auto-reconnect
     let mut config = state.config.lock().await;
-    config.last_ble_address = Some(ble_name);
+    config.last_ble_address = Some(connection_label);
     if let Some(name) = state.my_device_name.lock().await.as_ref() {
         config.last_device_name = Some(name.clone());
     }
@@ -62,6 +49,63 @@ pub async fn connect_device(
 
     tracing::info!("Connected and configured");
     Ok(())
+}
+
+async fn disconnect_existing(state: &AppState) {
+    let mut radio_guard = state.radio.lock().await;
+    if radio_guard.is_some() {
+        *radio_guard = None;
+    }
+}
+
+fn make_connect_params(app_handle: tauri::AppHandle, state: &AppState) -> ConnectParams {
+    ConnectParams {
+        app_handle,
+        mesh_nodes: state.mesh_nodes.clone(),
+        my_node_num: state.my_node_num.clone(),
+        my_device_name: state.my_device_name.clone(),
+        session_keys: state.session_keys.clone(),
+        pending_pair_requests: state.pending_pair_requests.clone(),
+    }
+}
+
+/// Connect via Bluetooth LE.
+#[tauri::command]
+pub async fn connect_device(
+    ble_name: String,
+    app_handle: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), MeshGuardError> {
+    disconnect_existing(&state).await;
+    let p = make_connect_params(app_handle, &state);
+    let radio = MeshRadio::connect_ble(&ble_name, p).await?;
+    store_radio(radio, &state, format!("ble:{ble_name}")).await
+}
+
+/// Connect via WiFi / TCP.
+#[tauri::command]
+pub async fn connect_tcp(
+    address: String,
+    app_handle: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), MeshGuardError> {
+    disconnect_existing(&state).await;
+    let p = make_connect_params(app_handle, &state);
+    let radio = MeshRadio::connect_tcp(&address, p).await?;
+    store_radio(radio, &state, format!("tcp:{address}")).await
+}
+
+/// Connect via USB serial.
+#[tauri::command]
+pub async fn connect_serial(
+    port_name: String,
+    app_handle: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), MeshGuardError> {
+    disconnect_existing(&state).await;
+    let p = make_connect_params(app_handle, &state);
+    let radio = MeshRadio::connect_serial(&port_name, p).await?;
+    store_radio(radio, &state, format!("serial:{port_name}")).await
 }
 
 /// Disconnect from the Meshtastic device.
