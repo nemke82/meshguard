@@ -59,7 +59,7 @@ async fn stop_any_active_scan() -> Result<(), MeshGuardError> {
 }
 
 fn is_meshtastic_device(name: &str, services: &[uuid::Uuid]) -> bool {
-    if services.iter().any(|s| *s == MESHTASTIC_SERVICE_UUID) {
+    if services.contains(&MESHTASTIC_SERVICE_UUID) {
         return true;
     }
     let lower = name.to_lowercase();
