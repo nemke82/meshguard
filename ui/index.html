@@ -10,9 +10,9 @@
     <div id="app">
 
       <!-- ═══════════════════════════════════════════════
-           Screen 1: Device Setup
+           Screen 1: Connect to Meshtastic device
            ═══════════════════════════════════════════════ -->
-      <div id="screen-setup" class="screen active">
+      <div id="screen-connect" class="screen active">
         <div class="screen-scroll">
           <div class="screen-header">
             <div class="logo-icon">
@@ -28,103 +28,79 @@
               </svg>
             </div>
             <h1 class="logo-title">MeshGuard</h1>
-            <p class="tagline">Configure Your Meshtastic Device</p>
+            <p class="tagline">Secure P2P Mesh Messenger</p>
           </div>
 
-          <!-- Device already configured banner -->
-          <div id="device-locked-banner" class="locked-banner" style="display: none;">
-            <div class="locked-info">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
+          <div class="form-card">
+            <h2 class="section-title">Connect Your Device</h2>
+            <p class="connect-info">Scan for nearby Meshtastic devices via Bluetooth. Tap a device to connect.</p>
+
+            <button type="button" id="btn-scan" class="btn btn-scan">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
               </svg>
-              <div>
-                <div class="locked-name" id="locked-device-name">Device Name</div>
-                <div class="locked-addr" id="locked-device-addr">AA:BB:CC:DD:EE:FF</div>
-              </div>
-            </div>
-            <button type="button" id="btn-remove-device" class="btn btn-danger-sm" title="Remove device to add a different one">Remove</button>
-          </div>
-
-          <form id="form-device" class="form-card">
-            <h2 class="section-title">Your Device</h2>
-
-            <!-- BLE Scan Section -->
-            <div class="field" id="scan-section">
-              <span class="field-label">Find Your Device</span>
-              <button type="button" id="btn-scan" class="btn btn-scan">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-                </svg>
-                Scan for Bluetooth Devices
-              </button>
-              <div id="scan-status" class="scan-status"></div>
-              <div id="scan-results" class="scan-results"></div>
-              <input type="hidden" id="ble-address" required />
-            </div>
-
-            <label class="field">
-              <span class="field-label">Device Name</span>
-              <input type="text" id="device-name" placeholder="e.g. Alice-P1000" required />
-              <span class="field-hint">Your Meshtastic device's name</span>
-            </label>
-
-            <h2 class="section-title">Radio Settings</h2>
-
-            <label class="field">
-              <span class="field-label">Region</span>
-              <select id="region">
-                <option value="US">US (915 MHz)</option>
-                <option value="EU868" selected>EU 868 MHz</option>
-                <option value="EU433">EU 433 MHz</option>
-                <option value="CN">China (470 MHz)</option>
-                <option value="JP">Japan (920 MHz)</option>
-                <option value="ANZ">Australia/NZ (915 MHz)</option>
-                <option value="KR">Korea (920 MHz)</option>
-                <option value="TW">Taiwan (923 MHz)</option>
-                <option value="RU">Russia (868 MHz)</option>
-                <option value="IN">India (865 MHz)</option>
-                <option value="NZ865">NZ 865 MHz</option>
-                <option value="TH">Thailand (920 MHz)</option>
-                <option value="UA868">Ukraine 868 MHz</option>
-                <option value="UA433">Ukraine 433 MHz</option>
-              </select>
-              <span class="field-hint">Must match between both peers</span>
-            </label>
-
-            <label class="field">
-              <span class="field-label">Modem Preset</span>
-              <select id="modem-preset">
-                <option value="LongRange">Long Range (~40 bps, max distance)</option>
-                <option value="LongModerate">Long Moderate (~150 bps)</option>
-                <option value="MediumRange">Medium Range (~1 kbps)</option>
-                <option value="ShortRange">Short Range (~5 kbps)</option>
-                <option value="ShortFast">Short Fast (~18 kbps)</option>
-              </select>
-            </label>
-
-            <div class="field-row">
-              <label class="field">
-                <span class="field-label">TX Power (dBm)</span>
-                <input type="number" id="tx-power" value="20" min="1" max="30" />
-              </label>
-              <label class="field">
-                <span class="field-label">Hop Limit</span>
-                <input type="number" id="hop-limit" value="3" min="1" max="7" />
-                <span class="field-hint">1 = direct only</span>
-              </label>
-            </div>
-
-            <button type="submit" class="btn btn-primary btn-glow btn-full">
-              Save &amp; Continue to Pairing
+              Scan for Devices
             </button>
-          </form>
+
+            <div id="scan-status" class="scan-status"></div>
+            <div id="scan-results" class="scan-results"></div>
+
+            <div id="connect-progress" class="connect-progress" style="display:none;">
+              <span class="spinner"></span>
+              <span id="connect-progress-text">Connecting...</span>
+            </div>
+          </div>
         </div>
       </div>
 
       <!-- ═══════════════════════════════════════════════
-           Screen 2: Peers — manage conversations
+           Screen 2: Mesh Nodes — nearby devices on mesh
            ═══════════════════════════════════════════════ -->
-      <div id="screen-peers" class="screen">
+      <div id="screen-mesh" class="screen">
+        <header class="mesh-header">
+          <button id="btn-disconnect" class="btn-icon-only" title="Disconnect">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/>
+            </svg>
+          </button>
+          <div class="mesh-header-info">
+            <div class="mesh-header-title">Mesh Network</div>
+            <div class="mesh-header-sub" id="my-device-label">Not connected</div>
+          </div>
+          <button id="btn-refresh-nodes" class="btn-icon-only" title="Refresh">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+            </svg>
+          </button>
+        </header>
+
+        <div class="screen-scroll">
+          <!-- Pair request notification banner -->
+          <div id="pair-request-banner" class="pair-request-banner" style="display:none;">
+            <div class="pair-request-info">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 14H4V8l8 5 8-5v10zm-8-7L4 6h16l-8 5z"/>
+              </svg>
+              <span id="pair-request-text">Chat request from unknown device</span>
+            </div>
+            <button type="button" id="btn-accept-pair" class="btn btn-primary btn-sm">Accept</button>
+          </div>
+
+          <div id="mesh-nodes-list" class="mesh-nodes-list"></div>
+
+          <!-- Active chats -->
+          <div id="active-chats-section" style="display:none;">
+            <h2 class="section-title section-title-spaced">Active Chats</h2>
+            <div id="active-chats-list" class="mesh-nodes-list"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══════════════════════════════════════════════
+           Screen 3: Passphrase Entry
+           ═══════════════════════════════════════════════ -->
+      <div id="screen-passphrase" class="screen">
         <div class="screen-scroll">
           <div class="screen-header">
             <div class="lock-icon">
@@ -132,38 +108,26 @@
                 <path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2z"/>
               </svg>
             </div>
-            <h1 class="logo-title">Conversations</h1>
-            <p class="tagline">Add peers to start secure P2P chats</p>
+            <h1 class="logo-title" id="passphrase-title">Start Secure Chat</h1>
+            <p class="tagline" id="passphrase-subtitle">Enter a shared passphrase</p>
           </div>
 
-          <!-- Existing peers list -->
-          <div id="peers-list" class="peers-list"></div>
-
-          <!-- Add new peer form -->
-          <form id="form-add-peer" class="form-card">
-            <h2 class="section-title">Add New Peer</h2>
-
+          <form id="form-passphrase" class="form-card">
             <div class="pairing-info">
-              <p>Enter your peer's <strong>device name</strong> and a <strong>shared passphrase</strong> you both agreed on (in person, phone call, etc).</p>
-              <p>Both sides must use the same passphrase — it derives the encryption key locally.</p>
+              <p>Enter a <strong>shared passphrase</strong> that you and your peer agreed on out-of-band (in person, phone call, etc).</p>
+              <p>Both sides must use the same passphrase. It derives the encryption key locally and is never transmitted.</p>
             </div>
 
             <label class="field">
-              <span class="field-label">Peer Device Name</span>
-              <input type="text" id="peer-name" placeholder="e.g. Bob-P1000" required />
-              <span class="field-hint">The name of the device you want to chat with</span>
-            </label>
-
-            <label class="field">
               <span class="field-label">Shared Passphrase</span>
-              <input type="password" id="shared-passphrase" placeholder="Enter the secret you both agreed on" required minlength="8" />
-              <span class="field-hint">Min 8 characters — never stored, never transmitted</span>
+              <input type="password" id="passphrase-input" placeholder="Enter the shared secret" required minlength="8" />
+              <span class="field-hint">Min 8 characters — never stored, never sent over mesh</span>
             </label>
 
             <div class="btn-group">
-              <button type="button" id="btn-back-setup" class="btn btn-secondary">Back</button>
-              <button type="submit" class="btn btn-primary btn-glow">
-                Add Peer
+              <button type="button" id="btn-back-mesh" class="btn btn-secondary">Back</button>
+              <button type="submit" class="btn btn-primary btn-glow" id="btn-submit-passphrase">
+                Start Chat
               </button>
             </div>
           </form>
@@ -171,58 +135,26 @@
       </div>
 
       <!-- ═══════════════════════════════════════════════
-           Screen 2b: Enter passphrase for existing peer
-           ═══════════════════════════════════════════════ -->
-      <div id="screen-unlock" class="screen">
-        <div class="screen-scroll">
-          <div class="screen-header">
-            <div class="lock-icon">
-              <svg width="48" height="48" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2z"/>
-              </svg>
-            </div>
-            <h1 class="logo-title">Unlock Chat</h1>
-            <p class="tagline" id="unlock-peer-label">Enter passphrase for peer</p>
-          </div>
-
-          <form id="form-unlock" class="form-card">
-            <label class="field">
-              <span class="field-label">Shared Passphrase</span>
-              <input type="password" id="unlock-passphrase" placeholder="Enter the shared passphrase" required minlength="8" />
-              <span class="field-hint">Same passphrase you used when adding this peer</span>
-            </label>
-
-            <div class="btn-group">
-              <button type="button" id="btn-back-peers" class="btn btn-secondary">Back</button>
-              <button type="submit" class="btn btn-primary btn-glow">
-                Unlock
-              </button>
-            </div>
-          </form>
-        </div>
-      </div>
-
-      <!-- ═══════════════════════════════════════════════
-           Screen 3: Encrypted Chat
+           Screen 4: Encrypted Chat
            ═══════════════════════════════════════════════ -->
       <div id="screen-chat" class="screen">
         <header class="chat-header">
-          <button id="btn-back-peers-chat" class="btn-icon-only" title="Back to conversations">
+          <button id="btn-back-mesh-chat" class="btn-icon-only" title="Back to mesh">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+              <polyline points="15 18 9 12 15 6"/>
             </svg>
           </button>
           <div class="peer-info">
             <div class="peer-name" id="chat-peer-name">Peer Device</div>
-            <div class="peer-status" id="peer-status">
+            <div class="peer-status">
               <span class="status-dot"></span>
               <span>Encrypted P2P</span>
             </div>
           </div>
           <div class="header-actions">
-            <div class="connection-badge" id="connection-badge">
+            <div class="connection-badge connected" id="connection-badge">
               <span class="badge-dot"></span>
-              <span id="connection-text">Connecting...</span>
+              <span id="connection-text">Connected</span>
             </div>
           </div>
         </header>

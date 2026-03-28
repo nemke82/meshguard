@@ -18,11 +18,8 @@ tauri-plugin-shell = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
-btleplug = "0.11"               # BLE to local Meshtastic device
-futures = "0.3"                  # Async utilities
-prost = "0.13"                   # Protobuf for Meshtastic protocol
-aes-gcm = "0.10"                # AES-256-GCM message encryption
-x25519-dalek = "2"              # X25519 key exchange
+meshtastic = { version = "0.1", features = ["bluetooth-le"] }
+aes-gcm = "0.10"
 rand = "0.8"
 sha2 = "0.10"
 hkdf = "0.12"
@@ -32,4 +29,4 @@ chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = "0.3"
-zeroize = { version = "1", features = ["derive"] }  # Secure memory cleanup
+zeroize = { version = "1", features = ["derive"] }
