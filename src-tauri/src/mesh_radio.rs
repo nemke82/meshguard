@@ -204,18 +204,31 @@ async fn run_config_and_listen(
     let mut found_node_num: Option<u32> = None;
     let mut found_device_name: Option<String> = None;
     let mut nodes: HashMap<u32, MeshNodeInfo> = HashMap::new();
+    let mut packet_count: u32 = 0;
 
     loop {
-        match tokio::time::timeout(Duration::from_secs(5), decoded_listener.recv()).await {
+        // Longer timeout for the first packet (device may be slow to respond);
+        // shorter timeout once packets are flowing.
+        let timeout_secs = if packet_count == 0 { 30 } else { 10 };
+
+        match tokio::time::timeout(
+            Duration::from_secs(timeout_secs),
+            decoded_listener.recv(),
+        )
+        .await
+        {
             Ok(Some(from_radio)) => {
-                if let Some(variant) = from_radio.payload_variant {
+                packet_count += 1;
+                if let Some(ref variant) = from_radio.payload_variant {
+                    tracing::debug!("Config packet #{packet_count}: {}", variant_name(variant));
+
                     match variant {
                         PayloadVariant::MyInfo(my_info) => {
                             found_node_num = Some(my_info.my_node_num);
                             tracing::info!("My node num: {}", my_info.my_node_num);
                         }
                         PayloadVariant::NodeInfo(node_info) => {
-                            let node = node_info_to_mesh_node(&node_info);
+                            let node = node_info_to_mesh_node(node_info);
                             if Some(node.node_num) == found_node_num {
                                 if let Some(ref user) = node_info.user {
                                     found_device_name = Some(user.long_name.clone());
@@ -224,14 +237,21 @@ async fn run_config_and_listen(
                             nodes.insert(node.node_num, node);
                         }
                         PayloadVariant::ConfigCompleteId(id) => {
-                            tracing::info!("Config complete (id={})", id);
+                            tracing::info!("Config complete (id={id}), received {packet_count} packets");
+                            break;
                         }
                         _ => {}
                     }
                 }
             }
-            Ok(None) => break,
-            Err(_) => break,
+            Ok(None) => {
+                tracing::warn!("Config stream closed after {packet_count} packets");
+                break;
+            }
+            Err(_) => {
+                tracing::warn!("Config timeout after {timeout_secs}s ({packet_count} packets received)");
+                break;
+            }
         }
     }
 
@@ -366,6 +386,27 @@ impl MeshRadio {
             )
             .await
             .map_err(|e| MeshGuardError::MeshRadio(format!("Send failed: {e}")))
+    }
+}
+
+fn variant_name(v: &PayloadVariant) -> &'static str {
+    match v {
+        PayloadVariant::Packet(_) => "Packet",
+        PayloadVariant::MyInfo(_) => "MyInfo",
+        PayloadVariant::NodeInfo(_) => "NodeInfo",
+        PayloadVariant::Config(_) => "Config",
+        PayloadVariant::ModuleConfig(_) => "ModuleConfig",
+        PayloadVariant::Channel(_) => "Channel",
+        PayloadVariant::ConfigCompleteId(_) => "ConfigCompleteId",
+        PayloadVariant::Rebooted(_) => "Rebooted",
+        PayloadVariant::LogRecord(_) => "LogRecord",
+        PayloadVariant::QueueStatus(_) => "QueueStatus",
+        PayloadVariant::XmodemPacket(_) => "XmodemPacket",
+        PayloadVariant::Metadata(_) => "Metadata",
+        PayloadVariant::MqttClientProxyMessage(_) => "MqttClientProxyMessage",
+        PayloadVariant::FileInfo(_) => "FileInfo",
+        PayloadVariant::ClientNotification(_) => "ClientNotification",
+        _ => "Unknown",
     }
 }
 
