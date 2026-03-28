@@ -3,27 +3,35 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
-use btleplug::api::{Central, Manager as _, Peripheral as _, ScanFilter};
+use btleplug::api::{Central, Characteristic, Manager as _, Peripheral as _, ScanFilter, WriteType};
 use btleplug::platform::Manager;
 use meshtastic::api::state::Configured;
 use meshtastic::api::{ConnectedStreamApi, StreamApi};
+use meshtastic::api::StreamHandle;
 use meshtastic::packet::{PacketDestination, PacketRouter};
 use meshtastic::protobufs;
 use meshtastic::protobufs::from_radio::PayloadVariant;
 use meshtastic::types::{EncodedMeshPacketData, MeshChannel, NodeId};
 use meshtastic::utils;
-use meshtastic::utils::stream::BleId;
 use tauri::Emitter;
+use tokio::io::{AsyncWriteExt, DuplexStream};
 use tokio::sync::Mutex;
 
 use crate::error::MeshGuardError;
 use crate::state::MeshNodeInfo;
 
-/// The BLE service UUID that all Meshtastic firmware advertises,
-/// regardless of device brand or custom name.
+/// The BLE service UUID that all Meshtastic firmware advertises.
 const MESHTASTIC_SERVICE_UUID: uuid::Uuid =
     uuid::Uuid::from_bytes([0x6b, 0xa1, 0xb2, 0x18, 0x15, 0xa8, 0x46, 0x1f,
                             0x9f, 0xa8, 0x5d, 0xca, 0xe2, 0x73, 0xea, 0xfd]);
+
+const FROMRADIO_UUID: uuid::Uuid =
+    uuid::Uuid::from_bytes([0x2c, 0x55, 0xe6, 0x9e, 0x49, 0x93, 0x11, 0xed,
+                            0xb8, 0x78, 0x02, 0x42, 0xac, 0x12, 0x00, 0x02]);
+
+const TORADIO_UUID: uuid::Uuid =
+    uuid::Uuid::from_bytes([0xf7, 0x5c, 0x76, 0xd2, 0x12, 0x9e, 0x4d, 0xad,
+                            0xa1, 0xdd, 0x78, 0x66, 0x12, 0x44, 0x01, 0xe7]);
 
 /// Known name prefixes for Meshtastic-firmware devices.
 const MESHTASTIC_NAME_HINTS: &[&str] = &[
@@ -31,6 +39,15 @@ const MESHTASTIC_NAME_HINTS: &[&str] = &[
     "tbeam", "t-beam", "tlora", "t-lora", "station-g",
     "nano-g", "wio-tracker", "trackerd", "meshcore",
 ];
+
+/// Meshtastic packet header: magic bytes + 2-byte length (big-endian).
+fn format_packet(data: &[u8]) -> Vec<u8> {
+    let len = data.len() as u16;
+    let [lsb, msb] = len.to_le_bytes();
+    let mut buf = vec![0x94, 0xc3, msb, lsb];
+    buf.extend_from_slice(data);
+    buf
+}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ScannedBleDevice {
@@ -66,12 +83,6 @@ fn is_meshtastic_device(name: &str, services: &[uuid::Uuid]) -> bool {
     MESHTASTIC_NAME_HINTS.iter().any(|hint| lower.contains(hint))
 }
 
-/// Scan for nearby Meshtastic BLE devices.
-///
-/// Detects Meshtastic devices by the BLE service UUID
-/// (`6ba1b218-15a8-461f-9fa8-5dcae273eafd`) that all Meshtastic
-/// firmware advertises, plus name-pattern fallback for SenseCAP,
-/// RAK, Heltec, T-Beam, etc.
 pub async fn scan_ble_devices(timeout_secs: u64) -> Result<Vec<ScannedBleDevice>, MeshGuardError> {
     let manager = Manager::new()
         .await
@@ -122,7 +133,6 @@ pub async fn scan_ble_devices(timeout_secs: u64) -> Result<Vec<ScannedBleDevice>
     Ok(devices)
 }
 
-/// List available serial ports.
 pub fn list_serial_ports() -> Result<Vec<SerialPortInfo>, MeshGuardError> {
     let ports = utils::stream::available_serial_ports()
         .map_err(|e| MeshGuardError::Ble(format!("Serial port enumeration failed: {e}")))?;
@@ -130,6 +140,150 @@ pub fn list_serial_ports() -> Result<Vec<SerialPortInfo>, MeshGuardError> {
         .into_iter()
         .map(|name| SerialPortInfo { name })
         .collect())
+}
+
+// ── Custom BLE Stream (polling-based) ─────────────────────────
+//
+// The meshtastic crate's build_ble_stream relies on fromnum BLE
+// notifications to know when the radio has data. Some devices
+// (SenseCAP T1000, etc.) don't fire these notifications reliably,
+// causing the connection to hang. This implementation polls the
+// fromradio characteristic directly.
+
+fn find_char(chars: &std::collections::BTreeSet<Characteristic>, uuid: uuid::Uuid) -> Result<Characteristic, MeshGuardError> {
+    chars.iter()
+        .find(|c| c.uuid == uuid)
+        .cloned()
+        .ok_or_else(|| MeshGuardError::Ble(format!("Characteristic {uuid} not found")))
+}
+
+/// Build a BLE stream using direct btleplug polling instead of
+/// notification-based reading. Returns a StreamHandle compatible
+/// with the meshtastic crate's StreamApi.
+async fn build_polling_ble_stream(
+    device_name: &str,
+) -> Result<StreamHandle<DuplexStream>, MeshGuardError> {
+    let manager = Manager::new()
+        .await
+        .map_err(|e| MeshGuardError::Ble(e.to_string()))?;
+    let adapters = manager
+        .adapters()
+        .await
+        .map_err(|e| MeshGuardError::Ble(e.to_string()))?;
+    let adapter = adapters
+        .into_iter()
+        .next()
+        .ok_or_else(|| MeshGuardError::Ble("No Bluetooth adapter found".into()))?;
+
+    // Scan for the target device
+    let _ = adapter.stop_scan().await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    adapter
+        .start_scan(ScanFilter::default())
+        .await
+        .map_err(|e| MeshGuardError::Ble(format!("BLE scan failed: {e}")))?;
+
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
+    let peripherals = adapter
+        .peripherals()
+        .await
+        .map_err(|e| MeshGuardError::Ble(e.to_string()))?;
+
+    let _ = adapter.stop_scan().await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let mut target = None;
+    for p in peripherals {
+        if let Ok(Some(props)) = p.properties().await {
+            if props.local_name.as_deref() == Some(device_name) {
+                target = Some(p);
+                break;
+            }
+        }
+    }
+
+    let radio = target
+        .ok_or_else(|| MeshGuardError::Ble(format!("Device '{device_name}' not found during BLE scan")))?;
+
+    tracing::info!("Connecting to BLE device: {device_name}");
+    radio.connect().await
+        .map_err(|e| MeshGuardError::Ble(format!("BLE connect failed: {e}")))?;
+
+    tracing::info!("Discovering GATT services...");
+    radio.discover_services().await
+        .map_err(|e| MeshGuardError::Ble(format!("GATT discovery failed: {e}")))?;
+
+    let chars = radio.characteristics();
+    let toradio_char = find_char(&chars, TORADIO_UUID)?;
+    let fromradio_char = find_char(&chars, FROMRADIO_UUID)?;
+    tracing::info!("Found Meshtastic GATT characteristics");
+
+    let (client, mut server) = tokio::io::duplex(4096);
+
+    let handle = tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+
+        let mut write_buf = [0u8; 512];
+
+        loop {
+            // Half-duplex: check for data TO send, then poll for data FROM radio.
+            // Use a short timeout so we alternate between read and write quickly.
+            match tokio::time::timeout(Duration::from_millis(50), server.read(&mut write_buf)).await {
+                Ok(Ok(0)) => {
+                    tracing::debug!("BLE client stream closed");
+                    break;
+                }
+                Ok(Ok(len)) => {
+                    // Strip the 4-byte packet header that the meshtastic crate adds;
+                    // BLE transport doesn't use it.
+                    let payload = if len > 4 && write_buf[0] == 0x94 && write_buf[1] == 0xc3 {
+                        &write_buf[4..len]
+                    } else {
+                        &write_buf[..len]
+                    };
+                    if let Err(e) = radio.write(&toradio_char, payload, WriteType::WithResponse).await {
+                        tracing::error!("BLE write failed: {e}");
+                        break;
+                    }
+                }
+                Ok(Err(e)) => {
+                    tracing::error!("Server stream read error: {e}");
+                    break;
+                }
+                Err(_) => {} // timeout — no data to write, proceed to read
+            }
+
+            // Poll fromradio for available data
+            match radio.read(&fromradio_char).await {
+                Ok(data) if !data.is_empty() => {
+                    let framed = format_packet(&data);
+                    if let Err(e) = server.write_all(&framed).await {
+                        tracing::error!("Server stream write error: {e}");
+                        break;
+                    }
+                }
+                Ok(_) => {
+                    // No data available — small sleep to avoid busy-loop
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                Err(e) => {
+                    tracing::error!("BLE read failed: {e}");
+                    break;
+                }
+            }
+        }
+
+        tracing::warn!("BLE polling loop ended");
+        let _ = radio.disconnect().await;
+        Ok::<(), meshtastic::errors::Error>(())
+    });
+
+    Ok(StreamHandle {
+        stream: client,
+        join_handle: Some(handle),
+    })
 }
 
 // ── PacketRouter ──────────────────────────────────────────────
@@ -177,7 +331,6 @@ impl PacketRouter<(), RouterError> for MeshGuardRouter {
 
 // ── MeshRadio ─────────────────────────────────────────────────
 
-/// Shared state refs passed to each connect method.
 pub struct ConnectParams {
     pub app_handle: tauri::AppHandle,
     pub mesh_nodes: Arc<Mutex<HashMap<u32, MeshNodeInfo>>>,
@@ -192,8 +345,6 @@ pub struct MeshRadio {
     router: MeshGuardRouter,
 }
 
-/// Run config handshake, collect NodeDB, spawn background listener.
-/// Called after stream_api.connect() for any transport.
 async fn run_config_and_listen(
     configured_api: ConnectedStreamApi<Configured>,
     decoded_listener: &mut meshtastic::packet::PacketReceiver,
@@ -207,8 +358,6 @@ async fn run_config_and_listen(
     let mut packet_count: u32 = 0;
 
     loop {
-        // Longer timeout for the first packet (device may be slow to respond);
-        // shorter timeout once packets are flowing.
         let timeout_secs = if packet_count == 0 { 30 } else { 10 };
 
         match tokio::time::timeout(
@@ -278,16 +427,13 @@ impl MeshRadio {
         }
     }
 
-    /// Connect via Bluetooth LE.
+    /// Connect via Bluetooth LE using our own polling-based stream.
     pub async fn connect_ble(ble_name: &str, p: ConnectParams) -> Result<Self, MeshGuardError> {
         emit_connection_state(&p.app_handle, "connecting");
         stop_any_active_scan().await?;
 
         let stream_api = StreamApi::new();
-        let ble_stream =
-            utils::stream::build_ble_stream(BleId::from_name(ble_name), Duration::from_secs(15))
-                .await
-                .map_err(|e| MeshGuardError::Ble(format!("BLE connect failed: {e}")))?;
+        let ble_stream = build_polling_ble_stream(ble_name).await?;
 
         let (mut decoded_listener, connected_api) = stream_api.connect(ble_stream).await;
 
