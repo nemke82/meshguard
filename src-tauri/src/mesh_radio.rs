@@ -3,6 +3,8 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
+use btleplug::api::{Central, Manager as _, Peripheral as _, ScanFilter};
+use btleplug::platform::Manager;
 use meshtastic::api::state::Configured;
 use meshtastic::api::{ConnectedStreamApi, StreamApi};
 use meshtastic::packet::{PacketDestination, PacketRouter};
@@ -24,19 +26,80 @@ pub struct ScannedBleDevice {
     pub address: String,
 }
 
+/// Get the first BLE adapter and ensure no scan is running on it.
+async fn stop_any_active_scan() -> Result<(), MeshGuardError> {
+    let manager = Manager::new()
+        .await
+        .map_err(|e| MeshGuardError::Ble(e.to_string()))?;
+    let adapters = manager
+        .adapters()
+        .await
+        .map_err(|e| MeshGuardError::Ble(e.to_string()))?;
+    if let Some(adapter) = adapters.into_iter().next() {
+        let _ = adapter.stop_scan().await;
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    Ok(())
+}
+
 /// Scan for nearby Meshtastic BLE devices.
+///
+/// Uses btleplug directly (rather than the meshtastic crate's
+/// `available_ble_devices`) so we can:
+///   1. Filter results to only Meshtastic devices
+///   2. Explicitly stop the scan afterward (avoids BlueZ
+///      "Operation already in progress" when connecting later)
 pub async fn scan_ble_devices(timeout_secs: u64) -> Result<Vec<ScannedBleDevice>, MeshGuardError> {
-    let devices = utils::stream::available_ble_devices(Duration::from_secs(timeout_secs))
+    let manager = Manager::new()
+        .await
+        .map_err(|e| MeshGuardError::Ble(e.to_string()))?;
+    let adapters = manager
+        .adapters()
+        .await
+        .map_err(|e| MeshGuardError::Ble(e.to_string()))?;
+    let adapter = adapters
+        .into_iter()
+        .next()
+        .ok_or_else(|| MeshGuardError::Ble("No Bluetooth adapter found".into()))?;
+
+    // Stop any lingering scan from a previous invocation
+    let _ = adapter.stop_scan().await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    adapter
+        .start_scan(ScanFilter::default())
+        .await
+        .map_err(|e| MeshGuardError::Ble(format!("BLE scan start failed: {e}")))?;
+
+    tokio::time::sleep(Duration::from_secs(timeout_secs)).await;
+
+    let peripherals = adapter
+        .peripherals()
         .await
         .map_err(|e| MeshGuardError::Ble(e.to_string()))?;
 
-    Ok(devices
-        .into_iter()
-        .map(|d| ScannedBleDevice {
-            name: d.name.clone().unwrap_or_else(|| "Unknown".into()),
-            address: format!("{}", d.mac_address),
-        })
-        .collect())
+    // Always stop the scan so the adapter is free for the next operation
+    let _ = adapter.stop_scan().await;
+
+    let mut devices = Vec::new();
+    for peripheral in peripherals {
+        if let Ok(Some(props)) = peripheral.properties().await {
+            let name = match props.local_name {
+                Some(ref n) if !n.is_empty() => n.clone(),
+                _ => continue,
+            };
+            // Only include Meshtastic devices
+            if !name.to_lowercase().contains("meshtastic") {
+                continue;
+            }
+            devices.push(ScannedBleDevice {
+                name,
+                address: peripheral.address().to_string(),
+            });
+        }
+    }
+
+    Ok(devices)
 }
 
 /// Router that the meshtastic crate needs when sending packets.
@@ -101,6 +164,12 @@ impl MeshRadio {
         pending_pair_requests: Arc<Mutex<HashMap<u32, Vec<u8>>>>,
     ) -> Result<Self, MeshGuardError> {
         emit_connection_state(&app_handle, "connecting");
+
+        // Stop any lingering BlueZ scan left over from the device-scan step.
+        // build_ble_stream starts its own scan internally; BlueZ only allows
+        // one active scan per adapter, so a stale scan causes
+        // "Operation already in progress" errors.
+        stop_any_active_scan().await?;
 
         let stream_api = StreamApi::new();
 
