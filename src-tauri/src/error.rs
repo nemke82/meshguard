@@ -43,6 +43,15 @@ pub enum MeshGuardError {
 
     #[error("IO error: {0}")]
     Io(String),
+
+    #[error("Mesh radio error: {0}")]
+    MeshRadio(String),
+
+    #[error("Node not found on mesh: {0}")]
+    NodeNotFound(u32),
+
+    #[error("Passphrase mismatch — decryption failed")]
+    PassphraseMismatch,
 }
 
 impl serde::Serialize for MeshGuardError {

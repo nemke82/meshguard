@@ -1,9 +1,9 @@
-pub mod ble;
 pub mod ble_plugin;
 pub mod commands;
 pub mod crypto;
 pub mod device_config;
 pub mod error;
+pub mod mesh_radio;
 pub mod protocol;
 pub mod state;
 
@@ -26,29 +26,23 @@ pub fn run() {
             let state = AppState::new(config_dir);
             app.manage(state);
 
-            tracing::info!("MeshGuard started — configure your device to begin");
+            tracing::info!("MeshGuard started — scan for a device to begin");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            commands::check_bluetooth,
-            commands::scan_devices,
-            commands::bond_device,
-            commands::save_device_config,
-            commands::get_device_config,
-            commands::has_device,
-            commands::remove_device,
-            commands::add_peer,
-            commands::remove_peer,
-            commands::list_peers,
-            commands::activate_peer,
-            commands::peer_has_session,
-            commands::get_active_peer,
-            commands::connect_local_device,
-            commands::disconnect_local_device,
+            commands::scan_ble_devices,
+            commands::connect_device,
+            commands::disconnect_device,
             commands::is_connected,
-            commands::apply_config_to_device,
+            commands::get_mesh_nodes,
+            commands::get_my_device_info,
+            commands::start_chat,
+            commands::accept_chat,
             commands::send_message,
             commands::has_session,
+            commands::list_peers,
+            commands::remove_peer,
+            commands::get_last_connection,
         ])
         .run(tauri::generate_context!())
         .expect("error while running MeshGuard");
