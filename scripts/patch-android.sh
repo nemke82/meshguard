@@ -122,7 +122,15 @@ import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
 import org.json.JSONArray
 import org.json.JSONObject
+import android.bluetooth.BluetoothGatt
+import android.bluetooth.BluetoothGattCallback
+import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothProfile
+import android.util.Base64
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 
 @TauriPlugin
 class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
@@ -131,10 +139,65 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
         private const val TAG = "BlePlugin"
         private val MESHTASTIC_SERVICE_UUID: UUID =
             UUID.fromString("6ba1b218-15a8-461f-9fa8-5dcae273eafd")
+        private val FROMRADIO_UUID: UUID =
+            UUID.fromString("2c55e69e-4993-11ed-b878-0242ac120002")
+        private val TORADIO_UUID: UUID =
+            UUID.fromString("f75c76d2-129e-4dad-a1dd-7866124401e7")
         private val MESHTASTIC_NAME_HINTS = listOf(
             "meshtastic", "p1000", "t-beam", "heltec", "rak",
             "sensecap", "t-echo", "lora", "mesh"
         )
+    }
+
+    private var bluetoothGatt: BluetoothGatt? = null
+    private var fromRadioChar: BluetoothGattCharacteristic? = null
+    private var toRadioChar: BluetoothGattCharacteristic? = null
+
+    private val connectQueue = LinkedBlockingQueue<Int>(1)
+    private val servicesQueue = LinkedBlockingQueue<Int>(1)
+    private val readQueue = LinkedBlockingQueue<ByteArray>(1)
+    private val writeQueue = LinkedBlockingQueue<Int>(1)
+
+    private val gattCallback = object : BluetoothGattCallback() {
+        override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            Log.d(TAG, "GATT state: $newState (status=$status)")
+            connectQueue.offer(newState)
+        }
+
+        override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+            Log.d(TAG, "Services discovered: status=$status")
+            servicesQueue.offer(status)
+        }
+
+        override fun onCharacteristicRead(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            value: ByteArray,
+            status: Int
+        ) {
+            readQueue.offer(if (status == BluetoothGatt.GATT_SUCCESS) value else ByteArray(0))
+        }
+
+        @Deprecated("Deprecated in API 33")
+        override fun onCharacteristicRead(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            status: Int
+        ) {
+            @Suppress("DEPRECATION")
+            readQueue.offer(
+                if (status == BluetoothGatt.GATT_SUCCESS) characteristic.value ?: ByteArray(0)
+                else ByteArray(0)
+            )
+        }
+
+        override fun onCharacteristicWrite(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            status: Int
+        ) {
+            writeQueue.offer(status)
+        }
     }
 
     // ── check_bluetooth ─────────────────────────────────────────
@@ -379,6 +442,214 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
                 invoke.resolve(result)
             }
         }, 30000)
+    }
+
+    // ── connect_device — GATT connect + service discovery ─────
+
+    @SuppressLint("MissingPermission")
+    @Command
+    fun connectDevice(invoke: Invoke) {
+        val address = invoke.getArgs().getString("address") ?: ""
+        if (address.isEmpty()) {
+            invoke.reject("No address provided")
+            return
+        }
+
+        val btManager = activity.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+        val adapter = btManager?.adapter
+        if (adapter == null) {
+            invoke.reject("No Bluetooth adapter")
+            return
+        }
+
+        // Close any existing connection
+        bluetoothGatt?.let {
+            try { it.disconnect() } catch (_: Exception) {}
+            try { it.close() } catch (_: Exception) {}
+        }
+        bluetoothGatt = null
+        fromRadioChar = null
+        toRadioChar = null
+
+        val device: BluetoothDevice
+        try {
+            device = adapter.getRemoteDevice(address)
+        } catch (e: IllegalArgumentException) {
+            invoke.reject("Invalid address: $address")
+            return
+        }
+
+        // Bond if not already bonded (system pairing dialog will appear)
+        if (device.bondState != BluetoothDevice.BOND_BONDED) {
+            Log.d(TAG, "Initiating bonding with $address...")
+            val bondLatch = CountDownLatch(1)
+            val receiver = object : BroadcastReceiver() {
+                override fun onReceive(context: Context, intent: Intent) {
+                    if (intent.action != BluetoothDevice.ACTION_BOND_STATE_CHANGED) return
+                    val d = if (Build.VERSION.SDK_INT >= 33) {
+                        intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+                    }
+                    if (d?.address != address) return
+                    val state = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE)
+                    if (state != BluetoothDevice.BOND_BONDING) {
+                        bondLatch.countDown()
+                    }
+                }
+            }
+            activity.registerReceiver(receiver, IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED))
+
+            if (!device.createBond()) {
+                try { activity.unregisterReceiver(receiver) } catch (_: Exception) {}
+                invoke.reject("Failed to start bonding")
+                return
+            }
+
+            bondLatch.await(30, TimeUnit.SECONDS)
+            try { activity.unregisterReceiver(receiver) } catch (_: Exception) {}
+
+            if (device.bondState != BluetoothDevice.BOND_BONDED) {
+                invoke.reject("Bonding failed or was rejected. Enter the PIN shown in MeshGuard when the system dialog appears.")
+                return
+            }
+            Log.d(TAG, "Bonded successfully with $address")
+        }
+
+        // Connect GATT
+        Log.d(TAG, "Connecting GATT to $address...")
+        connectQueue.clear()
+        servicesQueue.clear()
+
+        bluetoothGatt = device.connectGatt(activity, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+
+        val connState = connectQueue.poll(15, TimeUnit.SECONDS)
+        if (connState != BluetoothProfile.STATE_CONNECTED) {
+            bluetoothGatt?.close()
+            bluetoothGatt = null
+            invoke.reject("GATT connection timed out")
+            return
+        }
+        Log.d(TAG, "GATT connected, discovering services...")
+
+        bluetoothGatt?.discoverServices()
+        val svcStatus = servicesQueue.poll(10, TimeUnit.SECONDS)
+        if (svcStatus != BluetoothGatt.GATT_SUCCESS) {
+            bluetoothGatt?.disconnect()
+            bluetoothGatt?.close()
+            bluetoothGatt = null
+            invoke.reject("Service discovery failed")
+            return
+        }
+
+        // Find Meshtastic characteristics
+        val gatt = bluetoothGatt!!
+        for (service in gatt.services) {
+            if (service.uuid == MESHTASTIC_SERVICE_UUID) {
+                for (c in service.characteristics) {
+                    when (c.uuid) {
+                        FROMRADIO_UUID -> fromRadioChar = c
+                        TORADIO_UUID -> toRadioChar = c
+                    }
+                }
+            }
+        }
+
+        if (fromRadioChar == null || toRadioChar == null) {
+            bluetoothGatt?.disconnect()
+            bluetoothGatt?.close()
+            bluetoothGatt = null
+            invoke.reject("Meshtastic GATT characteristics not found")
+            return
+        }
+
+        Log.d(TAG, "GATT ready — fromradio and toradio found")
+        val result = JSObject()
+        result.put("success", true)
+        invoke.resolve(result)
+    }
+
+    // ── read_from_radio ─────────────────────────────────────────
+
+    @SuppressLint("MissingPermission")
+    @Command
+    fun readFromRadio(invoke: Invoke) {
+        val gatt = bluetoothGatt
+        val char = fromRadioChar
+        if (gatt == null || char == null) {
+            invoke.resolve(JSObject().put("data", ""))
+            return
+        }
+
+        readQueue.clear()
+        @Suppress("DEPRECATION")
+        if (!gatt.readCharacteristic(char)) {
+            invoke.resolve(JSObject().put("data", ""))
+            return
+        }
+
+        val data = readQueue.poll(5, TimeUnit.SECONDS)
+        if (data != null && data.isNotEmpty()) {
+            invoke.resolve(JSObject().put("data", Base64.encodeToString(data, Base64.NO_WRAP)))
+        } else {
+            invoke.resolve(JSObject().put("data", ""))
+        }
+    }
+
+    // ── write_to_radio ──────────────────────────────────────────
+
+    @SuppressLint("MissingPermission")
+    @Command
+    fun writeToRadio(invoke: Invoke) {
+        val dataB64 = invoke.getArgs().getString("data") ?: ""
+        if (dataB64.isEmpty()) {
+            invoke.reject("No data provided")
+            return
+        }
+
+        val gatt = bluetoothGatt
+        val char = toRadioChar
+        if (gatt == null || char == null) {
+            invoke.reject("Not connected")
+            return
+        }
+
+        val data = Base64.decode(dataB64, Base64.NO_WRAP)
+        writeQueue.clear()
+
+        @Suppress("DEPRECATION")
+        char.value = data
+        @Suppress("DEPRECATION")
+        char.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+        @Suppress("DEPRECATION")
+        if (!gatt.writeCharacteristic(char)) {
+            invoke.reject("Write initiation failed")
+            return
+        }
+
+        val status = writeQueue.poll(5, TimeUnit.SECONDS)
+        if (status == BluetoothGatt.GATT_SUCCESS) {
+            invoke.resolve(JSObject().put("success", true))
+        } else {
+            invoke.reject("Write failed: status=$status")
+        }
+    }
+
+    // ── disconnect_ble_device ───────────────────────────────────
+
+    @SuppressLint("MissingPermission")
+    @Command
+    fun disconnectBleDevice(invoke: Invoke) {
+        bluetoothGatt?.let {
+            try { it.disconnect() } catch (_: Exception) {}
+            try { it.close() } catch (_: Exception) {}
+        }
+        bluetoothGatt = null
+        fromRadioChar = null
+        toRadioChar = null
+        Log.d(TAG, "BLE device disconnected")
+        invoke.resolve(JSObject().put("success", true))
     }
 
     // ── Helpers ─────────────────────────────────────────────────

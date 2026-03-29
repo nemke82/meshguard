@@ -432,6 +432,160 @@ async fn build_polling_ble_stream(
     })
 }
 
+// ── Android BLE Stream (native Kotlin plugin) ────────────────
+//
+// btleplug doesn't support Android. Instead, we use the native
+// Kotlin BlePlugin for GATT operations: connectDevice, readFromRadio,
+// writeToRadio. A background std::thread makes blocking plugin calls,
+// and channels bridge data to a tokio task that drives the DuplexStream.
+
+#[cfg(target_os = "android")]
+async fn build_android_ble_stream(
+    app_handle: &tauri::AppHandle,
+    address: &str,
+    pin: u32,
+) -> Result<StreamHandle<DuplexStream>, MeshGuardError> {
+    use base64::Engine;
+    use tauri::Manager;
+
+    let app = app_handle.clone();
+    let addr = address.to_string();
+    let addr_for_log = addr.clone();
+
+    tracing::info!("Connecting to BLE device via Android native: {addr_for_log}");
+
+    // Connect + bond + discover GATT via native Kotlin plugin (blocking)
+    let connect_result = tokio::task::spawn_blocking({
+        let app = app.clone();
+        move || {
+            let state = app.state::<crate::ble_plugin::BlePluginState<tauri::Wry>>();
+            state
+                .0
+                .run_mobile_plugin::<serde_json::Value>(
+                    "connectDevice",
+                    serde_json::json!({ "address": addr, "pin": pin }),
+                )
+                .map_err(|e| MeshGuardError::Ble(format!("Android BLE connect failed: {e}")))
+        }
+    })
+    .await
+    .map_err(|e| MeshGuardError::Ble(format!("BLE connect task panicked: {e}")))?;
+
+    connect_result?;
+    tracing::info!("Android BLE connected — GATT ready for {addr_for_log}");
+
+    let (client, server) = tokio::io::duplex(4096);
+
+    // Channel: BLE thread → bridge task (fromradio data)
+    let (ble_tx, mut ble_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    // Channel: bridge task → BLE thread (toradio data)
+    let (proto_tx, proto_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+
+    // Background thread: blocking native plugin calls for BLE I/O
+    let app_for_thread = app.clone();
+    std::thread::spawn(move || {
+        use tauri::Manager;
+
+        let state = app_for_thread.state::<crate::ble_plugin::BlePluginState<tauri::Wry>>();
+        let plugin = &state.0;
+
+        loop {
+            // Write any pending data to toradio
+            while let Ok(data) = proto_rx.try_recv() {
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+                match plugin.run_mobile_plugin::<serde_json::Value>(
+                    "writeToRadio",
+                    serde_json::json!({ "data": b64 }),
+                ) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::error!("Android BLE write failed: {e}");
+                        return;
+                    }
+                }
+            }
+
+            // Read from fromradio
+            match plugin.run_mobile_plugin::<serde_json::Value>(
+                "readFromRadio",
+                serde_json::json!({}),
+            ) {
+                Ok(response) => {
+                    if let Some(data_str) = response.get("data").and_then(|d| d.as_str()) {
+                        if !data_str.is_empty() {
+                            if let Ok(data) =
+                                base64::engine::general_purpose::STANDARD.decode(data_str)
+                            {
+                                if !data.is_empty() && ble_tx.send(data).is_err() {
+                                    break;
+                                }
+                                continue;
+                            }
+                        }
+                    }
+                    std::thread::sleep(Duration::from_millis(75));
+                }
+                Err(e) => {
+                    tracing::error!("Android BLE read failed: {e}");
+                    break;
+                }
+            }
+        }
+
+        tracing::warn!("Android BLE I/O thread ended");
+        let _ = plugin.run_mobile_plugin::<serde_json::Value>(
+            "disconnectBleDevice",
+            serde_json::json!({}),
+        );
+    });
+
+    // Bridge task: channels ↔ duplex stream
+    let handle = tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let mut server = server;
+        let mut write_buf = [0u8; 512];
+
+        loop {
+            tokio::select! {
+                Some(data) = ble_rx.recv() => {
+                    let framed = format_packet(&data);
+                    if server.write_all(&framed).await.is_err() {
+                        break;
+                    }
+                }
+                result = server.read(&mut write_buf) => {
+                    match result {
+                        Ok(0) => break,
+                        Ok(len) => {
+                            let payload = if len > 4
+                                && write_buf[0] == 0x94
+                                && write_buf[1] == 0xc3
+                            {
+                                write_buf[4..len].to_vec()
+                            } else {
+                                write_buf[..len].to_vec()
+                            };
+                            if proto_tx.send(payload).is_err() {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+            }
+        }
+
+        tracing::warn!("Android BLE bridge task ended");
+        Ok::<(), meshtastic::errors::Error>(())
+    });
+
+    Ok(StreamHandle {
+        stream: client,
+        join_handle: Some(handle),
+    })
+}
+
 // ── PacketRouter ──────────────────────────────────────────────
 
 pub struct MeshGuardRouter {
@@ -573,15 +727,34 @@ impl MeshRadio {
         }
     }
 
-    /// Connect via Bluetooth LE using our own polling-based stream.
+    /// Connect via Bluetooth LE.
     /// `pin` is the BLE pairing PIN (default 123456 for Meshtastic).
-    pub async fn connect_ble(ble_name: &str, pin: u32, p: ConnectParams) -> Result<Self, MeshGuardError> {
+    /// `ble_address` is the MAC address — required on Android, optional on desktop.
+    pub async fn connect_ble(
+        ble_name: &str,
+        ble_address: Option<String>,
+        pin: u32,
+        p: ConnectParams,
+    ) -> Result<Self, MeshGuardError> {
         emit_connection_state(&p.app_handle, "connecting");
-        stop_any_active_scan().await?;
+
+        let ble_stream = {
+            #[cfg(target_os = "android")]
+            {
+                let address = ble_address.ok_or_else(|| {
+                    MeshGuardError::Ble("Device address required for Android BLE".into())
+                })?;
+                build_android_ble_stream(&p.app_handle, &address, pin).await?
+            }
+            #[cfg(not(target_os = "android"))]
+            {
+                let _ = ble_address;
+                stop_any_active_scan().await?;
+                build_polling_ble_stream(ble_name, pin).await?
+            }
+        };
 
         let stream_api = StreamApi::new();
-        let ble_stream = build_polling_ble_stream(ble_name, pin).await?;
-
         let (mut decoded_listener, connected_api) = stream_api.connect(ble_stream).await;
 
         let config_id = utils::generate_rand_id();

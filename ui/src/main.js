@@ -173,7 +173,7 @@ async function connectToDevice(device) {
   try {
     await invokeWithTimeout(
       "connect_device",
-      { bleName: device.name, pin },
+      { bleName: device.name, bleAddress: device.address, pin },
       90000
     );
     await loadMeshData();
