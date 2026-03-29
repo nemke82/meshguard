@@ -486,8 +486,8 @@ function loadChatMessages(nodeNum) {
 
 messageInput.addEventListener("input", () => {
   const len = messageInput.value.length;
-  charCount.textContent = 200 - len;
-  btnSend.disabled = len === 0;
+  charCount.textContent = 160 - len;
+  btnSend.disabled = len === 0 || len > 160;
   messageInput.style.height = "auto";
   messageInput.style.height = Math.min(messageInput.scrollHeight, 100) + "px";
 });
@@ -521,7 +521,7 @@ async function sendMessage() {
   renderMessage(msg);
   messageInput.value = "";
   messageInput.style.height = "auto";
-  charCount.textContent = "200";
+  charCount.textContent = "160";
   btnSend.disabled = true;
 
   try {
