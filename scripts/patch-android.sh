@@ -668,7 +668,7 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
     fun showNotification(invoke: Invoke) {
         val title = invoke.getArgs().getString("title") ?: "MeshGuard"
         val body = invoke.getArgs().getString("body") ?: ""
-        val nodeNum = invoke.getArgs().getInt("nodeNum", 0)
+        val nodeNum = invoke.getArgs().optInt("nodeNum", 0)
 
         val channelId = "meshguard_messages"
         val notifManager = activity.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
