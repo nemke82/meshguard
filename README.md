@@ -1,6 +1,6 @@
-# MeshGuard
+# MeshGuard — Secure P2P Mesh Messenger
 
-Secure peer-to-peer encrypted messenger for Meshtastic devices. No internet, no servers, no third-party apps. MeshGuard replaces the official Meshtastic app entirely — it configures your device, pairs you with a specific peer, and provides private encrypted communication over the LoRa mesh.
+Privacy-first encrypted peer-to-peer messenger for [Meshtastic](https://meshtastic.org/) devices. No internet, no servers, no accounts. MeshGuard connects to your Meshtastic radio via Bluetooth, discovers other mesh nodes, and lets you start encrypted conversations using a shared passphrase — nothing secret ever travels over the air.
 
 ```
    You (Phone/Desktop)              Peer (Phone/Desktop)
@@ -13,9 +13,18 @@ Secure peer-to-peer encrypted messenger for Meshtastic devices. No internet, no 
    └────────────┘     (up to 15km)      └────────────┘
 ```
 
-**No scanning. No discovery. No key exchange over the air.**
+## Features
 
-Both peers enter each other's device name, serial number, and a passphrase they agreed on in person. MeshGuard derives identical encryption keys on both sides — nothing secret ever travels over the mesh.
+- **BLE device scanning** — discovers nearby Meshtastic devices (SenseCAP, T-Beam, Heltec, RAK, etc.)
+- **PIN-based BLE pairing** — handles Bluetooth pairing with PIN entry (default `123456`)
+- **Mesh node discovery** — sees all nodes on the mesh network in real time
+- **Passphrase-based chat** — tap a node, enter a shared passphrase, start chatting
+- **End-to-end encryption** — AES-256-GCM with deterministic key derivation (HKDF-SHA256)
+- **No key exchange over the air** — both peers derive identical keys locally from the passphrase
+- **Compact binary protocol** — messages fit within Meshtastic's ~228-byte LoRa payload limit
+- **Cross-platform** — Android, Linux (deb/rpm/AppImage), macOS
+- **WiFi & USB serial** — connect to Meshtastic devices over TCP or serial, not just Bluetooth
+- **Dark theme, mobile-first UI** — designed for field use
 
 ## Downloads
 
@@ -24,134 +33,68 @@ Grab the latest build from [**Releases**](https://github.com/nemke82/meshguard/r
 | Platform | File | Install |
 |----------|------|---------|
 | Android | `.apk` | Enable "Install from unknown sources", open the APK |
-| Ubuntu / Debian | `.deb` | `sudo dpkg -i meshguard-*.deb` |
+| Ubuntu / Debian | `.deb` | `sudo dpkg -i meshguard_*.deb` |
 | RHEL / Fedora | `.rpm` | `sudo dnf install meshguard-*.rpm` |
-| Linux (any) | `.AppImage` | `chmod +x meshguard-*.AppImage && ./meshguard-*.AppImage` |
+| Linux (any) | `.AppImage` | `chmod +x MeshGuard-*.AppImage && ./MeshGuard-*.AppImage` |
 | macOS | `.dmg` | Open the DMG, drag MeshGuard to Applications |
-
-Verify integrity:
-```bash
-sha256sum -c SHA256SUMS.txt
-```
 
 ---
 
-## How to Connect Two Meshtastic Devices and Start Communicating
+## Quick Start
 
 ### What You Need
 
-- **2 Meshtastic devices** (Sensecap P1000, T-Beam, Heltec, RAK, or any Meshtastic-compatible hardware)
+- **2 Meshtastic devices** (SenseCAP T1000, T-Beam, Heltec, RAK, or any Meshtastic-compatible radio)
 - **2 phones or computers** running MeshGuard
 - Bluetooth enabled on both
-- Both devices must use the **same region frequency** (e.g., both EU868 or both US915)
+- Both radios on the **same Meshtastic channel** and **same region frequency** (e.g., both EU868 or both US915)
 
-### Step 1 — Find Your Device Info
+### Step 1 — Scan & Connect
 
-Before launching MeshGuard, note down each device's info:
+1. Open MeshGuard and tap **Scan for Devices**
+2. Your Meshtastic radio will appear in the list — tap it
+3. Enter the BLE pairing PIN (default `123456`) and tap Connect
+4. MeshGuard connects, reads the device configuration, and loads the mesh node list
 
-| Info | Where to find it |
-|------|-----------------|
-| **Device Name** | Printed on device, or shown on the device's screen / web interface |
-| **Device Serial** | Printed on the device label or in the Meshtastic device info page |
-| **BLE Address** | Shown in your phone's Bluetooth settings (e.g., `AA:BB:CC:DD:EE:FF`) |
+### Step 2 — Start a Secure Chat
 
-Write these down for **both** devices. You'll need to share your info with your peer (in person, phone call, or any secure channel).
+1. On the **Mesh Network** screen, you'll see all discovered nodes
+2. Tap the peer you want to chat with
+3. Enter a **shared passphrase** that you and your peer agreed on beforehand (in person, phone call, etc.)
+4. MeshGuard derives an AES-256 encryption key from both device identities + passphrase
+5. You're in — type and send encrypted messages
 
-### Step 2 — Install MeshGuard on Both Devices
+### Step 3 — On the Other Side
 
-Download from the [Releases page](https://github.com/nemke82/meshguard/releases) and install on both phones/computers.
-
-### Step 3 — Configure Your Local Device
-
-Open MeshGuard. The first screen asks for **your** device configuration:
-
-1. **Device Name** — enter your Meshtastic device's name (e.g., "Alice-P1000")
-2. **Device Serial** — enter the serial number from the device
-3. **BLE Address** — enter your device's Bluetooth address (you only do this once, it's saved)
-4. **Region** — select your LoRa region (must match your peer's region)
-5. **Modem Preset** — choose range vs. speed (Long Range recommended for maximum distance)
-6. **TX Power** — transmit power in dBm (default 20)
-7. **Hop Limit** — how many mesh hops allowed (1 = direct P2P only, 3 = default)
-
-Click **"Save & Continue to Pairing"**.
-
-MeshGuard writes these settings directly to your Meshtastic device via Bluetooth — no need for the official Meshtastic app.
-
-### Step 4 — Set Up P2P Pairing
-
-The pairing screen is where privacy begins. Both you and your peer must enter:
-
-1. **Peer Device Name** — your peer's Meshtastic device name
-2. **Peer Device Serial** — your peer's device serial number
-3. **Shared Passphrase** — a secret passphrase you **both agreed on beforehand** (in person, phone call, etc.)
-
-**Critical**: The passphrase must be identical on both sides. It is:
-- Never stored on disk
-- Never transmitted over the mesh
-- Never sent to any server
-- Cleared from memory after key derivation
-
-Click **"Establish Secure Session"**. MeshGuard:
-1. Derives an AES-256 encryption key from both device identities + passphrase
-2. Derives a Meshtastic channel PSK from the same inputs
-3. Connects to your local device via Bluetooth
-4. Pushes the radio config and encrypted channel to the device
-5. Opens the chat screen
-
-### Step 5 — Start Communicating
-
-You're now in the encrypted chat. Type your message and send.
-
-**What happens when you send a message:**
-
-```
-Your Phone                  Your Device            Peer Device              Peer Phone
-    │                           │                       │                       │
-    │ 1. Type message           │                       │                       │
-    │ 2. Encrypt (AES-256-GCM)  │                       │                       │
-    │ 3. Send via BLE ─────────►│                       │                       │
-    │                           │ 4. Encrypt again with │                       │
-    │                           │    channel PSK        │                       │
-    │                           │ 5. LoRa transmit ────►│                       │
-    │                           │                       │ 6. Decrypt channel ──►│
-    │                           │                       │ 7. Forward via BLE    │
-    │                           │                       │                       │ 8. Decrypt AES-256
-    │                           │                       │                       │ 9. Display message
-```
-
-Messages are **double-encrypted**:
-- **Layer 1**: AES-256-GCM encryption by MeshGuard (your phone → peer's phone)
-- **Layer 2**: Meshtastic channel PSK encryption (device → device over LoRa)
-
-Even if someone captures the LoRa signal AND knows the channel PSK, they still can't read the messages without the AES-256 key (which requires knowing the passphrase).
-
-### Step 6 — Reconnecting
-
-Your device config and peer info are saved (passphrase is NOT saved). Next time you open MeshGuard:
-- If you had a session: you'll go straight to chat (re-enter passphrase if app was restarted)
-- If you had device config: you'll go to the pairing screen
-- New install: you'll start at device setup
+Your peer does the same: scans, connects to their radio, taps your node, enters the **same passphrase**. Both sides derive identical keys — no key exchange needed.
 
 ---
 
-## Troubleshooting
+## How It Works
 
-| Problem | Solution |
-|---------|----------|
-| Can't connect to local device | Verify the BLE address is correct. Make sure Bluetooth is on and the device is powered up within ~10m. |
-| Messages not arriving | Both devices must be on the same region and the same channel PSK. Re-enter the passphrase on both sides. |
-| "No session" error | The passphrase hasn't been entered this session. Go to settings and re-pair. |
-| Garbled messages | The passphrase doesn't match between peers. Both must enter the exact same passphrase. |
-| Short range | Use Long Range modem preset. Place devices high with line of sight. Use external antenna if available. |
+```
+ Sender                                                          Receiver
+   │                                                                │
+   │  1. Type message                                               │
+   │  2. Serialize to compact binary (1 byte type + UTF-8 text)     │
+   │  3. Encrypt with AES-256-GCM (session key from passphrase)     │
+   │  4. Send via BLE as Meshtastic PrivateApp packet               │
+   │       │                                                        │
+   │  ┌────┴─────┐        LoRa         ┌──────────┐                │
+   │  │  Radio A │ ──────────────────► │  Radio B │                │
+   │  └──────────┘  channel-encrypted  └────┬─────┘                │
+   │                                        │                      │
+   │                         5. Receive via BLE                     │
+   │                         6. Decrypt AES-256-GCM                 │
+   │                         7. Parse binary → plaintext            │
+   │                         8. Display message                     │
+```
 
-## Tips for Best Performance
+Messages are **double-encrypted**:
+- **Layer 1 (app):** AES-256-GCM — MeshGuard encrypts the message payload
+- **Layer 2 (radio):** Meshtastic channel PSK — the LoRa radio encrypts the entire packet
 
-- **Same passphrase** — triple-check both sides entered the identical passphrase
-- **Elevation** — place Meshtastic devices as high as possible
-- **Line of sight** — LoRa reaches 15+ km over water/flat terrain, 2-5 km in urban areas
-- **External antenna** — dramatically improves range on supported devices
-- **Hop limit 1** — for maximum privacy, set hop limit to 1 (direct only, no mesh relay)
-- **Message length** — keep messages under 200 characters for reliable single-packet delivery
+Even if someone captures the LoRa signal AND knows the channel PSK, they still can't read messages without the passphrase.
 
 ---
 
@@ -159,19 +102,58 @@ Your device config and peer info are saved (passphrase is NOT saved). Next time 
 
 | Layer | Protection |
 |-------|-----------|
-| Message encryption | AES-256-GCM (authenticated encryption) |
-| Key derivation | HKDF-SHA256 from device identities + passphrase |
-| Channel encryption | Meshtastic PSK derived from same pairing inputs |
+| Message encryption | AES-256-GCM (authenticated, 256-bit key) |
+| Key derivation | HKDF-SHA256 from sorted device identities + passphrase |
+| Wire format | Compact binary (1 byte type + payload), encrypted once |
 | Key exchange | **None over the air** — keys derived locally from shared secret |
-| Memory safety | Rust (no buffer overflows); keys zeroized on drop |
+| Channel encryption | Meshtastic PSK (LoRa-layer encryption, device to device) |
+| Memory safety | Written in Rust — no buffer overflows; keys zeroized on drop |
 | Passphrase handling | Never stored, never transmitted, cleared after use |
-| Transport | LoRa mesh — no internet, no servers |
+| Transport | LoRa mesh — no internet, no servers, no DNS |
 | MQTT/uplink | Disabled — no data leaves the mesh |
 
-**Threat model**: An attacker who captures LoRa packets would need to:
-1. Break the Meshtastic channel PSK (derived from identities + passphrase)
-2. Break the AES-256-GCM encryption (requires the same passphrase)
-3. Both are computationally infeasible without knowing the shared passphrase
+---
+
+## Architecture
+
+Built with [Tauri 2.0](https://tauri.app/) — Rust backend + web frontend.
+
+```
+meshguard/
+├── src-tauri/
+│   ├── src/
+│   │   ├── lib.rs             # Tauri app entry point
+│   │   ├── main.rs            # Binary entry point
+│   │   ├── mesh_radio.rs      # BLE scan, connect, polling stream, message I/O
+│   │   ├── ble_plugin.rs      # Native Android BLE plugin (Kotlin bridge)
+│   │   ├── crypto.rs          # AES-256-GCM + HKDF-SHA256 key derivation
+│   │   ├── protocol.rs        # Compact binary wire format for mesh messages
+│   │   ├── commands.rs        # Tauri IPC commands (scan, connect, chat, pair)
+│   │   ├── device_config.rs   # Saved device/peer configuration
+│   │   ├── state.rs           # Shared app state (nodes, keys, radio)
+│   │   └── error.rs           # Error types
+│   ├── Cargo.toml
+│   └── tauri.conf.json
+├── ui/
+│   ├── src/
+│   │   ├── main.js            # UI logic: Connect → Mesh → Passphrase → Chat
+│   │   └── styles/main.css    # Dark theme, mobile-first
+│   ├── index.html
+│   └── package.json
+├── scripts/
+│   └── patch-android.sh       # Patches Android build for BLE permissions + native plugin
+└── .github/workflows/
+    ├── ci.yml                 # Check + test + clippy on push/PR
+    └── release.yml            # Build all platforms on tag push
+```
+
+### Platform-Specific BLE
+
+| Platform | BLE Stack | Notes |
+|----------|-----------|-------|
+| Linux | `btleplug` + `bluer` | btleplug for GATT, bluer for PIN-based BlueZ pairing via D-Bus agent |
+| macOS | `btleplug` | CoreBluetooth backend |
+| Android | Native Kotlin plugin | Custom `BlePlugin.kt` injected via `patch-android.sh` — handles scan, GATT connect, bonding, read/write |
 
 ---
 
@@ -181,16 +163,18 @@ Your device config and peer info are saved (passphrase is NOT saved). Next time 
 
 - [Rust](https://rustup.rs/) (stable)
 - [Node.js](https://nodejs.org/) 20+
-- [Tauri CLI](https://tauri.app/) (`cargo install tauri-cli --version "^2"`)
+- [Tauri CLI](https://tauri.app/) — `cargo install tauri-cli --version "^2"`
 
 **Linux (Ubuntu/Debian):**
 ```bash
-sudo apt install libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libdbus-1-dev pkg-config libssl-dev
+sudo apt install libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
+  patchelf libdbus-1-dev pkg-config libssl-dev
 ```
 
 **Linux (RHEL/Fedora):**
 ```bash
-sudo dnf install gcc gcc-c++ webkit2gtk4.1-devel libappindicator-gtk3-devel librsvg2-devel patchelf dbus-devel openssl-devel pkg-config rpm-build
+sudo dnf install gcc gcc-c++ webkit2gtk4.1-devel libappindicator-gtk3-devel \
+  librsvg2-devel patchelf dbus-devel openssl-devel pkg-config rpm-build
 ```
 
 **macOS:**
@@ -203,13 +187,13 @@ xcode-select --install
 ```bash
 cd ui && npm install && cd ..
 
-# Desktop (dev)
+# Desktop development
 cargo tauri dev
 
-# Desktop (release)
+# Desktop release
 cargo tauri build
 
-# Android (must patch for BLE permissions)
+# Android
 cargo tauri android init
 bash scripts/patch-android.sh
 cargo tauri android dev     # dev on connected device
@@ -218,13 +202,57 @@ cargo tauri android build   # release APK
 
 ### Creating a Release
 
-Tag with a date version:
+Tag with a date version — CI builds all platforms automatically:
 ```bash
-git tag v2026.03.23
-git push origin v2026.03.23
+git tag v2026.03.29
+git push origin v2026.03.29
 ```
 
-The CI pipeline builds Android APK, .deb, .rpm, .AppImage, and macOS .dmg, then publishes them as a GitHub Release with SHA256 checksums.
+Produces: Android APK, .deb, .rpm, .AppImage, macOS .dmg, plus SHA256 checksums.
+
+---
+
+## Supported Devices
+
+MeshGuard works with any Meshtastic-compatible radio, including:
+
+- **SenseCAP T1000** / T1000-E
+- **LilyGO T-Beam** / T-Beam Supreme
+- **Heltec LoRa 32** / V3 / Wireless Tracker
+- **RAK WisBlock** (RAK4631, RAK11200)
+- **Station G2**
+- Any device running Meshtastic firmware 2.x
+
+---
+
+## Troubleshooting
+
+| Problem | Solution |
+|---------|----------|
+| No devices found on scan | Make sure Bluetooth is on, device is powered, and within ~10m range |
+| PIN rejected | Default Meshtastic PIN is `123456`. Check your device's Bluetooth settings |
+| Connection timeout | Try scanning again. On Linux, ensure `bluetoothd` is running |
+| Messages not arriving | Both radios must be on the same channel + region. Re-enter passphrase on both sides |
+| "No session" error | Passphrase hasn't been entered this session. Tap the peer and re-enter it |
+| Short range | Use Long Range modem preset. Elevate devices. Use external antenna if available |
+
+### Tips for Best Range
+
+- **Elevation** — place Meshtastic radios as high as possible
+- **Line of sight** — LoRa reaches 15+ km over water/flat terrain, 2–5 km in urban areas
+- **External antenna** — dramatically improves range on supported devices
+- **Long Range modem preset** — trades speed for maximum distance
+- **Message length** — keep messages under 160 characters for reliable single-packet delivery
+
+---
+
+## Contributing
+
+Pull requests welcome. Run checks before submitting:
+
+```bash
+cd src-tauri && cargo clippy -- -D warnings && cargo test
+```
 
 ## License
 
