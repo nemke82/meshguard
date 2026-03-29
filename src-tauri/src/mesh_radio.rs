@@ -988,6 +988,22 @@ pub struct PairRequestEvent {
     pub timestamp: i64,
 }
 
+#[cfg(target_os = "android")]
+fn show_android_notification(app_handle: &tauri::AppHandle, title: &str, body: &str, node_num: u32) {
+    use tauri::Manager;
+    if let Some(state) = app_handle.try_state::<crate::ble_plugin::BlePluginState<tauri::Wry>>() {
+        let payload = serde_json::json!({
+            "title": title,
+            "body": body,
+            "nodeNum": node_num,
+        });
+        match state.0.run_mobile_plugin::<serde_json::Value>("showNotification", payload) {
+            Ok(_) => tracing::debug!("Android notification shown"),
+            Err(e) => tracing::warn!("Failed to show Android notification: {e}"),
+        }
+    }
+}
+
 async fn handle_incoming_packet(
     packet: &protobufs::MeshPacket,
     app_handle: &tauri::AppHandle,
@@ -1045,6 +1061,15 @@ async fn handle_incoming_packet(
                             "Incoming text from {from_node}: \"{}\" (id={id})",
                             text.chars().take(40).collect::<String>()
                         );
+
+                        #[cfg(target_os = "android")]
+                        show_android_notification(
+                            app_handle,
+                            "New Message",
+                            &text,
+                            from_node,
+                        );
+
                         let _ = app_handle.emit(
                             "incoming-message",
                             IncomingMessageEvent {
@@ -1092,6 +1117,14 @@ async fn handle_incoming_packet(
         .lock()
         .await
         .insert(from_node, payload.clone());
+
+    #[cfg(target_os = "android")]
+    show_android_notification(
+        app_handle,
+        "Chat Request",
+        &format!("Node {from_node} wants to start a secure chat"),
+        from_node,
+    );
 
     let _ = app_handle.emit(
         "pair-request",

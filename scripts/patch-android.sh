@@ -23,9 +23,11 @@ if ! grep -q "BLUETOOTH_SCAN" "$MANIFEST"; then
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />\
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />\
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />\
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\
+    <uses-permission android:name="android.permission.VIBRATE" />\
     \n    <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />\
     \n    <application|' "$MANIFEST"
-  echo "  -> BLE permissions added"
+  echo "  -> BLE + notification permissions added"
 else
   echo "  -> BLE permissions already present"
 fi
@@ -66,7 +68,6 @@ class MainActivity : TauriActivity() {
         val permissions = mutableListOf<String>()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            // Android 12+
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
                 permissions.add(Manifest.permission.BLUETOOTH_SCAN)
             }
@@ -75,7 +76,12 @@ class MainActivity : TauriActivity() {
             }
         }
 
-        // Location permission is required for BLE scanning on Android < 12
+        if (Build.VERSION.SDK_INT >= 33) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                permissions.add(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
             permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
         }
@@ -131,6 +137,10 @@ import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 
 @TauriPlugin
 class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
@@ -650,6 +660,68 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
         toRadioChar = null
         Log.d(TAG, "BLE device disconnected")
         invoke.resolve(JSObject().put("success", true))
+    }
+
+    // ── show_notification — native Android notification ────────
+
+    @Command
+    fun showNotification(invoke: Invoke) {
+        val title = invoke.getArgs().getString("title") ?: "MeshGuard"
+        val body = invoke.getArgs().getString("body") ?: ""
+        val nodeNum = invoke.getArgs().getInt("nodeNum", 0)
+
+        val channelId = "meshguard_messages"
+        val notifManager = activity.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+        // Create notification channel (required Android 8.0+)
+        if (notifManager.getNotificationChannel(channelId) == null) {
+            val channel = NotificationChannel(
+                channelId,
+                "MeshGuard Messages",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Incoming encrypted mesh messages"
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0, 250, 100, 250)
+                setShowBadge(true)
+                lockscreenVisibility = Notification.VISIBILITY_PRIVATE
+            }
+            notifManager.createNotificationChannel(channel)
+        }
+
+        // Build the notification
+        val launchIntent = activity.packageManager.getLaunchIntentForPackage(activity.packageName)
+        val pendingIntent = if (launchIntent != null) {
+            launchIntent.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            PendingIntent.getActivity(
+                activity, nodeNum, launchIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+        } else null
+
+        val notification = Notification.Builder(activity, channelId)
+            .setSmallIcon(android.R.drawable.ic_dialog_email)
+            .setContentTitle(title)
+            .setContentText(body)
+            .setAutoCancel(true)
+            .setCategory(Notification.CATEGORY_MESSAGE)
+            .setVisibility(Notification.VISIBILITY_PRIVATE)
+            .apply { if (pendingIntent != null) setContentIntent(pendingIntent) }
+            .build()
+
+        // Check permission (Android 13+)
+        if (Build.VERSION.SDK_INT >= 33) {
+            if (ContextCompat.checkSelfPermission(activity, android.Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+                Log.w(TAG, "POST_NOTIFICATIONS permission not granted")
+                invoke.resolve(JSObject().put("shown", false))
+                return
+            }
+        }
+
+        notifManager.notify(nodeNum, notification)
+        Log.d(TAG, "Notification shown: $title — $body")
+        invoke.resolve(JSObject().put("shown", true))
     }
 
     // ── Helpers ─────────────────────────────────────────────────
