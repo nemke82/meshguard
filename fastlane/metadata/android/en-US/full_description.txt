@@ -1,0 +1,32 @@
+MeshGuard is a privacy-first encrypted peer-to-peer messenger for Meshtastic LoRa mesh radios. No internet, no servers, no accounts — just direct encrypted communication over long-range radio.
+
+<b>How it works:</b>
+• Scan for nearby Meshtastic devices via Bluetooth
+• Connect with PIN-based BLE pairing
+• See all nodes on the mesh network
+• Tap a node, enter a shared passphrase, start chatting
+• Messages are encrypted with AES-256-GCM — keys are derived locally, never sent over the air
+
+<b>Features:</b>
+• End-to-end encryption (AES-256-GCM + HKDF-SHA256)
+• No key exchange over the air — deterministic key derivation from shared passphrase
+• Compact binary protocol fits within Meshtastic's LoRa payload limit
+• Native notification sounds and system notifications
+• BLE, WiFi, and USB serial connections
+• Supports all Meshtastic devices: SenseCAP, T-Beam, Heltec, RAK, and more
+• Dark theme, mobile-first UI designed for field use
+
+<b>Security:</b>
+• Double encryption: AES-256-GCM (app layer) + Meshtastic channel PSK (radio layer)
+• Passphrase never stored, never transmitted, cleared from memory after use
+• Written in Rust — memory-safe, keys zeroized on drop
+• No analytics, no tracking, no data collection
+• Fully open source (MIT license)
+
+<b>Range:</b>
+LoRa mesh reaches 15+ km over open terrain, 2–5 km in urban areas. Use external antennas and elevation for maximum range.
+
+<b>Requirements:</b>
+• A Meshtastic-compatible radio (SenseCAP T1000, T-Beam, Heltec, RAK, etc.)
+• Bluetooth enabled on your device
+• Both peers need the same passphrase (agreed in person or via secure channel)

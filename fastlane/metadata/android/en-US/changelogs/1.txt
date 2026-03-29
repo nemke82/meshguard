@@ -1,0 +1,9 @@
+Initial release:
+• BLE scanning and PIN-based pairing for Meshtastic devices
+• Mesh node discovery
+• Encrypted P2P chat with passphrase-derived AES-256-GCM keys
+• Compact binary wire format for reliable LoRa delivery
+• Native Android notifications with vibration
+• Notification sounds (3 built-in tones + custom sound upload)
+• BLE, WiFi, and USB serial connection support
+• Dark theme, mobile-first UI

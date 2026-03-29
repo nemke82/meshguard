@@ -1,5 +1,9 @@
 # MeshGuard — Secure P2P Mesh Messenger
 
+[![GitHub Release](https://img.shields.io/github/v/release/nemke82/meshguard?style=flat-square)](https://github.com/nemke82/meshguard/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
+[![IzzyOnDroid](https://img.shields.io/badge/IzzyOnDroid-available-4caf50?style=flat-square&logo=fdroid)](https://apt.izzysoft.de/fdroid/index/apk/com.meshguard.app)
+
 Privacy-first encrypted peer-to-peer messenger for [Meshtastic](https://meshtastic.org/) devices. No internet, no servers, no accounts. MeshGuard connects to your Meshtastic radio via Bluetooth, discovers other mesh nodes, and lets you start encrypted conversations using a shared passphrase — nothing secret ever travels over the air.
 
 ```mermaid
@@ -30,15 +34,22 @@ graph LR
 
 ## Downloads
 
-Grab the latest build from [**Releases**](https://github.com/nemke82/meshguard/releases).
+### Android
 
-| Platform | File | Install |
-|----------|------|---------|
-| Android | `.apk` | Enable "Install from unknown sources", open the APK |
-| Ubuntu / Debian | `.deb` | `sudo dpkg -i meshguard_*.deb` |
-| RHEL / Fedora | `.rpm` | `sudo dnf install meshguard-*.rpm` |
-| Linux (any) | `.AppImage` | `chmod +x MeshGuard-*.AppImage && ./MeshGuard-*.AppImage` |
-| macOS | `.dmg` | Open the DMG, drag MeshGuard to Applications |
+[![Get it on IzzyOnDroid](https://img.shields.io/badge/IzzyOnDroid-Get%20it-4caf50?style=for-the-badge&logo=fdroid&logoColor=white)](https://apt.izzysoft.de/fdroid/index/apk/com.meshguard.app)
+&nbsp;&nbsp;
+[![Download APK](https://img.shields.io/badge/APK-Direct%20Download-2196f3?style=for-the-badge&logo=android&logoColor=white)](https://github.com/nemke82/meshguard/releases/latest/download/meshguard-android.apk)
+
+Or grab the APK directly from the latest [**GitHub Release**](https://github.com/nemke82/meshguard/releases/latest).
+
+### Desktop
+
+| Platform | Download | Install |
+|----------|----------|---------|
+| Ubuntu / Debian | [`.deb`](https://github.com/nemke82/meshguard/releases/latest) | `sudo dpkg -i meshguard_*.deb` |
+| RHEL / Fedora | [`.rpm`](https://github.com/nemke82/meshguard/releases/latest) | `sudo dnf install meshguard-*.rpm` |
+| Linux (any) | [`.AppImage`](https://github.com/nemke82/meshguard/releases/latest) | `chmod +x meshguard-*.AppImage && ./meshguard-*.AppImage` |
+| macOS (universal) | [`.dmg`](https://github.com/nemke82/meshguard/releases/latest) | Open the DMG, drag MeshGuard to Applications |
 
 ---
 

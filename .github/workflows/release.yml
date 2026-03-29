@@ -133,8 +133,12 @@ jobs:
           # Verify
           "${ANDROID_HOME}/build-tools/$(ls ${ANDROID_HOME}/build-tools/ | tail -1)/apksigner" verify "$DEST"
 
+          # Also copy to a stable name for direct-download links
+          cp "$DEST" "meshguard-android.apk"
+
           echo "path=$DEST" >> "$GITHUB_OUTPUT"
           echo "name=$DEST" >> "$GITHUB_OUTPUT"
+          echo "stable_path=meshguard-android.apk" >> "$GITHUB_OUTPUT"
 
           # Clean up keystore
           rm -f /tmp/meshguard.jks /tmp/meshguard-aligned.apk
@@ -143,7 +147,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: android-apk
-          path: ${{ steps.apk.outputs.path }}
+          path: |
+            ${{ steps.apk.outputs.path }}
+            ${{ steps.apk.outputs.stable_path }}
 
   # ──────────────────────────────────────────────
   # Linux — Ubuntu (.deb + .AppImage)
@@ -403,7 +409,8 @@ jobs:
 
             | Platform | File |
             |----------|------|
-            | Android | `meshguard-*-android.apk` |
+            | Android (direct) | [`meshguard-android.apk`](https://github.com/nemke82/meshguard/releases/latest/download/meshguard-android.apk) |
+            | Android (IzzyOnDroid) | [F-Droid / IzzyOnDroid](https://apt.izzysoft.de/fdroid/index/apk/com.meshguard.app) |
             | Ubuntu/Debian | `meshguard-*-amd64.deb` |
             | RHEL/Fedora | `meshguard-*-x86_64.rpm` |
             | Linux (universal) | `meshguard-*-x86_64.AppImage` |
