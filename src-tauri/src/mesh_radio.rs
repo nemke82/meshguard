@@ -220,6 +220,41 @@ async fn build_polling_ble_stream(
     let fromradio_char = find_char(&chars, FROMRADIO_UUID)?;
     tracing::info!("Found Meshtastic GATT characteristics");
 
+    // Trigger BLE pairing by reading fromradio. Many Meshtastic devices
+    // (SenseCAP T1000, etc.) require encrypted pairing before allowing
+    // reads/writes. On Linux/BlueZ, accessing a protected characteristic
+    // triggers automatic "Just Works" pairing, but we must wait for it.
+    tracing::info!("Initiating BLE pairing handshake...");
+    let mut paired = false;
+    for attempt in 1..=10 {
+        match radio.read(&fromradio_char).await {
+            Ok(_) => {
+                tracing::info!("BLE pairing succeeded (attempt {attempt})");
+                paired = true;
+                break;
+            }
+            Err(e) => {
+                let err_str = e.to_string();
+                tracing::debug!("BLE pairing attempt {attempt}/10: {err_str}");
+                if err_str.contains("Not paired")
+                    || err_str.contains("In Progress")
+                    || err_str.contains("NotAuthorized")
+                    || err_str.contains("not permitted")
+                {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
+                // Non-pairing error — fail fast
+                return Err(MeshGuardError::Ble(format!("BLE read failed: {e}")));
+            }
+        }
+    }
+    if !paired {
+        return Err(MeshGuardError::Ble(
+            "BLE pairing failed after 10 attempts — ensure the device is not connected to another app".into(),
+        ));
+    }
+
     let (client, mut server) = tokio::io::duplex(4096);
 
     let handle = tokio::spawn(async move {
@@ -228,23 +263,31 @@ async fn build_polling_ble_stream(
         let mut write_buf = [0u8; 512];
 
         loop {
-            // Half-duplex: check for data TO send, then poll for data FROM radio.
-            // Use a short timeout so we alternate between read and write quickly.
             match tokio::time::timeout(Duration::from_millis(50), server.read(&mut write_buf)).await {
                 Ok(Ok(0)) => {
                     tracing::debug!("BLE client stream closed");
                     break;
                 }
                 Ok(Ok(len)) => {
-                    // Strip the 4-byte packet header that the meshtastic crate adds;
-                    // BLE transport doesn't use it.
+                    // Strip the 4-byte packet header — BLE transport doesn't use it.
                     let payload = if len > 4 && write_buf[0] == 0x94 && write_buf[1] == 0xc3 {
                         &write_buf[4..len]
                     } else {
                         &write_buf[..len]
                     };
-                    if let Err(e) = radio.write(&toradio_char, payload, WriteType::WithResponse).await {
-                        tracing::error!("BLE write failed: {e}");
+                    // Retry writes — BlueZ can transiently return "In Progress"
+                    let mut ok = false;
+                    for retry in 0..3 {
+                        match radio.write(&toradio_char, payload, WriteType::WithResponse).await {
+                            Ok(()) => { ok = true; break; }
+                            Err(e) => {
+                                tracing::warn!("BLE write retry {retry}: {e}");
+                                tokio::time::sleep(Duration::from_millis(500)).await;
+                            }
+                        }
+                    }
+                    if !ok {
+                        tracing::error!("BLE write failed after retries");
                         break;
                     }
                 }
@@ -252,7 +295,7 @@ async fn build_polling_ble_stream(
                     tracing::error!("Server stream read error: {e}");
                     break;
                 }
-                Err(_) => {} // timeout — no data to write, proceed to read
+                Err(_) => {}
             }
 
             // Poll fromradio for available data
@@ -265,7 +308,6 @@ async fn build_polling_ble_stream(
                     }
                 }
                 Ok(_) => {
-                    // No data available — small sleep to avoid busy-loop
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
                 Err(e) => {
