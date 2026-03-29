@@ -31,3 +31,6 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 zeroize = { version = "1", features = ["derive"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+bluer = { version = "0.17", features = ["bluetoothd"] }

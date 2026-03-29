@@ -6,8 +6,7 @@ use std::time::Duration;
 use btleplug::api::{Central, Characteristic, Manager as _, Peripheral as _, ScanFilter, WriteType};
 use btleplug::platform::Manager;
 use meshtastic::api::state::Configured;
-use meshtastic::api::{ConnectedStreamApi, StreamApi};
-use meshtastic::api::StreamHandle;
+use meshtastic::api::{ConnectedStreamApi, StreamApi, StreamHandle};
 use meshtastic::packet::{PacketDestination, PacketRouter};
 use meshtastic::protobufs;
 use meshtastic::protobufs::from_radio::PayloadVariant;
@@ -81,6 +80,84 @@ fn is_meshtastic_device(name: &str, services: &[uuid::Uuid]) -> bool {
     }
     let lower = name.to_lowercase();
     MESHTASTIC_NAME_HINTS.iter().any(|hint| lower.contains(hint))
+}
+
+/// Pair with a BLE device via BlueZ D-Bus, providing the PIN/passkey.
+/// Meshtastic devices default to PIN 123456 for screenless devices.
+/// On non-Linux platforms, the OS handles pairing automatically.
+#[cfg(target_os = "linux")]
+async fn pair_ble_device(mac_address: &str, pin: u32) -> Result<(), MeshGuardError> {
+    let address: bluer::Address = mac_address
+        .parse()
+        .map_err(|e| MeshGuardError::Ble(format!("Invalid MAC address '{mac_address}': {e}")))?;
+
+    let session = bluer::Session::new()
+        .await
+        .map_err(|e| MeshGuardError::Ble(format!("BlueZ D-Bus session failed: {e}")))?;
+
+    let adapter = session
+        .default_adapter()
+        .await
+        .map_err(|e| MeshGuardError::Ble(format!("No Bluetooth adapter via BlueZ: {e}")))?;
+
+    let device = adapter
+        .device(address)
+        .map_err(|e| MeshGuardError::Ble(format!("Device {mac_address} not in BlueZ: {e}")))?;
+
+    if device.is_paired().await.unwrap_or(false) {
+        tracing::info!("Device {mac_address} already paired — skipping");
+        return Ok(());
+    }
+
+    let agent = bluer::agent::Agent {
+        request_default: true,
+        request_passkey: Some(Box::new(move |_req| {
+            Box::pin(async move {
+                tracing::info!("BlueZ requested passkey — providing {pin}");
+                Ok(pin)
+            })
+        })),
+        request_pin_code: Some(Box::new(move |_req| {
+            let pin_str = format!("{pin:06}");
+            Box::pin(async move {
+                tracing::info!("BlueZ requested PIN code — providing {pin_str}");
+                Ok(pin_str)
+            })
+        })),
+        request_confirmation: Some(Box::new(|_req| {
+            Box::pin(async {
+                tracing::info!("BlueZ requested confirmation — accepting");
+                Ok(())
+            })
+        })),
+        request_authorization: Some(Box::new(|_req| {
+            Box::pin(async {
+                tracing::info!("BlueZ requested authorization — accepting");
+                Ok(())
+            })
+        })),
+        ..Default::default()
+    };
+
+    let _agent_handle = session
+        .register_agent(agent)
+        .await
+        .map_err(|e| MeshGuardError::Ble(format!("BlueZ agent registration failed: {e}")))?;
+
+    tracing::info!("Pairing with {mac_address} (PIN {pin})...");
+    device.pair().await.map_err(|e| {
+        MeshGuardError::Ble(format!(
+            "BLE pairing failed: {e} — check the device PIN (default is 123456)"
+        ))
+    })?;
+
+    tracing::info!("BLE pairing completed successfully");
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn pair_ble_device(_mac_address: &str, _pin: u32) -> Result<(), MeshGuardError> {
+    Ok(())
 }
 
 pub async fn scan_ble_devices(timeout_secs: u64) -> Result<Vec<ScannedBleDevice>, MeshGuardError> {
@@ -160,8 +237,12 @@ fn find_char(chars: &std::collections::BTreeSet<Characteristic>, uuid: uuid::Uui
 /// Build a BLE stream using direct btleplug polling instead of
 /// notification-based reading. Returns a StreamHandle compatible
 /// with the meshtastic crate's StreamApi.
+///
+/// Uses `bluer` on Linux to properly pair with the device (providing
+/// the PIN/passkey) before GATT access.
 async fn build_polling_ble_stream(
     device_name: &str,
+    pin: u32,
 ) -> Result<StreamHandle<DuplexStream>, MeshGuardError> {
     let manager = Manager::new()
         .await
@@ -175,7 +256,6 @@ async fn build_polling_ble_stream(
         .next()
         .ok_or_else(|| MeshGuardError::Ble("No Bluetooth adapter found".into()))?;
 
-    // Scan for the target device
     let _ = adapter.stop_scan().await;
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -207,10 +287,18 @@ async fn build_polling_ble_stream(
     let radio = target
         .ok_or_else(|| MeshGuardError::Ble(format!("Device '{device_name}' not found during BLE scan")))?;
 
-    tracing::info!("Connecting to BLE device: {device_name}");
+    let mac_address = radio.address().to_string();
+    tracing::info!("Connecting to BLE device: {device_name} ({mac_address})");
+
     radio.connect().await
         .map_err(|e| MeshGuardError::Ble(format!("BLE connect failed: {e}")))?;
 
+    // Pair via BlueZ D-Bus (Linux) before GATT access.
+    // Meshtastic devices require BLE encryption — on Linux we must
+    // explicitly pair and provide the PIN through a BlueZ agent.
+    pair_ble_device(&mac_address, pin).await?;
+
+    // Discover services (may need re-discovery after pairing)
     tracing::info!("Discovering GATT services...");
     radio.discover_services().await
         .map_err(|e| MeshGuardError::Ble(format!("GATT discovery failed: {e}")))?;
@@ -220,39 +308,17 @@ async fn build_polling_ble_stream(
     let fromradio_char = find_char(&chars, FROMRADIO_UUID)?;
     tracing::info!("Found Meshtastic GATT characteristics");
 
-    // Trigger BLE pairing by reading fromradio. Many Meshtastic devices
-    // (SenseCAP T1000, etc.) require encrypted pairing before allowing
-    // reads/writes. On Linux/BlueZ, accessing a protected characteristic
-    // triggers automatic "Just Works" pairing, but we must wait for it.
-    tracing::info!("Initiating BLE pairing handshake...");
-    let mut paired = false;
-    for attempt in 1..=10 {
-        match radio.read(&fromradio_char).await {
-            Ok(_) => {
-                tracing::info!("BLE pairing succeeded (attempt {attempt})");
-                paired = true;
-                break;
-            }
-            Err(e) => {
-                let err_str = e.to_string();
-                tracing::debug!("BLE pairing attempt {attempt}/10: {err_str}");
-                if err_str.contains("Not paired")
-                    || err_str.contains("In Progress")
-                    || err_str.contains("NotAuthorized")
-                    || err_str.contains("not permitted")
-                {
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                    continue;
-                }
-                // Non-pairing error — fail fast
-                return Err(MeshGuardError::Ble(format!("BLE read failed: {e}")));
-            }
+    // Verify GATT access works after pairing
+    match radio.read(&fromradio_char).await {
+        Ok(_) => tracing::info!("GATT read verified — connection is encrypted"),
+        Err(e) => {
+            tracing::warn!("Post-pairing GATT read failed: {e} — retrying after short delay");
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            radio.read(&fromradio_char).await
+                .map_err(|e| MeshGuardError::Ble(format!(
+                    "GATT read failed after pairing: {e} — the device may need to be re-paired"
+                )))?;
         }
-    }
-    if !paired {
-        return Err(MeshGuardError::Ble(
-            "BLE pairing failed after 10 attempts — ensure the device is not connected to another app".into(),
-        ));
     }
 
     let (client, mut server) = tokio::io::duplex(4096);
@@ -269,13 +335,11 @@ async fn build_polling_ble_stream(
                     break;
                 }
                 Ok(Ok(len)) => {
-                    // Strip the 4-byte packet header — BLE transport doesn't use it.
                     let payload = if len > 4 && write_buf[0] == 0x94 && write_buf[1] == 0xc3 {
                         &write_buf[4..len]
                     } else {
                         &write_buf[..len]
                     };
-                    // Retry writes — BlueZ can transiently return "In Progress"
                     let mut ok = false;
                     for retry in 0..3 {
                         match radio.write(&toradio_char, payload, WriteType::WithResponse).await {
@@ -298,7 +362,6 @@ async fn build_polling_ble_stream(
                 Err(_) => {}
             }
 
-            // Poll fromradio for available data
             match radio.read(&fromradio_char).await {
                 Ok(data) if !data.is_empty() => {
                     let framed = format_packet(&data);
@@ -470,12 +533,13 @@ impl MeshRadio {
     }
 
     /// Connect via Bluetooth LE using our own polling-based stream.
-    pub async fn connect_ble(ble_name: &str, p: ConnectParams) -> Result<Self, MeshGuardError> {
+    /// `pin` is the BLE pairing PIN (default 123456 for Meshtastic).
+    pub async fn connect_ble(ble_name: &str, pin: u32, p: ConnectParams) -> Result<Self, MeshGuardError> {
         emit_connection_state(&p.app_handle, "connecting");
         stop_any_active_scan().await?;
 
         let stream_api = StreamApi::new();
-        let ble_stream = build_polling_ble_stream(ble_name).await?;
+        let ble_stream = build_polling_ble_stream(ble_name, pin).await?;
 
         let (mut decoded_listener, connected_api) = stream_api.connect(ble_stream).await;
 
