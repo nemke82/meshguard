@@ -330,7 +330,7 @@ pub async fn send_message(
         .get(&peer_node_num)
         .ok_or(MeshGuardError::NoSession)?;
 
-    let msg = MeshMessage::new_text(&text, session_key)?;
+    let msg = MeshMessage::new_text(&text);
     let encrypted = msg.encrypt_envelope(session_key)?;
     drop(keys);
 

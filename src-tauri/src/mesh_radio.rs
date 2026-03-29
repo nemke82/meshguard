@@ -836,6 +836,10 @@ impl MeshRadio {
         data: Vec<u8>,
         destination_node: u32,
     ) -> Result<(), MeshGuardError> {
+        tracing::info!(
+            "Sending PrivateApp to node {destination_node} ({} bytes)",
+            data.len()
+        );
         let encoded = EncodedMeshPacketData::new(data);
         self.api
             .send_mesh_packet(
@@ -913,19 +917,46 @@ fn spawn_listener(
     pending_pair_requests: Arc<Mutex<HashMap<u32, Vec<u8>>>>,
 ) {
     tokio::spawn(async move {
+        let mut pkt_counter: u64 = 0;
         while let Some(from_radio) = listener.recv().await {
-            if let Some(variant) = from_radio.payload_variant {
+            if let Some(ref variant) = from_radio.payload_variant {
+                pkt_counter += 1;
+                let vname = variant_name(variant);
+                if vname != "QueueStatus" {
+                    tracing::debug!("Listener #{pkt_counter}: {vname}");
+                }
+
                 match variant {
                     PayloadVariant::NodeInfo(node_info) => {
-                        let node = node_info_to_mesh_node(&node_info);
+                        let node = node_info_to_mesh_node(node_info);
                         if node.node_num != my_node_num {
+                            tracing::info!(
+                                "Mesh node update: {} ({})",
+                                node.long_name,
+                                node.node_num
+                            );
                             mesh_nodes.lock().await.insert(node.node_num, node);
                             let _ = app_handle.emit("mesh-nodes-updated", ());
                         }
                     }
                     PayloadVariant::Packet(mesh_packet) => {
+                        let pv = match &mesh_packet.payload_variant {
+                            Some(protobufs::mesh_packet::PayloadVariant::Decoded(d)) => {
+                                format!("Decoded(port={})", d.portnum)
+                            }
+                            Some(protobufs::mesh_packet::PayloadVariant::Encrypted(e)) => {
+                                format!("Encrypted({} bytes)", e.len())
+                            }
+                            None => "None".to_string(),
+                        };
+                        tracing::info!(
+                            "Mesh packet from={} to={} channel={} payload={pv}",
+                            mesh_packet.from,
+                            mesh_packet.to,
+                            mesh_packet.channel
+                        );
                         handle_incoming_packet(
-                            &mesh_packet,
+                            mesh_packet,
                             &app_handle,
                             &session_keys,
                             &pending_pair_requests,
@@ -965,10 +996,26 @@ async fn handle_incoming_packet(
 ) {
     let decoded = match &packet.payload_variant {
         Some(protobufs::mesh_packet::PayloadVariant::Decoded(d)) => d,
-        _ => return,
+        Some(protobufs::mesh_packet::PayloadVariant::Encrypted(e)) => {
+            tracing::warn!(
+                "Received encrypted packet from {} ({} bytes) — cannot process. \
+                 Both devices must share the same Meshtastic channel PSK.",
+                packet.from,
+                e.len()
+            );
+            return;
+        }
+        None => return,
     };
 
-    if decoded.portnum != protobufs::PortNum::PrivateApp as i32 {
+    let portnum = decoded.portnum;
+    let private_app = protobufs::PortNum::PrivateApp as i32;
+
+    if portnum != private_app {
+        tracing::debug!(
+            "Ignoring packet from {} with portnum={portnum} (want {private_app}=PrivateApp)",
+            packet.from
+        );
         return;
     }
 
@@ -976,35 +1023,38 @@ async fn handle_incoming_packet(
     let payload = &decoded.payload;
 
     if payload.is_empty() {
+        tracing::debug!("Empty PrivateApp payload from {from_node}");
         return;
     }
+
+    tracing::info!(
+        "PrivateApp message from node {from_node} ({} bytes)",
+        payload.len()
+    );
 
     let keys = session_keys.lock().await;
     if let Some(key) = keys.get(&from_node) {
         match crate::protocol::MeshMessage::decrypt_envelope(payload, key) {
             Ok(msg) => {
+                tracing::info!("Decrypted envelope from {from_node}: {:?}", msg.id());
                 match msg {
                     crate::protocol::MeshMessage::Text {
-                        id, ciphertext, timestamp, ..
+                        id, text, timestamp,
                     } => {
-                        match key.decrypt(&ciphertext) {
-                            Ok(plaintext_bytes) => {
-                                let text = String::from_utf8_lossy(&plaintext_bytes).to_string();
-                                let _ = app_handle.emit(
-                                    "incoming-message",
-                                    IncomingMessageEvent {
-                                        from_node,
-                                        from_name: String::new(),
-                                        text,
-                                        timestamp,
-                                        message_id: id,
-                                    },
-                                );
-                            }
-                            Err(e) => {
-                                tracing::warn!("Failed to decrypt inner text from {from_node}: {e}");
-                            }
-                        }
+                        tracing::info!(
+                            "Incoming text from {from_node}: \"{}\" (id={id})",
+                            text.chars().take(40).collect::<String>()
+                        );
+                        let _ = app_handle.emit(
+                            "incoming-message",
+                            IncomingMessageEvent {
+                                from_node,
+                                from_name: String::new(),
+                                text,
+                                timestamp,
+                                message_id: id,
+                            },
+                        );
                     }
                     crate::protocol::MeshMessage::PairAccept { responder_name, .. } => {
                         tracing::info!("Pair accepted by {responder_name} (node {from_node})");
@@ -1018,16 +1068,23 @@ async fn handle_incoming_packet(
                         );
                     }
                     crate::protocol::MeshMessage::PairRequest { sender_name, .. } => {
-                        tracing::info!("Pair request from {sender_name} (node {from_node}) — already have key");
+                        tracing::info!(
+                            "Pair request from {sender_name} (node {from_node}) — already have key"
+                        );
                     }
-                    _ => {}
                 }
                 return;
             }
-            Err(_) => {
-                tracing::debug!("Could not decrypt from known peer {from_node} — key mismatch?");
+            Err(e) => {
+                tracing::warn!(
+                    "Envelope decryption failed from known peer {from_node}: {e} — key mismatch?"
+                );
             }
         }
+    } else {
+        tracing::info!(
+            "No session key for node {from_node} — treating as pair request"
+        );
     }
     drop(keys);
 
