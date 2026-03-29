@@ -2,15 +2,16 @@
 
 Privacy-first encrypted peer-to-peer messenger for [Meshtastic](https://meshtastic.org/) devices. No internet, no servers, no accounts. MeshGuard connects to your Meshtastic radio via Bluetooth, discovers other mesh nodes, and lets you start encrypted conversations using a shared passphrase — nothing secret ever travels over the air.
 
-```
-   You (Phone/Desktop)              Peer (Phone/Desktop)
-         │                                    │
-    BLE ─┘                                    └─ BLE
-         │                                    │
-   ┌─────┴──────┐      LoRa Mesh       ┌─────┴──────┐
-   │ Meshtastic │ ◄────────────────────►│ Meshtastic │
-   │   Device   │   encrypted channel   │   Device   │
-   └────────────┘     (up to 15km)      └────────────┘
+```mermaid
+graph LR
+    A["You<br/>(Phone/Desktop)"] -- BLE --> B["Meshtastic<br/>Radio A"]
+    B -- "LoRa Mesh<br/>encrypted channel<br/>(up to 15 km)" --> C["Meshtastic<br/>Radio B"]
+    C -- BLE --> D["Peer<br/>(Phone/Desktop)"]
+
+    style A fill:#0d9488,stroke:#0f766e,color:#fff
+    style D fill:#0d9488,stroke:#0f766e,color:#fff
+    style B fill:#1e293b,stroke:#334155,color:#e2e8f0
+    style C fill:#1e293b,stroke:#334155,color:#e2e8f0
 ```
 
 ## Features
@@ -22,6 +23,7 @@ Privacy-first encrypted peer-to-peer messenger for [Meshtastic](https://meshtast
 - **End-to-end encryption** — AES-256-GCM with deterministic key derivation (HKDF-SHA256)
 - **No key exchange over the air** — both peers derive identical keys locally from the passphrase
 - **Compact binary protocol** — messages fit within Meshtastic's ~228-byte LoRa payload limit
+- **Notification sounds** — audible alert + popup toast for incoming messages, with custom sound support
 - **Cross-platform** — Android, Linux (deb/rpm/AppImage), macOS
 - **WiFi & USB serial** — connect to Meshtastic devices over TCP or serial, not just Bluetooth
 - **Dark theme, mobile-first UI** — designed for field use
@@ -72,29 +74,92 @@ Your peer does the same: scans, connects to their radio, taps your node, enters 
 
 ## How It Works
 
-```
- Sender                                                          Receiver
-   │                                                                │
-   │  1. Type message                                               │
-   │  2. Serialize to compact binary (1 byte type + UTF-8 text)     │
-   │  3. Encrypt with AES-256-GCM (session key from passphrase)     │
-   │  4. Send via BLE as Meshtastic PrivateApp packet               │
-   │       │                                                        │
-   │  ┌────┴─────┐        LoRa         ┌──────────┐                │
-   │  │  Radio A │ ──────────────────► │  Radio B │                │
-   │  └──────────┘  channel-encrypted  └────┬─────┘                │
-   │                                        │                      │
-   │                         5. Receive via BLE                     │
-   │                         6. Decrypt AES-256-GCM                 │
-   │                         7. Parse binary → plaintext            │
-   │                         8. Display message                     │
+### Connection Flow
+
+```mermaid
+sequenceDiagram
+    participant User as You
+    participant App as MeshGuard
+    participant Radio as Meshtastic Radio
+
+    User->>App: Tap "Scan for Devices"
+    App->>Radio: BLE scan (filter Meshtastic UUID)
+    Radio-->>App: Device found (name + address)
+    User->>App: Tap device, enter PIN
+    App->>Radio: BLE pair (PIN 123456)
+    Radio-->>App: Paired & bonded
+    App->>Radio: Connect GATT
+    App->>Radio: Send want_config
+    Radio-->>App: MyNodeInfo + NodeDB + Channels
+    App-->>User: Show Mesh Network screen
 ```
 
-Messages are **double-encrypted**:
-- **Layer 1 (app):** AES-256-GCM — MeshGuard encrypts the message payload
-- **Layer 2 (radio):** Meshtastic channel PSK — the LoRa radio encrypts the entire packet
+### Message Exchange
 
-Even if someone captures the LoRa signal AND knows the channel PSK, they still can't read messages without the passphrase.
+```mermaid
+sequenceDiagram
+    participant Alice as Alice (MeshGuard)
+    participant RA as Radio A
+    participant RB as Radio B
+    participant Bob as Bob (MeshGuard)
+
+    Note over Alice,Bob: Both entered same passphrase → identical AES-256 keys
+
+    Alice->>Alice: Serialize [0x01 | "Hello!"]
+    Alice->>Alice: Encrypt AES-256-GCM
+    Alice->>RA: BLE write (PrivateApp packet)
+    RA->>RA: Encrypt with channel PSK
+    RA->>RB: LoRa transmission
+    RB->>RB: Decrypt channel PSK
+    RB->>Bob: BLE read (PrivateApp packet)
+    Bob->>Bob: Decrypt AES-256-GCM
+    Bob->>Bob: Parse binary → "Hello!"
+    Bob->>Bob: 🔔 Play notification sound
+    Note over Bob: Display message + toast popup
+```
+
+### Key Derivation
+
+```mermaid
+flowchart TB
+    A["Device A name"] --> Sort
+    B["Device B name"] --> Sort
+    P["Shared passphrase"] --> Hash
+
+    Sort --> Hash["SHA-256<br/>(sorted_name_A | sorted_name_B | passphrase)"]
+    Hash --> HKDF["HKDF-SHA256<br/>salt: meshguard-p2p-v1"]
+    HKDF --> Key["AES-256 Session Key<br/>(32 bytes)"]
+
+    Key --> Encrypt["Encrypt outgoing messages"]
+    Key --> Decrypt["Decrypt incoming messages"]
+
+    style Key fill:#0d9488,stroke:#0f766e,color:#fff
+    style HKDF fill:#1e293b,stroke:#334155,color:#e2e8f0
+    style Hash fill:#1e293b,stroke:#334155,color:#e2e8f0
+```
+
+### Double Encryption Layers
+
+```mermaid
+flowchart LR
+    subgraph "Layer 1 — MeshGuard (app)"
+        M["Plaintext"] --> E1["AES-256-GCM<br/>session key"]
+    end
+
+    subgraph "Layer 2 — Meshtastic (radio)"
+        E1 --> E2["Channel PSK<br/>LoRa encryption"]
+    end
+
+    E2 --> Air["📡 Over the air"]
+
+    Air --> D2["Decrypt<br/>channel PSK"]
+    D2 --> D1["Decrypt<br/>AES-256-GCM"]
+    D1 --> P["Plaintext"]
+
+    style M fill:#0d9488,stroke:#0f766e,color:#fff
+    style P fill:#0d9488,stroke:#0f766e,color:#fff
+    style Air fill:#dc2626,stroke:#b91c1c,color:#fff
+```
 
 ---
 
@@ -117,6 +182,52 @@ Even if someone captures the LoRa signal AND knows the channel PSK, they still c
 ## Architecture
 
 Built with [Tauri 2.0](https://tauri.app/) — Rust backend + web frontend.
+
+```mermaid
+graph TB
+    subgraph "Frontend (Web UI)"
+        UI["main.js — vanilla JS"]
+        CSS["main.css — dark theme"]
+        HTML["index.html"]
+    end
+
+    subgraph "Backend (Rust / Tauri)"
+        CMD["commands.rs<br/>Tauri IPC"]
+        RADIO["mesh_radio.rs<br/>BLE scan, connect, I/O"]
+        CRYPTO["crypto.rs<br/>AES-256-GCM + HKDF"]
+        PROTO["protocol.rs<br/>binary wire format"]
+        STATE["state.rs<br/>nodes, keys, radio"]
+        CFG["device_config.rs<br/>saved config"]
+    end
+
+    subgraph "Platform BLE"
+        BTLEPLUG["btleplug<br/>(Linux/macOS)"]
+        BLUER["bluer<br/>(Linux PIN pairing)"]
+        KOTLIN["BlePlugin.kt<br/>(Android native)"]
+    end
+
+    subgraph "Meshtastic"
+        CRATE["meshtastic crate<br/>protobuf + StreamApi"]
+        DEVICE["Meshtastic Radio<br/>(BLE/WiFi/USB)"]
+    end
+
+    UI <--> CMD
+    CMD --> RADIO
+    CMD --> CRYPTO
+    CMD --> PROTO
+    CMD --> STATE
+    CMD --> CFG
+    RADIO --> CRATE
+    RADIO --> BTLEPLUG
+    RADIO --> BLUER
+    RADIO --> KOTLIN
+    CRATE --> DEVICE
+
+    style UI fill:#0d9488,stroke:#0f766e,color:#fff
+    style DEVICE fill:#f59e0b,stroke:#d97706,color:#000
+```
+
+### Project Structure
 
 ```
 meshguard/

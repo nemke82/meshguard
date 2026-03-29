@@ -117,6 +117,11 @@
             <div class="mesh-header-title">Mesh Network</div>
             <div class="mesh-header-sub" id="my-device-label">Not connected</div>
           </div>
+          <button id="btn-notif-settings" class="btn-icon-only" title="Notification settings">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+            </svg>
+          </button>
           <button id="btn-refresh-nodes" class="btn-icon-only" title="Refresh">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>
@@ -236,6 +241,55 @@
         </div>
       </div>
 
+      <!-- ═══════════════════════════════════════════════
+           Toast notifications (anchored top-right)
+           ═══════════════════════════════════════════════ -->
+      <div id="toast-container" class="toast-container"></div>
+
+      <!-- ═══════════════════════════════════════════════
+           Notification Settings Modal
+           ═══════════════════════════════════════════════ -->
+      <div id="notif-settings-overlay" class="modal-overlay" style="display:none;">
+        <div class="modal-card">
+          <h2 class="section-title">Notification Settings</h2>
+
+          <label class="field toggle-field">
+            <span class="field-label">Sound Notifications</span>
+            <input type="checkbox" id="notif-sound-enabled" checked />
+            <span class="toggle-switch"></span>
+          </label>
+
+          <label class="field">
+            <span class="field-label">Volume</span>
+            <input type="range" id="notif-volume" min="0" max="100" value="70" />
+          </label>
+
+          <label class="field">
+            <span class="field-label">Notification Tone</span>
+            <select id="notif-tone">
+              <option value="default">Default Chime</option>
+              <option value="beacon">Beacon Pulse</option>
+              <option value="chirp">Short Chirp</option>
+              <option value="custom">Custom Sound...</option>
+            </select>
+          </label>
+
+          <label class="field" id="custom-sound-field" style="display:none;">
+            <span class="field-label">Custom Sound File</span>
+            <input type="file" id="notif-custom-file" accept="audio/*" />
+            <span class="field-hint">MP3, WAV, or OGG — max 500 KB</span>
+          </label>
+
+          <button type="button" id="notif-test-btn" class="btn btn-scan" style="margin-bottom:12px;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+            Test Sound
+          </button>
+
+          <div class="btn-group">
+            <button type="button" id="notif-settings-close" class="btn btn-primary btn-full">Done</button>
+          </div>
+        </div>
+      </div>
     </div>
     <script type="module" src="/src/main.js"></script>
   </body>

@@ -20,6 +20,155 @@ function invokeWithTimeout(cmd, args, ms = 30000) {
 }
 
 // ============================================================
+// Notification Sound Engine (Web Audio API)
+// ============================================================
+const NotificationSound = (() => {
+  let audioCtx = null;
+  let customSoundBuffer = null;
+  let settings = {
+    enabled: true,
+    volume: 0.7,
+    tone: "default",
+  };
+
+  function getCtx() {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === "suspended") audioCtx.resume();
+    return audioCtx;
+  }
+
+  function playNote(ctx, freq, startTime, duration, gain, type = "sine") {
+    const osc = ctx.createOscillator();
+    const vol = ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, startTime);
+    vol.gain.setValueAtTime(gain, startTime);
+    vol.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
+    osc.connect(vol).connect(ctx.destination);
+    osc.start(startTime);
+    osc.stop(startTime + duration);
+  }
+
+  const tones = {
+    default(ctx, vol) {
+      const t = ctx.currentTime;
+      playNote(ctx, 880, t, 0.12, vol * 0.4);
+      playNote(ctx, 1108.73, t + 0.12, 0.12, vol * 0.5);
+      playNote(ctx, 1318.51, t + 0.24, 0.2, vol * 0.3);
+    },
+    beacon(ctx, vol) {
+      const t = ctx.currentTime;
+      playNote(ctx, 523.25, t, 0.08, vol * 0.3, "triangle");
+      playNote(ctx, 659.25, t + 0.1, 0.08, vol * 0.4, "triangle");
+      playNote(ctx, 783.99, t + 0.2, 0.15, vol * 0.35, "triangle");
+      playNote(ctx, 1046.5, t + 0.35, 0.25, vol * 0.25, "triangle");
+    },
+    chirp(ctx, vol) {
+      const t = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(1200, t);
+      osc.frequency.exponentialRampToValueAtTime(600, t + 0.15);
+      g.gain.setValueAtTime(vol * 0.5, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+      osc.connect(g).connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.15);
+    },
+  };
+
+  function play() {
+    if (!settings.enabled) return;
+    const ctx = getCtx();
+
+    if (settings.tone === "custom" && customSoundBuffer) {
+      const src = ctx.createBufferSource();
+      const g = ctx.createGain();
+      src.buffer = customSoundBuffer;
+      g.gain.value = settings.volume;
+      src.connect(g).connect(ctx.destination);
+      src.start();
+      return;
+    }
+
+    const fn = tones[settings.tone] || tones.default;
+    fn(ctx, settings.volume);
+  }
+
+  async function loadCustomSound(file) {
+    if (!file || file.size > 512000) return false;
+    try {
+      const ctx = getCtx();
+      const buf = await file.arrayBuffer();
+      customSoundBuffer = await ctx.decodeAudioData(buf);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function loadSettings() {
+    try {
+      const saved = localStorage.getItem("meshguard_notif");
+      if (saved) Object.assign(settings, JSON.parse(saved));
+    } catch {}
+  }
+
+  function saveSettings() {
+    localStorage.setItem("meshguard_notif", JSON.stringify(settings));
+  }
+
+  loadSettings();
+
+  return { play, loadCustomSound, settings, saveSettings };
+})();
+
+// ============================================================
+// Toast Popup System
+// ============================================================
+const Toast = (() => {
+  const container = () => document.getElementById("toast-container");
+
+  function show({ sender, text, onClick, duration = 5000 }) {
+    const el = document.createElement("div");
+    el.className = "toast";
+    const initial = (sender || "?")[0].toUpperCase();
+    const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    el.innerHTML = `
+      <div class="toast-icon">${initial}</div>
+      <div class="toast-body">
+        <div class="toast-sender">${escapeHtml(sender || "Unknown")}</div>
+        <div class="toast-text">${escapeHtml(text)}</div>
+      </div>
+      <div class="toast-time">${time}</div>
+    `;
+    if (onClick) {
+      el.addEventListener("click", () => {
+        dismiss(el);
+        onClick();
+      });
+    }
+    container().appendChild(el);
+
+    const maxToasts = 4;
+    const toasts = container().querySelectorAll(".toast:not(.toast-out)");
+    if (toasts.length > maxToasts) dismiss(toasts[0]);
+
+    setTimeout(() => dismiss(el), duration);
+    return el;
+  }
+
+  function dismiss(el) {
+    if (!el || el.classList.contains("toast-out")) return;
+    el.classList.add("toast-out");
+    el.addEventListener("animationend", () => el.remove());
+  }
+
+  return { show };
+})();
+
+// ============================================================
 // DOM
 // ============================================================
 const $ = (sel) => document.querySelector(sel);
@@ -619,24 +768,118 @@ async function setupEventListeners() {
 
     state.messages[nodeNum].push(msg);
 
-    if (state.activePeerNodeNum === nodeNum && screenChat.classList.contains("active")) {
+    const onChatScreen =
+      state.activePeerNodeNum === nodeNum && screenChat.classList.contains("active");
+
+    if (onChatScreen) {
       renderMessage(msg);
     }
+
+    NotificationSound.play();
+
+    const senderName = lookupNodeName(nodeNum);
+    Toast.show({
+      sender: senderName,
+      text: data.text,
+      onClick: () => {
+        if (!onChatScreen) {
+          const peer = state.peers.find((p) => p.node_num === nodeNum);
+          if (peer) enterChat(nodeNum, peer.device_name);
+        }
+      },
+    });
   });
 
   await listen("pair-request", (event) => {
     const data = event.payload;
     state.pendingPairRequests.push(data);
 
-    const name = data.from_name || "Node " + data.from_node;
+    const name = data.from_name || lookupNodeName(data.from_node);
     pairRequestText.textContent = `Chat request from ${name}`;
     pairRequestBanner.style.display = "flex";
+
+    NotificationSound.play();
+    Toast.show({ sender: "MeshGuard", text: `Chat request from ${name}` });
   });
 
   await listen("pair-accepted", (event) => {
     const data = event.payload;
     addSystemMessage(`${data.from_name || "Peer"} accepted the chat. Secure session is now active.`);
   });
+}
+
+// ============================================================
+// Notification Settings UI
+// ============================================================
+const notifOverlay = $("#notif-settings-overlay");
+const notifSoundEnabled = $("#notif-sound-enabled");
+const notifVolume = $("#notif-volume");
+const notifTone = $("#notif-tone");
+const notifCustomField = $("#custom-sound-field");
+const notifCustomFile = $("#notif-custom-file");
+const notifTestBtn = $("#notif-test-btn");
+const btnNotifSettings = $("#btn-notif-settings");
+const notifSettingsClose = $("#notif-settings-close");
+
+btnNotifSettings.addEventListener("click", () => {
+  notifSoundEnabled.checked = NotificationSound.settings.enabled;
+  notifVolume.value = Math.round(NotificationSound.settings.volume * 100);
+  notifTone.value = NotificationSound.settings.tone;
+  notifCustomField.style.display = NotificationSound.settings.tone === "custom" ? "" : "none";
+  notifOverlay.style.display = "flex";
+});
+
+notifSettingsClose.addEventListener("click", () => {
+  notifOverlay.style.display = "none";
+});
+
+notifOverlay.addEventListener("click", (e) => {
+  if (e.target === notifOverlay) notifOverlay.style.display = "none";
+});
+
+notifSoundEnabled.addEventListener("change", () => {
+  NotificationSound.settings.enabled = notifSoundEnabled.checked;
+  NotificationSound.saveSettings();
+});
+
+notifVolume.addEventListener("input", () => {
+  NotificationSound.settings.volume = parseInt(notifVolume.value, 10) / 100;
+  NotificationSound.saveSettings();
+});
+
+notifTone.addEventListener("change", () => {
+  NotificationSound.settings.tone = notifTone.value;
+  notifCustomField.style.display = notifTone.value === "custom" ? "" : "none";
+  NotificationSound.saveSettings();
+});
+
+notifCustomFile.addEventListener("change", async () => {
+  const file = notifCustomFile.files[0];
+  if (!file) return;
+  const ok = await NotificationSound.loadCustomSound(file);
+  if (!ok) {
+    alert("Could not load sound file. Make sure it's a valid audio file under 500 KB.");
+    notifTone.value = "default";
+    NotificationSound.settings.tone = "default";
+    notifCustomField.style.display = "none";
+    NotificationSound.saveSettings();
+  }
+});
+
+notifTestBtn.addEventListener("click", () => {
+  NotificationSound.play();
+  Toast.show({ sender: "Test", text: "This is a test notification!" });
+});
+
+// ============================================================
+// Helpers
+// ============================================================
+function lookupNodeName(nodeNum) {
+  const node = state.meshNodes.find((n) => n.node_num === nodeNum);
+  if (node) return node.long_name || node.user_name || "Node " + nodeNum;
+  const peer = state.peers.find((p) => p.node_num === nodeNum);
+  if (peer) return peer.device_name;
+  return "Node " + nodeNum;
 }
 
 // ============================================================
