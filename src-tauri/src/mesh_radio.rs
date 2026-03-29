@@ -83,8 +83,15 @@ fn is_meshtastic_device(name: &str, services: &[uuid::Uuid]) -> bool {
 }
 
 /// Pair with a BLE device via BlueZ D-Bus, providing the PIN/passkey.
-/// Meshtastic devices default to PIN 123456 for screenless devices.
-/// On non-Linux platforms, the OS handles pairing automatically.
+///
+/// Important: call this BEFORE connecting with btleplug. `device.pair()`
+/// both connects and pairs, creating an encrypted link from the start.
+/// After this returns, btleplug's `connect()` will reuse the encrypted
+/// connection established by BlueZ.
+///
+/// Only `request_passkey` is set on the agent to get "KeyboardOnly"
+/// capability — paired with the device's "DisplayOnly" this triggers
+/// the Passkey Entry method where BlueZ asks us for the PIN.
 #[cfg(target_os = "linux")]
 async fn pair_ble_device(mac_address: &str, pin: u32) -> Result<(), MeshGuardError> {
     let address: bluer::Address = mac_address
@@ -104,36 +111,47 @@ async fn pair_ble_device(mac_address: &str, pin: u32) -> Result<(), MeshGuardErr
         .device(address)
         .map_err(|e| MeshGuardError::Ble(format!("Device {mac_address} not in BlueZ: {e}")))?;
 
+    // If already paired, verify the bond works by checking connectivity.
+    // If the bond is stale (device was reset), remove it and re-pair.
     if device.is_paired().await.unwrap_or(false) {
-        tracing::info!("Device {mac_address} already paired — skipping");
-        return Ok(());
+        tracing::info!("Device {mac_address} already paired — checking bond validity");
+        if device.is_connected().await.unwrap_or(false) {
+            tracing::info!("Bond appears valid (device connected)");
+            return Ok(());
+        }
+        // Stale bond — remove and re-pair
+        tracing::info!("Removing stale bond for {mac_address}...");
+        let _ = adapter.remove_device(address).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        // After removal, the device may no longer be in BlueZ cache.
+        // We need it to be re-discovered. Since btleplug already scanned,
+        // it should still be there, but let's verify.
+        match adapter.device(address) {
+            Ok(_) => {}
+            Err(_) => {
+                tracing::info!("Device not in cache after bond removal — re-scanning...");
+                let disc = adapter.discover_devices().await.map_err(|e| {
+                    MeshGuardError::Ble(format!("Re-scan failed: {e}"))
+                })?;
+                // Keep discovery running briefly so BlueZ rediscovers the device
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                drop(disc);
+            }
+        }
     }
 
+    let device = adapter
+        .device(address)
+        .map_err(|e| MeshGuardError::Ble(format!("Device {mac_address} lost from BlueZ: {e}")))?;
+
+    // Only set request_passkey → "KeyboardOnly" capability.
+    // With device "DisplayOnly" → Passkey Entry (BlueZ asks us for PIN).
     let agent = bluer::agent::Agent {
         request_default: true,
         request_passkey: Some(Box::new(move |_req| {
             Box::pin(async move {
-                tracing::info!("BlueZ requested passkey — providing {pin}");
+                tracing::info!("BlueZ agent: providing passkey {pin}");
                 Ok(pin)
-            })
-        })),
-        request_pin_code: Some(Box::new(move |_req| {
-            let pin_str = format!("{pin:06}");
-            Box::pin(async move {
-                tracing::info!("BlueZ requested PIN code — providing {pin_str}");
-                Ok(pin_str)
-            })
-        })),
-        request_confirmation: Some(Box::new(|_req| {
-            Box::pin(async {
-                tracing::info!("BlueZ requested confirmation — accepting");
-                Ok(())
-            })
-        })),
-        request_authorization: Some(Box::new(|_req| {
-            Box::pin(async {
-                tracing::info!("BlueZ requested authorization — accepting");
-                Ok(())
             })
         })),
         ..Default::default()
@@ -151,7 +169,10 @@ async fn pair_ble_device(mac_address: &str, pin: u32) -> Result<(), MeshGuardErr
         ))
     })?;
 
-    tracing::info!("BLE pairing completed successfully");
+    let is_paired = device.is_paired().await.unwrap_or(false);
+    let is_connected = device.is_connected().await.unwrap_or(false);
+    tracing::info!("BLE pairing completed — paired={is_paired} connected={is_connected}");
+
     Ok(())
 }
 
@@ -238,8 +259,9 @@ fn find_char(chars: &std::collections::BTreeSet<Characteristic>, uuid: uuid::Uui
 /// notification-based reading. Returns a StreamHandle compatible
 /// with the meshtastic crate's StreamApi.
 ///
-/// Uses `bluer` on Linux to properly pair with the device (providing
-/// the PIN/passkey) before GATT access.
+/// On Linux, uses `bluer` to pair BEFORE connecting with btleplug.
+/// `device.pair()` establishes an encrypted connection with the PIN,
+/// and btleplug's `connect()` then reuses that encrypted link.
 async fn build_polling_ble_stream(
     device_name: &str,
     pin: u32,
@@ -288,38 +310,57 @@ async fn build_polling_ble_stream(
         .ok_or_else(|| MeshGuardError::Ble(format!("Device '{device_name}' not found during BLE scan")))?;
 
     let mac_address = radio.address().to_string();
-    tracing::info!("Connecting to BLE device: {device_name} ({mac_address})");
 
+    // On Linux: pair via BlueZ BEFORE connecting with btleplug.
+    // bluer's device.pair() connects + pairs in one step, creating an
+    // encrypted link. btleplug's connect() then reuses that connection.
+    pair_ble_device(&mac_address, pin).await?;
+
+    tracing::info!("Connecting to BLE device: {device_name} ({mac_address})");
     radio.connect().await
         .map_err(|e| MeshGuardError::Ble(format!("BLE connect failed: {e}")))?;
 
-    // Pair via BlueZ D-Bus (Linux) before GATT access.
-    // Meshtastic devices require BLE encryption — on Linux we must
-    // explicitly pair and provide the PIN through a BlueZ agent.
-    pair_ble_device(&mac_address, pin).await?;
-
-    // Discover services (may need re-discovery after pairing)
     tracing::info!("Discovering GATT services...");
     radio.discover_services().await
         .map_err(|e| MeshGuardError::Ble(format!("GATT discovery failed: {e}")))?;
 
     let chars = radio.characteristics();
-    let toradio_char = find_char(&chars, TORADIO_UUID)?;
     let fromradio_char = find_char(&chars, FROMRADIO_UUID)?;
+    find_char(&chars, TORADIO_UUID)?;
     tracing::info!("Found Meshtastic GATT characteristics");
 
-    // Verify GATT access works after pairing
+    // Verify GATT access works on the encrypted connection.
+    // If it fails, disconnect and reconnect — the reconnection uses the
+    // bond and negotiates encryption from scratch.
     match radio.read(&fromradio_char).await {
         Ok(_) => tracing::info!("GATT read verified — connection is encrypted"),
         Err(e) => {
-            tracing::warn!("Post-pairing GATT read failed: {e} — retrying after short delay");
+            tracing::warn!("GATT read failed ({e}) — reconnecting to apply bond encryption...");
+            let _ = radio.disconnect().await;
             tokio::time::sleep(Duration::from_secs(2)).await;
-            radio.read(&fromradio_char).await
-                .map_err(|e| MeshGuardError::Ble(format!(
-                    "GATT read failed after pairing: {e} — the device may need to be re-paired"
-                )))?;
+            radio.connect().await
+                .map_err(|e| MeshGuardError::Ble(format!("BLE reconnect failed: {e}")))?;
+            radio.discover_services().await
+                .map_err(|e| MeshGuardError::Ble(format!("GATT re-discovery failed: {e}")))?;
+            // Re-find characteristics after re-discovery
+            let chars = radio.characteristics();
+            let new_from = find_char(&chars, FROMRADIO_UUID)?;
+            match radio.read(&new_from).await {
+                Ok(_) => tracing::info!("GATT read verified after reconnect"),
+                Err(e) => {
+                    return Err(MeshGuardError::Ble(format!(
+                        "GATT still fails after reconnect: {e} — try removing the device from \
+                         system Bluetooth settings and reconnecting"
+                    )));
+                }
+            }
         }
     }
+
+    // Re-fetch characteristics after possible reconnect
+    let chars = radio.characteristics();
+    let fromradio_char = find_char(&chars, FROMRADIO_UUID)?;
+    let toradio_char = find_char(&chars, TORADIO_UUID)?;
 
     let (client, mut server) = tokio::io::duplex(4096);
 
