@@ -70,15 +70,18 @@ fn make_connect_params(app_handle: tauri::AppHandle, state: &AppState) -> Connec
 }
 
 /// Connect via Bluetooth LE.
+/// `pin` is the BLE pairing PIN — defaults to 123456 (Meshtastic standard).
 #[tauri::command]
 pub async fn connect_device(
     ble_name: String,
+    pin: Option<u32>,
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), MeshGuardError> {
+    let pin = pin.unwrap_or(123456);
     disconnect_existing(&state).await;
     let p = make_connect_params(app_handle, &state);
-    let radio = MeshRadio::connect_ble(&ble_name, p).await?;
+    let radio = MeshRadio::connect_ble(&ble_name, pin, p).await?;
     store_radio(radio, &state, format!("ble:{ble_name}")).await
 }
 

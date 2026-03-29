@@ -35,6 +35,7 @@ const scanResults = $("#scan-results");
 const connectProgress = $("#connect-progress");
 const connectProgressText = $("#connect-progress-text");
 
+const blePin = $("#ble-pin");
 const wifiAddress = $("#wifi-address");
 const btnConnectWifi = $("#btn-connect-wifi");
 const serialPort = $("#serial-port");
@@ -167,11 +168,13 @@ async function connectToDevice(device) {
   connectProgressText.textContent = "Connecting to " + device.name + "...";
   btnScan.disabled = true;
 
+  const pin = parseInt(blePin.value, 10) || 123456;
+
   try {
     await invokeWithTimeout(
       "connect_device",
-      { bleName: device.name },
-      60000
+      { bleName: device.name, pin },
+      90000
     );
     await loadMeshData();
     showScreen(screenMesh);

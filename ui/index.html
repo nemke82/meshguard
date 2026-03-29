@@ -52,6 +52,11 @@
             <!-- Bluetooth tab -->
             <div id="tab-ble" class="conn-tab-content active">
               <p class="connect-info">Scan for nearby Meshtastic devices via Bluetooth. Detects all devices running Meshtastic firmware (SenseCAP, RAK, Heltec, T-Beam, etc).</p>
+              <label class="field">
+                <span class="field-label">Device PIN</span>
+                <input type="text" id="ble-pin" value="123456" inputmode="numeric" pattern="[0-9]*" maxlength="6" />
+                <span class="field-hint">Default Meshtastic PIN is 123456 — change only if you set a custom PIN on the device</span>
+              </label>
               <button type="button" id="btn-scan" class="btn btn-scan">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
