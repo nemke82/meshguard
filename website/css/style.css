@@ -966,6 +966,202 @@ code {
   color: var(--green-400);
 }
 
+/* ─── Theme Toggle Button ──────────────────────────────── */
+
+.theme-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  outline: none;
+}
+
+.theme-toggle-label {
+  font-family: var(--font-display);
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  transition: color 0.3s;
+  white-space: nowrap;
+}
+
+.theme-toggle:hover .theme-toggle-label {
+  color: var(--text-secondary);
+}
+
+.theme-toggle-track {
+  position: relative;
+  width: 38px;
+  height: 20px;
+  background: rgba(0, 255, 136, 0.12);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  transition: background 0.3s, border-color 0.3s;
+}
+
+.theme-toggle:hover .theme-toggle-track {
+  border-color: var(--border-hover);
+}
+
+.theme-toggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--green-400);
+  box-shadow: 0 0 6px rgba(0, 255, 136, 0.4);
+  transition: transform 0.3s var(--ease-out), background 0.3s, box-shadow 0.3s;
+}
+
+/* ─── Light Theme ──────────────────────────────────────── */
+
+body.light {
+  --bg-deep: #f4f7f5;
+  --bg-base: #eaf0ec;
+  --bg-surface: #ffffff;
+  --bg-card: rgba(0, 100, 60, 0.04);
+  --bg-card-hover: rgba(0, 100, 60, 0.07);
+  --border: rgba(0, 80, 50, 0.1);
+  --border-hover: rgba(0, 80, 50, 0.2);
+
+  --green-300: #10b981;
+  --green-400: #059669;
+  --green-500: #047857;
+  --green-600: #065f46;
+  --cyan-400: #0891b2;
+
+  --text-primary: #1a2e23;
+  --text-secondary: #3d5a4a;
+  --text-muted: #6b8f7a;
+
+  --glow: 0 2px 12px rgba(5, 150, 105, 0.1);
+  --glow-strong: 0 4px 24px rgba(5, 150, 105, 0.15);
+}
+
+body.light .hero-canvas {
+  opacity: 0.04;
+}
+
+body.light .hero-scanline {
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 80, 50, 0.015) 2px,
+    rgba(0, 80, 50, 0.015) 4px
+  );
+}
+
+body.light .nav.scrolled {
+  background: rgba(244, 247, 245, 0.9);
+}
+
+body.light .nav-logo {
+  text-shadow: none;
+}
+
+body.light .nav-logo svg {
+  filter: none;
+}
+
+body.light .mono-accent {
+  text-shadow: none;
+}
+
+body.light .trust-check {
+  text-shadow: none;
+}
+
+body.light .footer-brand {
+  text-shadow: none;
+}
+
+body.light .btn--primary {
+  background: var(--green-400);
+  color: #ffffff;
+}
+
+body.light .btn--primary:hover {
+  background: var(--green-500);
+  color: #ffffff;
+}
+
+body.light .btn--ghost {
+  color: var(--green-600);
+  border-color: var(--border);
+}
+
+body.light .btn--ghost:hover {
+  background: rgba(5, 150, 105, 0.06);
+  color: var(--green-500);
+  box-shadow: none;
+}
+
+body.light .device-signal {
+  box-shadow: 0 0 6px var(--green-400);
+}
+
+body.light .screen-header {
+  background: rgba(0, 0, 0, 0.02);
+}
+
+body.light .screen-dot:nth-child(1) { background: #ff5f57; }
+body.light .screen-dot:nth-child(2) { background: #ffbd2e; }
+body.light .screen-dot:nth-child(3) { background: #28c840; }
+
+body.light .screen-input {
+  background: rgba(0, 0, 0, 0.04);
+  color: var(--green-400);
+}
+
+body.light .screen-btn {
+  background: var(--green-400);
+  color: #ffffff;
+}
+
+body.light .chat-bubble--out {
+  background: rgba(5, 150, 105, 0.12);
+  border-color: rgba(5, 150, 105, 0.2);
+  color: var(--green-600);
+}
+
+body.light .step-screen {
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+}
+
+body.light .code-block {
+  background: #f0f5f2;
+}
+
+body.light ::selection {
+  background: rgba(5, 150, 105, 0.2);
+  color: var(--green-600);
+}
+
+body.light .nav-links {
+  background: var(--bg-surface);
+}
+
+body.light .nav-toggle span {
+  background: var(--text-primary);
+}
+
+/* Toggle button in light mode */
+body.light .theme-toggle-track {
+  background: rgba(5, 150, 105, 0.15);
+}
+
+body.light .theme-toggle-thumb {
+  transform: translateX(18px);
+  background: var(--green-400);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+}
+
 /* ─── Responsive ───────────────────────────────────────── */
 
 @media (max-width: 900px) {

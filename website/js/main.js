@@ -1,3 +1,20 @@
+// ─── Theme toggle ─────────────────────────────────────────
+const themeToggle = document.getElementById('theme-toggle');
+const themeLabel = themeToggle.querySelector('.theme-toggle-label');
+
+function applyTheme(light) {
+  document.body.classList.toggle('light', light);
+  themeLabel.textContent = light ? 'Turn off light' : 'Turn on light';
+  localStorage.setItem('meshguard-theme', light ? 'light' : 'dark');
+}
+
+const saved = localStorage.getItem('meshguard-theme');
+if (saved === 'light') applyTheme(true);
+
+themeToggle.addEventListener('click', () => {
+  applyTheme(!document.body.classList.contains('light'));
+});
+
 // ─── Matrix rain background ───────────────────────────────
 const canvas = document.getElementById('matrix-rain');
 if (canvas) {
