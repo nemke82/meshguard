@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::crypto;
@@ -10,16 +10,35 @@ use crate::state::{AppState, MeshNodeInfo};
 
 // ── BLE Scanning ──────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct ScanResponse {
     pub devices: Vec<ScannedBleDevice>,
 }
 
 /// Scan for nearby Meshtastic BLE devices.
+/// On Android, delegates to the native Kotlin BlePlugin.
+/// On desktop, uses btleplug directly.
 #[tauri::command]
-pub async fn scan_ble_devices() -> Result<ScanResponse, MeshGuardError> {
-    let devices = crate::mesh_radio::scan_ble_devices(5).await?;
-    Ok(ScanResponse { devices })
+pub async fn scan_ble_devices(
+    #[allow(unused_variables)] app_handle: tauri::AppHandle,
+) -> Result<ScanResponse, MeshGuardError> {
+    #[cfg(target_os = "android")]
+    {
+        use tauri::Manager;
+        let state = app_handle
+            .try_state::<crate::ble_plugin::BlePluginState<tauri::Wry>>()
+            .ok_or_else(|| MeshGuardError::Ble("BLE plugin not initialized".into()))?;
+        let response: ScanResponse = state
+            .0
+            .run_mobile_plugin("scanDevices", ())
+            .map_err(|e| MeshGuardError::Ble(format!("Native BLE scan failed: {e}")))?;
+        return Ok(response);
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let devices = crate::mesh_radio::scan_ble_devices(5).await?;
+        Ok(ScanResponse { devices })
+    }
 }
 
 // ── Serial Ports ──────────────────────────────────────────────
