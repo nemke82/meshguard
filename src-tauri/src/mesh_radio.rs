@@ -1057,9 +1057,10 @@ async fn handle_incoming_packet(
                     crate::protocol::MeshMessage::Text {
                         id, text, timestamp,
                     } => {
+                        // Never log decrypted content (RFC §5.4).
                         tracing::info!(
-                            "Incoming text from {from_node}: \"{}\" (id={id})",
-                            text.chars().take(40).collect::<String>()
+                            "Incoming text from {from_node} ({} bytes, id={id})",
+                            text.len()
                         );
 
                         #[cfg(target_os = "android")]
