@@ -1098,8 +1098,18 @@ async fn handle_incoming_packet(packet: &protobufs::MeshPacket, ctx: &ListenerCt
             pinned,
             now,
         };
-        process_inbound(payload, &ictx, &mut dedup, &ctx.inbound.policy)
+        let outcome = process_inbound(payload, &ictx, &mut dedup, &ctx.inbound.policy);
+        // Only authenticated v2 frames change the dedup cache.
+        let snapshot =
+            (outcome.authenticated_version() == Some(WireVersion::V2)).then(|| dedup.clone());
+        (outcome, snapshot)
     };
+    let (outcome, snapshot) = outcome;
+    if let Some(cache) = snapshot {
+        if let Err(e) = crate::dedup_store::save(&ctx.config_dir, &cache) {
+            tracing::warn!("Could not persist dedup cache: {e}");
+        }
+    }
 
     // ADR-003 §3 rule (a): an authenticated v2 frame upgrades a v1 peer.
     if outcome.authenticated_version() == Some(WireVersion::V2)

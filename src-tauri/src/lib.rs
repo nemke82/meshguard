@@ -1,6 +1,7 @@
 pub mod ble_plugin;
 pub mod commands;
 pub mod crypto;
+pub mod dedup_store;
 pub mod device_config;
 pub mod error;
 pub mod mesh_radio;

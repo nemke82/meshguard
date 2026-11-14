@@ -2,8 +2,9 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use meshguard_core::codec::{decode_frame, DecodedFrame};
-use meshguard_core::envelope::{aad_context, SealError, DEFAULT_FRAME_BUDGET};
+use meshguard_core::envelope::{aad_context, MessageType, SealError, DEFAULT_FRAME_BUDGET};
 use meshguard_core::outbound::{self, OutPayload};
+use meshguard_core::v1::V1Payload;
 use meshguard_core::PeerIdentity;
 
 use crate::crypto;
@@ -289,8 +290,9 @@ pub async fn start_chat(
     Ok(peer)
 }
 
-/// Accept a pending pair request. The stored payload must authenticate with
-/// the derived key (v1 or v2); its version decides the reply and the pin.
+/// Accept a pending pair request. The stored payload must be a PairRequest
+/// that authenticates with the derived key (v1, or a fresh v2); its version
+/// decides the reply and the pin.
 #[tauri::command]
 pub async fn accept_chat(
     peer_node_num: u32,
@@ -311,30 +313,65 @@ pub async fn accept_chat(
     let me = PeerIdentity::meshtastic_node(my_num);
     let peer_id = PeerIdentity::meshtastic_node(peer_node_num);
 
-    let pending = state
+    // Keep the request until the accept is actually transmitted, so a failed
+    // attempt can be retried without falling back to another version.
+    let payload = state
         .pending_pair_requests
         .lock()
         .await
-        .remove(&peer_node_num);
+        .get(&peer_node_num)
+        .cloned()
+        .ok_or_else(|| {
+            MeshGuardError::Protocol("No pending chat request from this node".into())
+        })?;
 
-    let protocol = match pending {
-        Some(payload) => {
-            match decode_frame(&payload, Some(&session_key), &aad_context(&peer_id, &me)) {
-                Ok(DecodedFrame::V1(_)) => WireProtocol::V1,
-                Ok(DecodedFrame::V2(_)) => WireProtocol::V2,
-                Err(_) => {
-                    // Keep the request so the user can retry the passphrase.
-                    state
-                        .pending_pair_requests
-                        .lock()
-                        .await
-                        .insert(peer_node_num, payload);
-                    return Err(MeshGuardError::PassphraseMismatch);
-                }
+    let policy = state.inbound.policy;
+    let now = u64::from(unix_now());
+    let protocol = match decode_frame(&payload, Some(&session_key), &aad_context(&peer_id, &me)) {
+        Ok(DecodedFrame::V1(V1Payload::PairRequest(_))) => WireProtocol::V1,
+        Ok(DecodedFrame::V2(env)) if env.message_type == MessageType::PairRequest => {
+            if env
+                .check_freshness(now, policy.max_skew_secs, policy.max_ttl_mins)
+                .is_err()
+            {
+                state
+                    .pending_pair_requests
+                    .lock()
+                    .await
+                    .remove(&peer_node_num);
+                return Err(MeshGuardError::Protocol(
+                    "Chat request expired — ask your peer to send it again".into(),
+                ));
             }
+            WireProtocol::V2
         }
-        None => WireProtocol::V1,
+        Ok(_) => {
+            return Err(MeshGuardError::Protocol(
+                "The pending message is not a chat request — open the chat and unlock it \
+                 with the passphrase instead"
+                    .into(),
+            ))
+        }
+        Err(_) => return Err(MeshGuardError::PassphraseMismatch),
     };
+
+    // Anti-downgrade (ADR-003 §3): a v2 pin is only lowered by removing the
+    // peer first, never implicitly by a v1 request.
+    let current_pin = state
+        .config
+        .lock()
+        .await
+        .peers
+        .iter()
+        .find(|p| p.node_num == peer_node_num)
+        .map(|p| p.protocol);
+    if current_pin == Some(WireProtocol::V2) && protocol == WireProtocol::V1 {
+        return Err(MeshGuardError::Protocol(
+            "This peer was paired in MeshGuard 2.0 mode. Remove the peer first to accept \
+             a request from an older version"
+                .into(),
+        ));
+    }
 
     let sealed = outbound::seal(
         protocol.into(),
@@ -353,6 +390,11 @@ pub async fn accept_chat(
         radio.send_private_app(sealed.frame, peer_node_num).await?;
     }
 
+    state
+        .pending_pair_requests
+        .lock()
+        .await
+        .remove(&peer_node_num);
     state
         .session_keys
         .lock()

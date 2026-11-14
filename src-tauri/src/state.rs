@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -27,8 +27,8 @@ pub struct MeshNodeInfo {
 
 /// Receive-side protection state shared with the radio listener.
 ///
-/// The dedup cache is in memory only until the SQLite store lands
-/// (ADR-001 §5), so it does not yet survive an app restart.
+/// The dedup cache is persisted to `dedup.json` (see `dedup_store`) until
+/// the SQLite store lands (ADR-001 §5).
 pub struct InboundState {
     pub policy: InboundPolicy,
     pub dedup: Mutex<DedupCache>,
@@ -40,11 +40,20 @@ pub struct InboundState {
     pub pair_notify_global: Mutex<TokenBucket>,
 }
 
+/// Maximum remembered `(sender, message_id)` pairs.
+pub const DEDUP_CAPACITY: usize = 4096;
+
 impl InboundState {
-    pub fn new() -> Self {
+    pub fn new(config_dir: &Path) -> Self {
         let policy = InboundPolicy::default();
+        let now = chrono::Utc::now().timestamp().max(0) as u64;
         Self {
-            dedup: Mutex::new(policy.new_dedup_cache(4096)),
+            dedup: Mutex::new(crate::dedup_store::load(
+                config_dir,
+                &policy,
+                DEDUP_CAPACITY,
+                now,
+            )),
             policy,
             // Burst of 5, then one ACK per 10 s.
             ack_budget: Mutex::new(TokenBucket::new(5, 10)),
@@ -52,12 +61,6 @@ impl InboundState {
             // Burst of 3, then one per minute.
             pair_notify_global: Mutex::new(TokenBucket::new(3, 60)),
         }
-    }
-}
-
-impl Default for InboundState {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -91,6 +94,7 @@ pub struct AppState {
 impl AppState {
     pub fn new(config_dir: PathBuf) -> Self {
         let config = AppConfig::load(&config_dir);
+        let inbound = Arc::new(InboundState::new(&config_dir));
         Self {
             radio: Arc::new(Mutex::new(None)),
             mesh_nodes: Arc::new(Mutex::new(HashMap::new())),
@@ -100,7 +104,7 @@ impl AppState {
             pending_pair_requests: Arc::new(Mutex::new(HashMap::new())),
             config: Arc::new(Mutex::new(config)),
             config_dir,
-            inbound: Arc::new(InboundState::new()),
+            inbound,
         }
     }
 }

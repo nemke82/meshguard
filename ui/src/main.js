@@ -218,6 +218,11 @@ const MAX_TEXT_BYTES = 173;
 const utf8 = new TextEncoder();
 const byteLength = (s) => utf8.encode(s).length;
 
+// Peer ACKs whose message has not been matched yet. An ACK can arrive before
+// invoke("send_message") resolves with the wire id, so it is kept here and
+// reconciled when the receipt comes back.
+const unmatchedDelivered = new Set();
+
 /** The v2 toggle only applies when we initiate pairing. */
 function setPairingModeUi(initiating) {
   const display = initiating ? "" : "none";
@@ -700,7 +705,10 @@ async function sendMessage() {
     // (v2 peers) turns it into "delivered", via the message-delivered event.
     const receipt = await invoke("send_message", { peerNodeNum: nodeNum, text });
     msg.wireId = receipt && receipt.message_id;
-    if (msg.status === "sending") {
+    if (msg.wireId && unmatchedDelivered.delete(msg.wireId)) {
+      msg.status = "delivered";
+      updateMessageStatus(msg.id, "delivered");
+    } else if (msg.status === "sending") {
       msg.status = "sent";
       updateMessageStatus(msg.id, "sent");
     }
@@ -826,6 +834,8 @@ async function setupEventListeners() {
     if (msg) {
       msg.status = "delivered";
       updateMessageStatus(msg.id, "delivered");
+    } else if (unmatchedDelivered.size < 256) {
+      unmatchedDelivered.add(message_id);
     }
   });
 
