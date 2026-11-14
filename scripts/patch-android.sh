@@ -602,8 +602,7 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
 
         val connState = connectQueue.poll(15, TimeUnit.SECONDS)
         if (connState != BluetoothProfile.STATE_CONNECTED) {
-            bluetoothGatt?.close()
-            bluetoothGatt = null
+            closeGatt()
             invoke.reject("GATT connection timed out")
             return
         }
@@ -612,9 +611,7 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
         bluetoothGatt?.discoverServices()
         val svcStatus = servicesQueue.poll(10, TimeUnit.SECONDS)
         if (svcStatus != BluetoothGatt.GATT_SUCCESS) {
-            bluetoothGatt?.disconnect()
-            bluetoothGatt?.close()
-            bluetoothGatt = null
+            closeGatt()
             invoke.reject("Service discovery failed")
             return
         }
@@ -633,9 +630,7 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
         }
 
         if (fromRadioChar == null || toRadioChar == null) {
-            bluetoothGatt?.disconnect()
-            bluetoothGatt?.close()
-            bluetoothGatt = null
+            closeGatt()
             invoke.reject("Meshtastic GATT characteristics not found")
             return
         }
