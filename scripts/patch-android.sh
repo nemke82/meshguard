@@ -720,7 +720,8 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
         }
 
         notifManager.notify(nodeNum, notification)
-        Log.d(TAG, "Notification shown: $title — $body")
+        // Never log the body: it is decrypted message content.
+        Log.d(TAG, "Notification shown: $title (node $nodeNum)")
         invoke.resolve(JSObject().put("shown", true))
     }
 
