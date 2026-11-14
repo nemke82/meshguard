@@ -1,0 +1,18 @@
+[package]
+name = "meshguard-core"
+version = "0.1.0"
+edition = "2021"
+description = "Transport-agnostic MeshGuard message engine: crypto, wire codecs, identity, dedup and delivery state"
+license = "MIT"
+publish = false
+
+[dependencies]
+aes-gcm = "0.10"
+hkdf = "0.12"
+rand = "0.8"
+sha2 = "0.10"
+thiserror = "2"
+zeroize = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+hex = "0.4"

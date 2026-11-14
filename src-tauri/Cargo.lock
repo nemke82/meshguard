@@ -2294,17 +2294,14 @@ dependencies = [
 name = "meshguard"
 version = "0.1.0"
 dependencies = [
- "aes-gcm",
  "base64 0.22.1",
  "bluer",
  "btleplug",
  "chrono",
- "hkdf",
+ "meshguard-core",
  "meshtastic",
- "rand 0.8.5",
  "serde",
  "serde_json",
- "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-shell",
@@ -2313,6 +2310,17 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "meshguard-core"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "hkdf",
+ "rand 0.8.5",
+ "sha2",
+ "thiserror 2.0.18",
  "zeroize",
 ]
 

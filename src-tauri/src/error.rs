@@ -35,10 +35,14 @@ pub enum MeshGuardError {
     #[error("Session not established — complete P2P pairing first")]
     NoSession,
 
-    #[error("Bluetooth is turned off. Please enable Bluetooth in your device settings and try again.")]
+    #[error(
+        "Bluetooth is turned off. Please enable Bluetooth in your device settings and try again."
+    )]
     BluetoothDisabled,
 
-    #[error("Bluetooth permissions not granted. Please allow Bluetooth access in your device settings.")]
+    #[error(
+        "Bluetooth permissions not granted. Please allow Bluetooth access in your device settings."
+    )]
     BluetoothPermission,
 
     #[error("IO error: {0}")]
@@ -60,5 +64,16 @@ impl serde::Serialize for MeshGuardError {
         S: serde::Serializer,
     {
         serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl From<meshguard_core::CoreError> for MeshGuardError {
+    fn from(e: meshguard_core::CoreError) -> Self {
+        use meshguard_core::CoreError;
+        match e {
+            CoreError::KeyDerivation => Self::KeyDerivation,
+            CoreError::Encryption(m) => Self::Encryption(m),
+            CoreError::Decryption(m) => Self::Decryption(m),
+        }
     }
 }
