@@ -48,11 +48,15 @@ APP_GRADLE="$ANDROID_DIR/app/build.gradle.kts"
 if [ -f "$APP_GRADLE" ] && ! grep -q "barcode-scanning:17" "$APP_GRADLE"; then
   cat >> "$APP_GRADLE" << 'GRADLE'
 
+// A module substitution keeps the original artifact name and fails to
+// resolve, so exclude the Play Services artifact from the app and depend
+// on the bundled one directly (same com.google.mlkit.vision.barcode API).
 configurations.all {
-    resolutionStrategy.dependencySubstitution {
-        substitute(module("com.google.android.gms:play-services-mlkit-barcode-scanning"))
-            .using(module("com.google.mlkit:barcode-scanning:17.3.0"))
-    }
+    exclude(group = "com.google.android.gms", module = "play-services-mlkit-barcode-scanning")
+}
+
+dependencies {
+    implementation("com.google.mlkit:barcode-scanning:17.3.0")
 }
 GRADLE
   echo "  -> Bundled ML Kit barcode model"
