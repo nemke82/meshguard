@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use meshguard_core::codec::{decode_frame, DecodedFrame};
+use meshguard_core::dedup::Seen;
 use meshguard_core::envelope::{aad_context, MessageType, SealError, DEFAULT_FRAME_BUDGET};
 use meshguard_core::outbound::{self, OutPayload};
 use meshguard_core::v1::V1Payload;
@@ -331,16 +332,6 @@ pub async fn accept_chat(
     let protocol = match decode_frame(&payload, Some(&session_key), &aad_context(&peer_id, &me)) {
         Ok(DecodedFrame::V1(V1Payload::PairRequest(_))) => WireProtocol::V1,
         Ok(DecodedFrame::V2(env)) if env.message_type == MessageType::PairRequest => {
-            if state.inbound.dedup.lock().await.contains(&peer_id, &env.message_id) {
-                state
-                    .pending_pair_requests
-                    .lock()
-                    .await
-                    .remove(&peer_node_num);
-                return Err(MeshGuardError::Protocol(
-                    "This chat request was already accepted".into(),
-                ));
-            }
             accepted_v2_request = Some(env.message_id);
             if env
                 .check_freshness(now, policy.max_skew_secs, policy.max_ttl_mins)
@@ -385,6 +376,35 @@ pub async fn accept_chat(
         ));
     }
 
+    // Durably record an accepted v2 request *before* transmitting, so a replay
+    // of it (also after a restart) can never trigger another acceptance.
+    if let Some(id) = accepted_v2_request {
+        let mut dedup = state.inbound.dedup.lock().await;
+        match dedup.observe(&peer_id, id, now) {
+            Seen::New => {}
+            Seen::Duplicate { .. } => {
+                drop(dedup);
+                state
+                    .pending_pair_requests
+                    .lock()
+                    .await
+                    .remove(&peer_node_num);
+                return Err(MeshGuardError::Protocol(
+                    "This chat request was already accepted".into(),
+                ));
+            }
+            Seen::Refused => {
+                return Err(MeshGuardError::Protocol(
+                    "Replay protection is full — try again later".into(),
+                ))
+            }
+        }
+        if let Err(e) = crate::dedup_store::save(&state.config_dir, &dedup) {
+            dedup.forget(&peer_id, &id);
+            return Err(e);
+        }
+    }
+
     let sealed = outbound::seal(
         protocol.into(),
         OutPayload::PairAccept(&my_name),
@@ -396,10 +416,21 @@ pub async fn accept_chat(
     )
     .map_err(seal_err)?;
 
-    {
+    let sent = {
         let mut radio_guard = state.radio.lock().await;
-        let radio = radio_guard.as_mut().ok_or(MeshGuardError::NotConnected)?;
-        radio.send_private_app(sealed.frame, peer_node_num).await?;
+        match radio_guard.as_mut() {
+            Some(radio) => radio.send_private_app(sealed.frame, peer_node_num).await,
+            None => Err(MeshGuardError::NotConnected),
+        }
+    };
+    if let Err(e) = sent {
+        // Not accepted after all: let the user retry the same request.
+        if let Some(id) = accepted_v2_request {
+            let mut dedup = state.inbound.dedup.lock().await;
+            dedup.forget(&peer_id, &id);
+            let _ = crate::dedup_store::save(&state.config_dir, &dedup);
+        }
+        return Err(e);
     }
 
     state
@@ -407,18 +438,6 @@ pub async fn accept_chat(
         .lock()
         .await
         .remove(&peer_node_num);
-    // Record the accepted request durably so a replay of it (also after a
-    // restart) cannot trigger another acceptance within its TTL.
-    if let Some(id) = accepted_v2_request {
-        let snapshot = {
-            let mut dedup = state.inbound.dedup.lock().await;
-            dedup.observe(&peer_id, id, now);
-            dedup.clone()
-        };
-        if let Err(e) = crate::dedup_store::save(&state.config_dir, &snapshot) {
-            tracing::warn!("Could not persist accepted pair request id: {e}");
-        }
-    }
     state
         .session_keys
         .lock()
