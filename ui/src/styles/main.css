@@ -1203,3 +1203,15 @@ input[type="range"]::-moz-range-thumb {
   .form-card { padding: 20px 16px; }
   .toast-container { left: 16px; right: 16px; max-width: none; }
 }
+
+.app-legal {
+  margin-top: 24px;
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.app-legal a {
+  color: inherit;
+  text-decoration: underline;
+}

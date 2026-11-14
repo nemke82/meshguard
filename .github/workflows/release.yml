@@ -437,7 +437,10 @@ jobs:
           merge-multiple: true
 
       - name: List artifacts
-        run: find artifacts -type f | sort
+        run: |
+          # The App Bundle is for Google Play only, not a public download.
+          rm -f artifacts/*.aab
+          find artifacts -type f | sort
 
       - name: Generate checksums
         run: |

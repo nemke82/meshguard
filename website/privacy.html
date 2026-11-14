@@ -42,7 +42,7 @@
         <li><strong>Duplicate-protection records</strong> — message IDs and timestamps used to detect replayed or relayed copies. They never contain message text.</li>
         <li><strong>Notification settings</strong>, including a custom sound if you choose one.</li>
       </ul>
-      <p>Your passphrase is never stored or transmitted; it is cleared from memory after the encryption key is derived. Chat history is kept in memory only while the app runs. Uninstalling the app removes everything it stored.</p>
+      <p>Your passphrase is never saved to storage and never transmitted; it is used only to derive the encryption key. Chat history is kept in memory only while the app runs. MeshGuard opts out of Android cloud backup, and uninstalling the app removes everything it stored on the device.</p>
 
       <h2>What leaves your device</h2>
       <p>Messages are encrypted on your device (AES-256-GCM) and sent through your own Meshtastic radio, over Bluetooth, Wi-Fi/TCP or USB, to the LoRa mesh. Other mesh nodes relay the encrypted packets; only the peer who knows the passphrase can read them. Like any radio transmission, Meshtastic packets reveal metadata such as node numbers, signal strength and timing to radios within range.</p>

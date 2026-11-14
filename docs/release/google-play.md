@@ -81,10 +81,15 @@ them to accept the key change for `com.meshguard.app`.
    | Data safety | No data collected, no data shared. Data is encrypted in transit: yes. Users can request deletion: not applicable (nothing is collected; uninstall removes local data) |
    | Government apps / Financial features / Health | No |
 
-4. **Store listing:** short and full description from
+4. **User-generated content.** Play's UGC policy covers one-to-one messaging.
+   Before submitting, confirm in Play Console whether it applies and, if so,
+   add what it requires: at least in-app terms users accept and a way to
+   block a node (today, removing a peer does not stop new chat-request
+   notifications from that node). These are app changes, tracked separately.
+5. **Store listing:** short and full description from
    `fastlane/metadata/android/en-US/`, the 512×512 icon, a 1024×500 feature
    graphic and at least two phone screenshots.
-5. **Encryption / export.** Play does not ask for an export filing. MeshGuard's
+6. **Encryption / export.** Play does not ask for an export filing. MeshGuard's
    source is public, which under US EAR §742.15(b) normally needs only a
    one-time email notification to BIS and the NSA. Check this if you publish as
    an organization.

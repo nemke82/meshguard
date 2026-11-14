@@ -34,6 +34,12 @@ else
   echo "  -> BLE permissions already present"
 fi
 
+# Keep peer records and settings out of Android cloud backups.
+if ! grep -q 'android:allowBackup' "$MANIFEST"; then
+  sed -i 's|<application|<application android:allowBackup="false"|' "$MANIFEST"
+  echo "  -> Auto Backup disabled"
+fi
+
 # ── 2. MainActivity — runtime permission request ─────────────────
 MAIN_ACTIVITY=$(find "$ANDROID_DIR" -name "MainActivity.kt" -type f | head -1)
 

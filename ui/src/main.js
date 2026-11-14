@@ -990,3 +990,14 @@ function formatLastHeard(epochSecs) {
 }
 
 init();
+
+// Open the privacy policy in the system browser (the webview must not
+// navigate away from the app).
+document.getElementById("link-privacy")?.addEventListener("click", (e) => {
+  e.preventDefault();
+  const url = e.currentTarget.href;
+  const shell = window.__TAURI__ && window.__TAURI__.shell;
+  if (shell && shell.open) {
+    shell.open(url).catch((err) => console.error("Could not open link:", err));
+  }
+});

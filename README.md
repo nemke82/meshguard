@@ -210,7 +210,7 @@ flowchart LR
 | Key exchange | **None over the air** — keys derived locally from shared secret |
 | Channel encryption | Meshtastic PSK (LoRa-layer encryption, device to device) |
 | Memory safety | Written in Rust — no buffer overflows; keys zeroized on drop |
-| Passphrase handling | Never stored, never transmitted, cleared after use |
+| Passphrase handling | Never saved to storage, never transmitted |
 | Transport | LoRa mesh — no internet, no servers, no DNS |
 | MQTT/uplink | Disabled — no data leaves the mesh |
 
