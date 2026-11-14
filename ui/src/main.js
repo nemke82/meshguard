@@ -817,6 +817,13 @@ async function setupEventListeners() {
     linkStatus.title = `Attempt ${attempt}, next retry in ${retry_in_secs}s`;
   });
 
+  await listen("reconnect-stopped", (event) => {
+    hideLinkStatus();
+    showScreen(screenConnect);
+    setScanStatusType("error");
+    scanStatus.textContent = String(event.payload);
+  });
+
   await listen("reconnected", async () => {
     hideLinkStatus();
     await loadMeshData();

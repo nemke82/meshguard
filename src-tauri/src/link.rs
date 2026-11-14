@@ -124,6 +124,8 @@ fn connect_params(
 async fn connect_locked(
     target: &LinkTarget,
     pin: u32,
+    // false for automatic attempts: never start Bluetooth pairing.
+    interactive: bool,
     app: &tauri::AppHandle,
     state: &AppState,
 ) -> Result<(), MeshGuardError> {
@@ -137,7 +139,7 @@ async fn connect_locked(
     let p = connect_params(app, state, link_gen, vault);
     let radio = match target {
         LinkTarget::Ble { name, address } => {
-            MeshRadio::connect_ble(name, address.clone(), pin, p).await?
+            MeshRadio::connect_ble(name, address.clone(), pin, interactive, p).await?
         }
         LinkTarget::Tcp { address } => MeshRadio::connect_tcp(address, p).await?,
         LinkTarget::Serial { port } => MeshRadio::connect_serial(port, p).await?,
@@ -178,7 +180,7 @@ pub async fn connect(
     state.link.reconnect_gen.fetch_add(1, Ordering::SeqCst);
     let _guard = state.link.connect_lock.lock().await;
     state.link.reconnect_gen.fetch_add(1, Ordering::SeqCst);
-    connect_locked(&target, pin.unwrap_or(DEFAULT_BLE_PIN), app, state).await
+    connect_locked(&target, pin.unwrap_or(DEFAULT_BLE_PIN), true, app, state).await
 }
 
 /// User-initiated disconnect: stops reconnecting and forgets nothing else.
@@ -223,10 +225,20 @@ pub async fn start_reconnect_loop(app: tauri::AppHandle) -> bool {
                 if state.link.reconnect_gen.load(Ordering::SeqCst) != my_loop {
                     return;
                 }
-                match connect_locked(&target, DEFAULT_BLE_PIN, &app_for_loop, &state).await {
+                match connect_locked(&target, DEFAULT_BLE_PIN, false, &app_for_loop, &state).await {
                     Ok(()) => {
                         tracing::info!("Reconnected to {} (attempt {attempt})", target.label());
                         let _ = app_for_loop.emit("reconnected", target.label());
+                        return;
+                    }
+                    Err(e) if e.to_string().contains("NOT_BONDED") => {
+                        // Retrying cannot help and must not prompt the user
+                        // over and over: ask for a manual connect instead.
+                        tracing::warn!("Reconnect to {} stopped: {e}", target.label());
+                        let _ = app_for_loop.emit(
+                            "reconnect-stopped",
+                            "The phone is no longer paired with this radio. Scan and connect to pair it again.",
+                        );
                         return;
                     }
                     Err(e) => {

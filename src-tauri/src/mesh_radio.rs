@@ -487,6 +487,7 @@ async fn build_android_ble_stream(
     app_handle: &tauri::AppHandle,
     address: &str,
     pin: u32,
+    allow_bond: bool,
 ) -> Result<StreamHandle<DuplexStream>, MeshGuardError> {
     use base64::Engine;
     use tauri::Manager;
@@ -506,7 +507,7 @@ async fn build_android_ble_stream(
                 .0
                 .run_mobile_plugin::<serde_json::Value>(
                     "connectDevice",
-                    serde_json::json!({ "address": addr, "pin": pin }),
+                    serde_json::json!({ "address": addr, "pin": pin, "allowBond": allow_bond }),
                 )
                 .map_err(|e| MeshGuardError::Ble(format!("Android BLE connect failed: {e}")))
         }
@@ -840,6 +841,7 @@ impl MeshRadio {
         ble_name: &str,
         ble_address: Option<String>,
         pin: u32,
+        allow_bond: bool,
         p: ConnectParams,
     ) -> Result<Self, MeshGuardError> {
         emit_connection_state(&p.app_handle, "connecting");
@@ -850,11 +852,12 @@ impl MeshRadio {
                 let address = ble_address.ok_or_else(|| {
                     MeshGuardError::Ble("Device address required for Android BLE".into())
                 })?;
-                build_android_ble_stream(&p.app_handle, &address, pin).await?
+                build_android_ble_stream(&p.app_handle, &address, pin, allow_bond).await?
             }
             #[cfg(not(target_os = "android"))]
             {
-                let _ = ble_address;
+                // Desktop pairing uses the PIN agent, never an interactive dialog.
+                let _ = (ble_address, allow_bond);
                 stop_any_active_scan().await?;
                 build_polling_ble_stream(ble_name, pin).await?
             }
