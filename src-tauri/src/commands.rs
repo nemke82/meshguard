@@ -613,9 +613,6 @@ pub async fn auto_connect(app_handle: tauri::AppHandle) -> Result<bool, MeshGuar
 
 // ── Check-in, SOS and location ────────────────────────────────
 
-/// Sanity bound on recipients per request; SOS goes to every paired
-/// contact, paced by the transmit budget rather than rejected.
-const MAX_STATUS_RECIPIENTS: usize = 256;
 const MAX_STATUS_PRESETS: usize = 8;
 
 #[derive(Serialize)]
@@ -709,11 +706,6 @@ pub async fn send_status(
     peers.dedup();
     if peers.is_empty() {
         return Err(MeshGuardError::Protocol("No recipients".into()));
-    }
-    if peers.len() > MAX_STATUS_RECIPIENTS {
-        return Err(MeshGuardError::Protocol(format!(
-            "At most {MAX_STATUS_RECIPIENTS} recipients at once"
-        )));
     }
     let text = text.trim().to_string();
     if text.is_empty() && kind != StatusKind::Location {

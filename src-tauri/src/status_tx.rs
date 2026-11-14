@@ -115,6 +115,9 @@ pub async fn probe_peers(state: &AppState) {
         let Some(id) = sealed.message_id else {
             continue;
         };
+        // Serialise with other probes/check-ins first, then check for an
+        // outstanding probe, so concurrent callers cannot both send one.
+        let mut tx = state.status_tx.lock().await;
         let now = u64::from(crate::commands::unix_now());
         {
             // One outstanding probe per peer; expired ones may be retried.
@@ -124,7 +127,6 @@ pub async fn probe_peers(state: &AppState) {
                 continue;
             }
         }
-        let mut tx = state.status_tx.lock().await;
         if !tx.admit(false).await {
             tracing::debug!("Feature probes paused: airtime budget");
             return;
