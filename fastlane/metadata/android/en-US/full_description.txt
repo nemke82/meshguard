@@ -18,7 +18,7 @@ MeshGuard is a privacy-first encrypted peer-to-peer messenger for Meshtastic LoR
 
 <b>Security:</b>
 • Double encryption: AES-256-GCM (app layer) + Meshtastic channel PSK (radio layer)
-• Passphrase never stored, never transmitted, cleared from memory after use
+• Passphrase never saved to storage and never transmitted
 • Written in Rust — memory-safe, keys zeroized on drop
 • No analytics, no tracking, no data collection
 • Fully open source (MIT license)

@@ -44,7 +44,7 @@ graph LR
 &nbsp;&nbsp;
 [![Download APK](https://img.shields.io/badge/APK-Direct%20Download-2196f3?style=for-the-badge&logo=android&logoColor=white)](https://github.com/nemke82/meshguard/releases/latest/download/meshguard-android.apk)
 
-Or grab the APK directly from the latest [**GitHub Release**](https://github.com/nemke82/meshguard/releases/latest).
+Or grab the APK directly from the latest [**GitHub Release**](https://github.com/nemke82/meshguard/releases/latest). Requires Android 8.0 or newer.
 
 ### Desktop
 
@@ -210,7 +210,7 @@ flowchart LR
 | Key exchange | **None over the air** — keys derived locally from shared secret |
 | Channel encryption | Meshtastic PSK (LoRa-layer encryption, device to device) |
 | Memory safety | Written in Rust — no buffer overflows; keys zeroized on drop |
-| Passphrase handling | Never stored, never transmitted, cleared after use |
+| Passphrase handling | Never saved to storage, never transmitted |
 | Transport | LoRa mesh — no internet, no servers, no DNS |
 | MQTT/uplink | Disabled — no data leaves the mesh |
 
@@ -370,7 +370,9 @@ git tag v2026.11.14
 git push origin v2026.11.14
 ```
 
-Produces: Android APK, .deb, .rpm, .AppImage, macOS .dmg, plus SHA256 checksums.
+Produces: Android APK, .deb, .rpm, .AppImage, macOS .dmg, plus SHA256 checksums, and an Android App Bundle (`.aab`) for Google Play as a workflow artifact.
+
+The Android build requires the signing keystore secrets (`ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`). See [docs/release/google-play.md](docs/release/google-play.md) for creating the key and publishing on Google Play.
 
 ---
 

@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Privacy Policy — MeshGuard</title>
+  <meta name="description" content="MeshGuard privacy policy: no accounts, no servers, no analytics. What the app stores on your device and why it asks for each permission.">
+  <meta name="theme-color" content="#00ff88">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&family=DM+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css?v=2026.11.15">
+</head>
+<body>
+  <script>
+    try { if (localStorage.getItem('meshguard-theme') === 'light') document.body.classList.add('light'); } catch (e) {}
+  </script>
+
+  <nav class="nav scrolled">
+    <div class="nav-inner">
+      <a href="/" class="nav-logo">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+        MeshGuard
+      </a>
+    </div>
+  </nav>
+
+  <main class="section legal">
+    <div class="container legal-body">
+      <h1>Privacy Policy</h1>
+      <p class="legal-updated">Last updated: 14 November 2026</p>
+
+      <p>MeshGuard is an open-source, peer-to-peer messenger for Meshtastic radios. It has no accounts, no servers and no analytics. This policy covers the MeshGuard apps for Android, Linux and macOS, and this website.</p>
+
+      <h2>What we collect</h2>
+      <p><strong>Nothing.</strong> The MeshGuard developers do not operate any server that receives your messages, contacts, location or usage data. The app contains no analytics, advertising or crash-reporting libraries, and it does not share data with third parties.</p>
+
+      <h2>What the app stores on your device</h2>
+      <ul>
+        <li><strong>Connection settings</strong> — the name and Bluetooth address of the radio you last connected to.</li>
+        <li><strong>Paired peers</strong> — each peer's radio name, Meshtastic node number and protocol version.</li>
+        <li><strong>Duplicate-protection records</strong> — message IDs and timestamps used to detect replayed or relayed copies. They never contain message text.</li>
+        <li><strong>Notification settings</strong>, including a custom sound if you choose one.</li>
+      </ul>
+      <p>Your passphrase is never saved to storage and never transmitted; it is used only to derive the encryption key. Chat history is kept in memory only while the app runs. MeshGuard opts out of Android cloud backup, and uninstalling the app removes everything it stored on the device.</p>
+
+      <h2>What leaves your device</h2>
+      <p>Messages are encrypted on your device (AES-256-GCM) and sent through your own Meshtastic radio, over Bluetooth, Wi-Fi/TCP or USB, to the LoRa mesh. Other mesh nodes relay the encrypted packets; only the peer who knows the passphrase can read them. Like any radio transmission, Meshtastic packets reveal metadata such as node numbers, signal strength and timing to radios within range.</p>
+
+      <h2>Permissions (Android)</h2>
+      <ul>
+        <li><strong>Nearby devices (Bluetooth scan and connect)</strong> — to find and connect to your Meshtastic radio. Scanning is declared as not used for location.</li>
+        <li><strong>Location</strong> — requested only on Android 11 and older, where the system requires it for Bluetooth scanning. MeshGuard does not read or store your location.</li>
+        <li><strong>Notifications</strong> — to alert you to incoming messages.</li>
+        <li><strong>Internet</strong> — only for connecting to a Meshtastic radio over Wi-Fi/TCP on your network. MeshGuard does not contact any other server.</li>
+      </ul>
+
+      <h2>This website</h2>
+      <p>meshguard.net is a static site hosted on Vercel. It uses no cookies or analytics; your theme choice is saved in your browser's local storage. Fonts are loaded from Google Fonts, and the hosting provider may keep standard server logs (such as IP address and user agent).</p>
+
+      <h2>Children</h2>
+      <p>MeshGuard is not directed at children and collects no personal information from anyone.</p>
+
+      <h2>Changes</h2>
+      <p>Changes to this policy are published on this page and in the <a href="https://github.com/nemke82/meshguard" target="_blank" rel="noopener">source repository</a>.</p>
+
+      <h2>Contact</h2>
+      <p>Questions about privacy: open an issue at <a href="https://github.com/nemke82/meshguard/issues" target="_blank" rel="noopener">github.com/nemke82/meshguard/issues</a>.</p>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <div class="container">
+      <div class="footer-bottom">
+        <span>&copy; 2026 MeshGuard &middot; <a href="/">Home</a> &middot; <a href="https://github.com/nemke82/meshguard" target="_blank" rel="noopener">GitHub</a></span>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

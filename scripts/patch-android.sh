@@ -17,12 +17,14 @@ echo "Patching AndroidManifest.xml with BLE permissions..."
 
 if ! grep -q "BLUETOOTH_SCAN" "$MANIFEST"; then
   sed -i 's|<application|<!-- BLE permissions for Meshtastic device communication -->\
-    <uses-permission android:name="android.permission.BLUETOOTH" />\
-    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />\
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />\
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />\
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />\
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />\
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />\
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />\
+    <!-- Location is only needed for BLE scanning on Android 11 and older; -->\
+    <!-- Android 12+ uses BLUETOOTH_SCAN with neverForLocation instead. -->\
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />\
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" android:maxSdkVersion="30" />\
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\
     <uses-permission android:name="android.permission.VIBRATE" />\
     \n    <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />\
@@ -30,6 +32,12 @@ if ! grep -q "BLUETOOTH_SCAN" "$MANIFEST"; then
   echo "  -> BLE + notification permissions added"
 else
   echo "  -> BLE permissions already present"
+fi
+
+# Keep peer records and settings out of Android cloud backups.
+if ! grep -q 'android:allowBackup' "$MANIFEST"; then
+  sed -i 's|<application|<application android:allowBackup="false"|' "$MANIFEST"
+  echo "  -> Auto Backup disabled"
 fi
 
 # ── 2. MainActivity — runtime permission request ─────────────────
@@ -82,7 +90,9 @@ class MainActivity : TauriActivity() {
             }
         }
 
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+        // Location is only required for BLE scanning before Android 12.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
             permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
         }
 
