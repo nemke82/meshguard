@@ -3,6 +3,7 @@ pub mod commands;
 pub mod crypto;
 pub mod dedup_store;
 pub mod device_config;
+pub mod diagnostics;
 pub mod error;
 pub mod key_store;
 pub mod link;
@@ -65,6 +66,8 @@ pub fn run() {
             commands::create_pair_offer,
             commands::cancel_pair_offer,
             commands::pair_with_code,
+            commands::get_node_history,
+            commands::run_path_test,
         ])
         .run(tauri::generate_context!())
         .expect("error while running MeshGuard");

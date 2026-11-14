@@ -171,6 +171,8 @@ pub async fn prepare_for_radio(p: &crate::mesh_radio::ConnectParams, my_node: u3
         // Keys are tied to one local radio (identity is in the key and AAD).
         keys.clear();
         *owner = Some(my_node);
+        // Signal history describes what *this* radio heard.
+        p.node_history.lock().await.clear();
     }
     let mut restored = 0;
     for (peer, key) in loaded {

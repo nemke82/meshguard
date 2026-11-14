@@ -1423,6 +1423,112 @@ input[type="range"]::-moz-range-thumb {
   border-color: var(--accent);
 }
 
+/* ── Diagnostics ─────────────────────────────────────── */
+.btn-node-info {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.diag-card {
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.diag-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.diag-head .section-title {
+  margin-bottom: 2px;
+  overflow-wrap: anywhere;
+}
+
+.diag-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.diag-stat {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 10px;
+  min-width: 0;
+}
+
+.diag-stat .k {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.diag-stat .v {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.diag-chart-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 4px 0 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.diag-chart {
+  margin-bottom: 16px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.diag-chart svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.diag-legend {
+  display: flex;
+  gap: 14px;
+  margin-top: 4px;
+}
+
+.diag-legend .rssi { color: var(--accent); }
+.diag-legend .snr { color: #4da3ff; }
+
+.diag-path {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.diag-path .hop {
+  display: inline-block;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1px 6px;
+  margin: 2px 0;
+  color: var(--text-primary);
+}
+
 /* ── QR pairing ──────────────────────────────────────── */
 .pair-qr-card {
   border: 1px solid var(--border);
