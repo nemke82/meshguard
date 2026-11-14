@@ -27,8 +27,8 @@ graph LR
 - **End-to-end encryption** — AES-256-GCM with deterministic key derivation (HKDF-SHA256)
 - **No key exchange over the air** — both peers derive identical keys locally from the passphrase
 - **MeshGuard 2.0 protocol** — every message carries a stable ID, timestamp and lifetime, and is bound to its sender and recipient
-- **Delivery confirmations** — ✓ means handed to your radio, ✓✓ means the peer's app received and decrypted it
-- **Duplicate and replay protection** — relayed copies are shown once, and a captured message cannot be replayed, even after a restart
+- **Delivery confirmations** — ✓ means queued for transmission, ✓✓ means the peer's app received and decrypted it (2.0 mode)
+- **Duplicate and replay protection** (2.0 mode) — relayed copies are shown once, and a captured message cannot be replayed, even after a restart
 - **Backward compatible** — turn off *MeshGuard 2.0 mode* to chat with peers on an older version
 - **Compact binary protocol** — messages fit within Meshtastic's ~228-byte LoRa payload limit, checked in bytes before sending
 - **Notification sounds** — audible alert + popup toast for incoming messages, with custom sound support
@@ -148,7 +148,7 @@ MeshGuard 2.0 frames fit in one LoRa packet (228-byte budget):
 - **Message ID** — 16 random bytes, the same on every relayed copy, used for duplicate detection and delivery ACKs
 - **Freshness** — messages older than their lifetime, or too far in the future, are dropped
 - **Direction binding** — sender and recipient are authenticated as associated data, so a frame cannot be reflected back to its sender
-- **Max text** — 173 bytes in 2.0 mode, 199 bytes in the older format (multi-byte characters such as č, ш or emoji count as 2–4 bytes)
+- **Max text** — the app limits messages to 173 bytes in both modes (the older format itself would allow 199). Multi-byte characters such as č, ш or emoji count as 2–4 bytes
 
 The older format (`nonce | AES-GCM([type][UTF-8 text])`) is still read, so 2.0 can talk to earlier versions. The full specification is in [ADR-003](docs/adr/003-wire-protocol-v2.md).
 
@@ -205,7 +205,7 @@ flowchart LR
 | Key derivation | HKDF-SHA256 from sorted device identities + passphrase |
 | Wire format | MeshGuard 2.0 envelope (ID, timestamp, TTL), encrypted once; older format still readable |
 | Message integrity | AEAD bound to sender and recipient; no reflection, no silent protocol downgrade |
-| Replay protection | Freshness window + persistent duplicate cache (IDs and timestamps only, never content) |
+| Replay protection | 2.0 mode: freshness window + persistent duplicate cache (IDs and timestamps only, never content). The older format has no replay protection |
 | Logging | Message contents are never written to logs |
 | Key exchange | **None over the air** — keys derived locally from shared secret |
 | Channel encryption | Meshtastic PSK (LoRa-layer encryption, device to device) |
@@ -398,7 +398,7 @@ MeshGuard works with any Meshtastic-compatible radio, including:
 | "No session" error | Passphrase hasn't been entered this session. Tap the peer and re-enter it |
 | Peer runs an older MeshGuard | Turn off **MeshGuard 2.0 mode** when pairing, on both sides |
 | "Paired in MeshGuard 2.0 mode" error | The peer sent an old-format request to a 2.0 chat. Remove the peer and pair again if you really want the older format |
-| Message stays at ✓ | It reached your radio but no confirmation came back yet. The peer may be out of range or on an older version (no ✓✓ there) |
+| Message stays at ✓ | It was queued for transmission but no confirmation came back yet. The peer may be out of range or on an older version (no ✓✓ there) |
 | "Message too long" | The message is over the byte limit — shorten it (the counter shows bytes left) |
 | Short range | Use Long Range modem preset. Elevate devices. Use external antenna if available |
 
@@ -408,7 +408,7 @@ MeshGuard works with any Meshtastic-compatible radio, including:
 - **Line of sight** — LoRa reaches 15+ km over water/flat terrain, 2–5 km in urban areas
 - **External antenna** — dramatically improves range on supported devices
 - **Long Range modem preset** — trades speed for maximum distance
-- **Message length** — the counter shows remaining bytes (173 in 2.0 mode); every message fits in a single packet
+- **Message length** — the counter shows remaining bytes (173 max); every message fits in a single packet
 
 ---
 
