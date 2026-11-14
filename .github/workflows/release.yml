@@ -18,6 +18,10 @@ jobs:
   build-android:
     name: Android APK
     runs-on: ubuntu-latest
+    env:
+      NDK_VERSION: "28.2.13676358"
+      # Step `if:` cannot read secrets directly.
+      PLAY_UPLOAD: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -48,7 +52,9 @@ jobs:
           packages: "platform-tools"
 
       - name: Install Android NDK
-        run: sdkmanager "ndk;27.0.12077973"
+        # NDK r28+ links native libraries with 16 KB page alignment by default,
+        # which Google Play requires for apps targeting Android 15+.
+        run: sdkmanager "ndk;${NDK_VERSION}"
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -71,21 +77,24 @@ jobs:
         working-directory: ui
         run: npm run build
 
-      - name: Generate signing keystore
+      - name: Restore signing keystore
+        # A stable key is mandatory: Android refuses to update an app whose
+        # signature changed, so a throwaway key would break every upgrade.
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          # If repo has a KEYSTORE secret, decode it; otherwise generate a fresh one for CI
-          if [ -n "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" ]; then
-            echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > /tmp/meshguard.jks
-          else
-            keytool -genkeypair \
-              -keystore /tmp/meshguard.jks \
-              -alias meshguard \
-              -keyalg RSA -keysize 2048 \
-              -validity 10000 \
-              -storepass meshguard \
-              -keypass meshguard \
-              -dname "CN=MeshGuard, O=MeshGuard, L=Unknown, ST=Unknown, C=US"
+          missing=""
+          for v in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            [ -n "${!v}" ] || missing="$missing $v"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repository secrets:$missing. See docs/release/google-play.md"
+            exit 1
           fi
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/meshguard.jks"
 
       - name: Initialize Android project
         run: cargo tauri android init
@@ -93,60 +102,77 @@ jobs:
       - name: Patch Android project with BLE permissions
         run: bash scripts/patch-android.sh
 
-      - name: Build Android APK (release)
+      - name: Build Android APK and App Bundle (release)
         env:
-          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
-        run: cargo tauri android build --apk
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
+        run: cargo tauri android build --apk --aab
 
-      - name: Sign APK
+      - name: Sign APK and App Bundle
         id: apk
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
+          set -euo pipefail
           # File name: YYYYMMDD format (no dots)
-          RAW=${GITHUB_REF_NAME#v}
-          FILEVER=$(echo "$RAW" | tr -d '.')
+          FILEVER=$(echo "${GITHUB_REF_NAME#v}" | tr -d '.')
+          BT="${ANDROID_HOME}/build-tools/$(ls "${ANDROID_HOME}/build-tools/" | sort -V | tail -1)"
+          KS="$RUNNER_TEMP/meshguard.jks"
 
-          # Find the unsigned APK
           UNSIGNED=$(find src-tauri/gen/android -name "*-unsigned.apk" -type f | head -1)
           if [ -z "$UNSIGNED" ]; then
             UNSIGNED=$(find src-tauri/gen/android -name "*.apk" -type f | head -1)
           fi
+          AAB_IN=$(find src-tauri/gen/android -name "*.aab" -type f | head -1)
+          test -n "$UNSIGNED" && test -n "$AAB_IN"
 
-          KEYSTORE_PASS="${{ secrets.ANDROID_KEYSTORE_PASSWORD }}"
-          KEY_PASS="${{ secrets.ANDROID_KEY_PASSWORD }}"
-          KEY_ALIAS="${{ secrets.ANDROID_KEY_ALIAS }}"
-
-          # Fall back to defaults if secrets aren't set
-          KEYSTORE_PASS="${KEYSTORE_PASS:-meshguard}"
-          KEY_PASS="${KEY_PASS:-meshguard}"
-          KEY_ALIAS="${KEY_ALIAS:-meshguard}"
-
-          # Align the APK (required before signing)
-          ALIGNED="/tmp/meshguard-aligned.apk"
-          "${ANDROID_HOME}/build-tools/$(ls ${ANDROID_HOME}/build-tools/ | tail -1)/zipalign" \
-            -v -p 4 "$UNSIGNED" "$ALIGNED"
-
-          # Sign with apksigner
+          # APK: align (16 KB for uncompressed native libraries), sign, verify
+          ALIGNED="$RUNNER_TEMP/meshguard-aligned.apk"
+          "$BT/zipalign" -P 16 -f 4 "$UNSIGNED" "$ALIGNED"
           DEST="meshguard-${FILEVER}-android.apk"
-          "${ANDROID_HOME}/build-tools/$(ls ${ANDROID_HOME}/build-tools/ | tail -1)/apksigner" sign \
-            --ks /tmp/meshguard.jks \
-            --ks-key-alias "$KEY_ALIAS" \
-            --ks-pass "pass:${KEYSTORE_PASS}" \
-            --key-pass "pass:${KEY_PASS}" \
+          "$BT/apksigner" sign \
+            --ks "$KS" \
+            --ks-key-alias "$ANDROID_KEY_ALIAS" \
+            --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
+            --key-pass env:ANDROID_KEY_PASSWORD \
             --out "$DEST" \
             "$ALIGNED"
-
-          # Verify
-          "${ANDROID_HOME}/build-tools/$(ls ${ANDROID_HOME}/build-tools/ | tail -1)/apksigner" verify "$DEST"
-
-          # Also copy to a stable name for direct-download links
+          "$BT/apksigner" verify --print-certs "$DEST" | grep -E "SHA-256|DN"
           cp "$DEST" "meshguard-android.apk"
 
-          echo "path=$DEST" >> "$GITHUB_OUTPUT"
-          echo "name=$DEST" >> "$GITHUB_OUTPUT"
-          echo "stable_path=meshguard-android.apk" >> "$GITHUB_OUTPUT"
+          # AAB for Google Play: signed with the upload key
+          AAB="meshguard-${FILEVER}.aab"
+          cp "$AAB_IN" "$AAB"
+          jarsigner -sigalg SHA256withRSA -digestalg SHA-256 \
+            -keystore "$KS" \
+            -storepass:env ANDROID_KEYSTORE_PASSWORD \
+            -keypass:env ANDROID_KEY_PASSWORD \
+            "$AAB" "$ANDROID_KEY_ALIAS"
+          jarsigner -verify "$AAB" | tail -1
 
-          # Clean up keystore
-          rm -f /tmp/meshguard.jks /tmp/meshguard-aligned.apk
+          echo "path=$DEST" >> "$GITHUB_OUTPUT"
+          echo "stable_path=meshguard-android.apk" >> "$GITHUB_OUTPUT"
+          echo "aab=$AAB" >> "$GITHUB_OUTPUT"
+
+          rm -f "$KS" "$ALIGNED"
+
+      - name: Check 16 KB page alignment of native libraries
+        run: |
+          set -euo pipefail
+          BT="${ANDROID_HOME}/build-tools/$(ls "${ANDROID_HOME}/build-tools/" | sort -V | tail -1)"
+          "$BT/zipalign" -c -P 16 4 "${{ steps.apk.outputs.path }}"
+          mkdir -p "$RUNNER_TEMP/so" && unzip -q -o "${{ steps.apk.outputs.path }}" 'lib/*' -d "$RUNNER_TEMP/so"
+          fail=0
+          for so in $(find "$RUNNER_TEMP/so/lib" -name '*.so'); do
+            case "$so" in */arm64-v8a/*|*/x86_64/*) ;; *) continue ;; esac
+            for a in $(readelf -lW "$so" | awk '$1=="LOAD"{print $NF}'); do
+              if [ $((a)) -lt 16384 ]; then
+                echo "::error::$so has LOAD alignment $a (< 16 KB)"; fail=1
+              fi
+            done
+          done
+          exit $fail
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
@@ -155,6 +181,26 @@ jobs:
           path: |
             ${{ steps.apk.outputs.path }}
             ${{ steps.apk.outputs.stable_path }}
+
+      - name: Upload App Bundle artifact
+        # Kept as a workflow artifact, not a release asset: the AAB is only
+        # useful to Google Play.
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-aab
+          path: ${{ steps.apk.outputs.aab }}
+
+      - name: Upload to Google Play (internal testing, draft)
+        # Optional: runs only when the service account secret is configured.
+        # Drafts are never shown to users until promoted in Play Console.
+        if: env.PLAY_UPLOAD == 'true'
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: com.meshguard.app
+          releaseFiles: ${{ steps.apk.outputs.aab }}
+          track: internal
+          status: draft
 
   # ──────────────────────────────────────────────
   # Linux — Ubuntu (.deb + .AppImage)
