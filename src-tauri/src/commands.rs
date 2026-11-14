@@ -376,7 +376,19 @@ pub async fn accept_chat(
         ));
     }
 
-    // Durably record an accepted v2 request *before* transmitting, so a replay
+    let sealed = outbound::seal(
+        protocol.into(),
+        OutPayload::PairAccept(&my_name),
+        &session_key,
+        &me,
+        &peer_id,
+        unix_now(),
+        DEFAULT_FRAME_BUDGET,
+    )
+    .map_err(seal_err)?;
+
+    // Durably record an accepted v2 request *before* transmitting (and after
+    // sealing, which can fail), so a replay
     // of it (also after a restart) can never trigger another acceptance.
     if let Some(id) = accepted_v2_request {
         let mut dedup = state.inbound.dedup.lock().await;
@@ -404,17 +416,6 @@ pub async fn accept_chat(
             return Err(e);
         }
     }
-
-    let sealed = outbound::seal(
-        protocol.into(),
-        OutPayload::PairAccept(&my_name),
-        &session_key,
-        &me,
-        &peer_id,
-        unix_now(),
-        DEFAULT_FRAME_BUDGET,
-    )
-    .map_err(seal_err)?;
 
     let sent = {
         let mut radio_guard = state.radio.lock().await;
