@@ -10,6 +10,7 @@ publish = false
 aes-gcm = "0.10"
 hkdf = "0.12"
 rand = "0.8"
+serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
 thiserror = "2"
 zeroize = { version = "1", features = ["derive"] }

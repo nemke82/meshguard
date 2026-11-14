@@ -1265,3 +1265,160 @@ input[type="range"]::-moz-range-thumb {
 #app.link-status-visible .screen {
   top: calc(38px + env(safe-area-inset-top, 0px));
 }
+
+/* ── Check-in / SOS ─────────────────────────────────── */
+.btn-sos {
+  background: var(--danger);
+  color: #fff;
+  border: none;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-weight: 800;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  box-shadow: 0 0 10px rgba(255, 71, 87, 0.45);
+}
+
+.quick-bar {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 8px 12px 0;
+  scrollbar-width: none;
+}
+
+.quick-bar::-webkit-scrollbar { display: none; }
+
+.quick-chip {
+  flex: 0 0 auto;
+  border: 1px solid var(--border-light, var(--border));
+  background: var(--bg-tertiary, var(--bg-secondary));
+  color: var(--text-primary);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.quick-chip.urgent {
+  border-color: rgba(255, 71, 87, 0.5);
+  color: var(--danger);
+}
+
+.quick-chip:disabled { opacity: 0.5; }
+
+.message .checkin {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.checkin-head {
+  font-weight: 700;
+}
+
+.message.urgent .msg-text {
+  border: 1px solid rgba(255, 71, 87, 0.6);
+  background: rgba(255, 71, 87, 0.12);
+}
+
+.checkin-loc {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.checkin-loc a,
+.sos-location a {
+  color: var(--accent);
+  margin-left: 6px;
+}
+
+.preset-row {
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  gap: 6px 8px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.preset-row input[type="text"] {
+  width: 100%;
+  min-width: 0;
+}
+
+.preset-row .preset-loc {
+  grid-column: 2;
+  font-size: 12px;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn-link {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  margin-top: 8px;
+}
+
+.sos-alert {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(40, 0, 6, 0.85);
+}
+
+.sos-card {
+  width: 100%;
+  max-width: 380px;
+  background: var(--bg-secondary);
+  border: 2px solid var(--danger);
+  border-radius: 16px;
+  padding: 20px;
+  box-shadow: 0 0 32px rgba(255, 71, 87, 0.5);
+}
+
+.sos-title {
+  color: var(--danger);
+  font-size: 22px;
+  font-weight: 800;
+  margin-bottom: 8px;
+}
+
+.sos-text {
+  font-size: 16px;
+  margin-bottom: 8px;
+  overflow-wrap: anywhere;
+}
+
+.sos-location {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 16px;
+}
+
+#presets-overlay .field-hint {
+  display: block;
+  margin: 0 0 16px;
+}
+
+.preset-row input[type="text"] {
+  background: var(--bg-input);
+  border: 1px solid var(--border-light, var(--border));
+  border-radius: 8px;
+  color: var(--text-primary);
+  padding: 9px 10px;
+  font-size: 14px;
+  outline: none;
+}
+
+.preset-row input[type="text"]:focus {
+  border-color: var(--accent);
+}

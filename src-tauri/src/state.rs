@@ -115,6 +115,9 @@ pub struct AppState {
     /// Local radio (node number) that `session_keys` belong to.
     pub keys_owner: Arc<Mutex<Option<u32>>>,
 
+    /// Latest GPS fix reported by our radio (for check-ins and SOS).
+    pub my_position: Arc<Mutex<Option<meshguard_core::status::GeoFix>>>,
+
     /// Local vault key protecting remembered chat keys; opened lazily and
     /// retried after a failure.
     vault: Mutex<Option<Arc<SessionKey>>>,
@@ -145,6 +148,7 @@ impl AppState {
             inbound,
             link: Arc::new(crate::link::LinkManager::default()),
             keys_owner: Arc::new(Mutex::new(None)),
+            my_position: Arc::new(Mutex::new(None)),
             vault: Mutex::new(None),
         }
     }

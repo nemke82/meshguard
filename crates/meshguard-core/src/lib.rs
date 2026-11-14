@@ -32,6 +32,7 @@ pub mod inbound;
 pub mod keystore;
 pub mod outbound;
 pub mod ratelimit;
+pub mod status;
 pub mod transport;
 pub mod v1;
 

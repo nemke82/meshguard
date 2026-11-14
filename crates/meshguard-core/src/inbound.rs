@@ -11,6 +11,7 @@ use crate::dedup::{DedupCache, Seen};
 use crate::envelope::{aad_context, FreshnessError, MessageType, DEFAULT_FRAME_BUDGET};
 use crate::ids::{MessageId, PeerIdentity};
 use crate::outbound::{seal_ack, WireVersion};
+use crate::status::StatusBody;
 use crate::v1::V1Payload;
 
 /// Receiver limits. `dedup_retention_secs()` is derived from them so the
@@ -75,6 +76,14 @@ pub enum Inbound {
         sent_at: Option<u32>,
         ack: Option<Vec<u8>>,
     },
+    /// Check-in, SOS or location share (v2 only). Show, notify (urgently for
+    /// SOS / need help) and send `ack` if present.
+    Status {
+        message_id: MessageId,
+        status: StatusBody,
+        sent_at: u32,
+        ack: Option<Vec<u8>>,
+    },
     /// Already seen: do not show again; send `ack` if present.
     Duplicate {
         ack: Option<Vec<u8>>,
@@ -105,7 +114,9 @@ impl Inbound {
             Self::Text { version, .. }
             | Self::PairRequest { version, .. }
             | Self::PairAccept { version, .. } => Some(*version),
-            Self::PeerAck { .. } | Self::Duplicate { .. } => Some(WireVersion::V2),
+            Self::PeerAck { .. } | Self::Duplicate { .. } | Self::Status { .. } => {
+                Some(WireVersion::V2)
+            }
             Self::Undecryptable(_) | Self::Dropped(_) => None,
         }
     }
@@ -197,6 +208,15 @@ pub fn process_inbound(
         MessageType::PairAccept => Inbound::PairAccept {
             version: WireVersion::V2,
             name: env.text_body().unwrap_or_default().to_string(),
+        },
+        MessageType::Status => match StatusBody::decode(&env.body) {
+            Some(status) => Inbound::Status {
+                message_id: env.message_id,
+                status,
+                sent_at: env.created_at,
+                ack,
+            },
+            None => Inbound::Dropped(DropReason::Malformed),
         },
         MessageType::AppAck => match env.acked_id() {
             Some(acked) => Inbound::PeerAck { acked },

@@ -2320,6 +2320,7 @@ dependencies = [
  "aes-gcm",
  "hkdf",
  "rand 0.8.5",
+ "serde",
  "sha2",
  "thiserror 2.0.18",
  "zeroize",

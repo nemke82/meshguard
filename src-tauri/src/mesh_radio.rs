@@ -22,6 +22,9 @@ use std::path::PathBuf;
 
 use meshguard_core::inbound::{process_inbound, Inbound, InboundContext};
 use meshguard_core::outbound::WireVersion;
+#[cfg(target_os = "android")]
+use meshguard_core::status::StatusKind;
+use meshguard_core::status::{FixSource, GeoFix};
 use meshguard_core::PeerIdentity;
 
 use crate::device_config::{AppConfig, WireProtocol};
@@ -703,6 +706,8 @@ pub struct ConnectParams {
     pub vault: Option<Arc<crate::crypto::SessionKey>>,
     /// Local radio the in-memory chat keys belong to.
     pub keys_owner: Arc<Mutex<Option<u32>>>,
+    /// Latest GPS fix of our own radio.
+    pub my_position: Arc<Mutex<Option<GeoFix>>>,
 }
 
 /// Everything the background listener needs; cheap to clone.
@@ -719,6 +724,7 @@ struct ListenerCtx {
     inbound: Arc<InboundState>,
     link_gen: u64,
     link: Arc<crate::link::LinkManager>,
+    my_position: Arc<Mutex<Option<GeoFix>>>,
 }
 
 impl ListenerCtx {
@@ -735,6 +741,7 @@ impl ListenerCtx {
             inbound: p.inbound.clone(),
             link_gen: p.link_gen,
             link: p.link.clone(),
+            my_position: p.my_position.clone(),
         }
     }
 }
@@ -753,6 +760,7 @@ async fn run_config_and_listen(
 
     let mut found_node_num: Option<u32> = None;
     let mut found_device_name: Option<String> = None;
+    let mut positions: HashMap<u32, protobufs::Position> = HashMap::new();
     let mut nodes: HashMap<u32, MeshNodeInfo> = HashMap::new();
     let mut packet_count: u32 = 0;
 
@@ -777,6 +785,9 @@ async fn run_config_and_listen(
                                 if let Some(ref user) = node_info.user {
                                     found_device_name = Some(user.long_name.clone());
                                 }
+                            }
+                            if let Some(pos) = &node_info.position {
+                                positions.insert(node.node_num, *pos);
                             }
                             nodes.insert(node.node_num, node);
                         }
@@ -807,6 +818,12 @@ async fn run_config_and_listen(
         .ok_or_else(|| MeshGuardError::MeshRadio("Radio did not report MyNodeInfo".into()))?;
 
     nodes.remove(&node_num);
+
+    // Our radio's last known GPS fix (a new radio starts from scratch).
+    *p.my_position.lock().await = None;
+    if let Some(pos) = positions.get(&node_num) {
+        update_my_position(&p.my_position, pos).await;
+    }
 
     *p.mesh_nodes.lock().await = nodes;
     *p.my_node_num.lock().await = Some(node_num);
@@ -1022,6 +1039,46 @@ fn node_info_to_mesh_node(ni: &protobufs::NodeInfo) -> MeshNodeInfo {
 /// Radio timestamps before this (2020-09-13) mean the clock was never set.
 const MIN_VALID_UNIX_TIME: u32 = 1_600_000_000;
 
+/// Convert a Meshtastic position into a fix with accuracy and fix time.
+pub fn position_to_fix(pos: &protobufs::Position) -> Option<GeoFix> {
+    let (lat, lon) = (pos.latitude_i?, pos.longitude_i?);
+    if lat == 0 && lon == 0 {
+        return None; // "no fix" placeholder
+    }
+    let accuracy = if pos.gps_accuracy > 0 && pos.pdop > 0 {
+        // gps_accuracy is in mm, PDOP in 1/100 (as in the Meshtastic apps).
+        Some(f64::from(pos.gps_accuracy) / 1000.0 * f64::from(pos.pdop) / 100.0)
+    } else if (1..32).contains(&pos.precision_bits) {
+        // Deliberately reduced precision: one step of the coordinate grid.
+        Some(2f64.powi(32 - pos.precision_bits as i32) * 1e-7 * 111_320.0)
+    } else {
+        None
+    };
+    let fix = GeoFix {
+        lat_e7: lat,
+        lon_e7: lon,
+        accuracy_m: accuracy.map(|a| a.round().clamp(1.0, f64::from(u16::MAX - 1)) as u16),
+        fix_time: if pos.time > 0 {
+            pos.time
+        } else {
+            pos.timestamp
+        },
+        source: FixSource::RadioGps,
+    };
+    fix.is_valid().then_some(fix)
+}
+
+async fn update_my_position(slot: &Mutex<Option<GeoFix>>, pos: &protobufs::Position) {
+    let Some(fix) = position_to_fix(pos) else {
+        return;
+    };
+    let mut current = slot.lock().await;
+    // Keep the newest fix; packets can arrive out of order after a reconnect.
+    if current.is_none_or(|c| fix.fix_time >= c.fix_time) {
+        *current = Some(fix);
+    }
+}
+
 /// A node we have only heard packets from, before any NodeInfo arrived.
 fn unnamed_node(node_num: u32) -> MeshNodeInfo {
     MeshNodeInfo {
@@ -1050,7 +1107,18 @@ fn unnamed_node(node_num: u32) -> MeshNodeInfo {
 async fn observe_mesh_packet(packet: &protobufs::MeshPacket, ctx: &ListenerCtx) {
     use meshtastic::Message as _;
 
-    if packet.from == 0 || packet.from == ctx.my_node_num {
+    if packet.from == ctx.my_node_num {
+        // Our radio reports its own GPS position as POSITION_APP packets.
+        if let Some(protobufs::mesh_packet::PayloadVariant::Decoded(d)) = &packet.payload_variant {
+            if d.portnum == protobufs::PortNum::PositionApp as i32 {
+                if let Ok(pos) = protobufs::Position::decode(d.payload.as_slice()) {
+                    update_my_position(&ctx.my_position, &pos).await;
+                }
+            }
+        }
+        return;
+    }
+    if packet.from == 0 {
         return;
     }
     let portnum = match &packet.payload_variant {
@@ -1195,6 +1263,17 @@ pub struct IncomingMessageEvent {
     pub message_id: String,
 }
 
+/// A check-in, SOS or location share from a peer.
+#[derive(Clone, serde::Serialize)]
+pub struct IncomingStatusEvent {
+    pub from_node: u32,
+    pub from_name: String,
+    pub message_id: String,
+    pub status: meshguard_core::status::StatusBody,
+    /// Sender clock, unix seconds.
+    pub timestamp: i64,
+}
+
 /// The peer app confirmed receipt of one of our v2 messages (authenticated).
 #[derive(Clone, serde::Serialize)]
 pub struct MessageDeliveredEvent {
@@ -1309,13 +1388,17 @@ async fn handle_incoming_packet(packet: &protobufs::MeshPacket, ctx: &ListenerCt
                 // Fail closed for new v2 texts: without a durable record, a
                 // replay after restart would be shown again. Forget the id
                 // and drop the frame unACKed; the sender's retry delivers it.
-                if let Inbound::Text {
-                    message_id: Some(id),
-                    ..
-                } = &outcome
-                {
-                    dedup.forget(&sender, id);
-                    tracing::warn!("Dropped text from {from_node} until it can be recorded");
+                let new_id = match &outcome {
+                    Inbound::Text {
+                        message_id: Some(id),
+                        ..
+                    } => Some(*id),
+                    Inbound::Status { message_id, .. } => Some(*message_id),
+                    _ => None,
+                };
+                if let Some(id) = new_id {
+                    dedup.forget(&sender, &id);
+                    tracing::warn!("Dropped message from {from_node} until it can be recorded");
                     return;
                 }
             }
@@ -1356,6 +1439,56 @@ async fn handle_incoming_packet(packet: &protobufs::MeshPacket, ctx: &ListenerCt
                     text,
                     timestamp: sent_at.map(i64::from).unwrap_or(now as i64),
                     message_id,
+                },
+            );
+            if let Some(frame) = ack {
+                send_ack(ctx, from_node, frame, now).await;
+            }
+        }
+        Inbound::Status {
+            message_id,
+            status,
+            sent_at,
+            ack,
+        } => {
+            tracing::info!(
+                "Incoming status {:?} from {from_node} (location: {}, id={message_id})",
+                status.kind,
+                status.location.is_some()
+            );
+            let from_name = ctx
+                .mesh_nodes
+                .lock()
+                .await
+                .get(&from_node)
+                .map(|n| n.long_name.clone())
+                .filter(|n| !n.is_empty())
+                .unwrap_or_else(|| format!("!{from_node:08x}"));
+
+            #[cfg(target_os = "android")]
+            {
+                let title = match status.kind {
+                    StatusKind::Sos => format!("\u{1F198} SOS from {from_name}"),
+                    StatusKind::NeedHelp => format!("\u{26A0}\u{FE0F} {from_name} needs help"),
+                    StatusKind::Location => format!("\u{1F4CD} {from_name} shared a location"),
+                    _ => format!("{from_name} checked in"),
+                };
+                show_android_notification(
+                    &ctx.app_handle,
+                    &title,
+                    &status.fallback_text(),
+                    from_node,
+                );
+            }
+
+            let _ = ctx.app_handle.emit(
+                "incoming-status",
+                IncomingStatusEvent {
+                    from_node,
+                    from_name,
+                    message_id: message_id.to_hex(),
+                    status,
+                    timestamp: i64::from(sent_at),
                 },
             );
             if let Some(frame) = ack {
@@ -1505,4 +1638,45 @@ async fn upgrade_peer_to_v2(ctx: &ListenerCtx, node_num: u32) {
 
 fn emit_connection_state(app_handle: &tauri::AppHandle, state: &str) {
     let _ = app_handle.emit("connection-state", state);
+}
+
+#[cfg(test)]
+mod position_tests {
+    use super::*;
+
+    fn pos() -> protobufs::Position {
+        protobufs::Position {
+            latitude_i: Some(448_123_400),
+            longitude_i: Some(204_567_800),
+            time: 1_763_100_000,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn accuracy_from_gps_or_precision() {
+        let mut p = pos();
+        p.gps_accuracy = 3_000; // mm
+        p.pdop = 250; // 2.5
+        let f = position_to_fix(&p).unwrap();
+        assert_eq!(f.accuracy_m, Some(8));
+        assert_eq!(f.fix_time, 1_763_100_000);
+
+        let mut p = pos();
+        p.precision_bits = 13; // ~ 5.8 km grid in the Meshtastic apps
+        let a = position_to_fix(&p).unwrap().accuracy_m.unwrap();
+        assert!((5_000..6_000).contains(&a), "{a}");
+
+        assert_eq!(position_to_fix(&pos()).unwrap().accuracy_m, None);
+    }
+
+    #[test]
+    fn no_fix_is_ignored() {
+        let mut p = pos();
+        p.latitude_i = Some(0);
+        p.longitude_i = Some(0);
+        assert!(position_to_fix(&p).is_none());
+        p.latitude_i = None;
+        assert!(position_to_fix(&p).is_none());
+    }
 }

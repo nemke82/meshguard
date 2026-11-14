@@ -161,7 +161,7 @@ impl SimPeer {
                         self.acks_sent += 1;
                     }
                 }
-                MessageType::PairRequest | MessageType::PairAccept => {}
+                MessageType::PairRequest | MessageType::PairAccept | MessageType::Status => {}
             }
         }
     }

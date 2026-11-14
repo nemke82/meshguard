@@ -14,4 +14,7 @@ pub enum CoreError {
 
     #[error("Decryption failed: {0}")]
     Decryption(String),
+
+    #[error("Invalid message content: {0}")]
+    InvalidContent(String),
 }

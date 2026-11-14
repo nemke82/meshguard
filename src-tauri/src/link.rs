@@ -117,6 +117,7 @@ fn connect_params(
         link: state.link.clone(),
         vault,
         keys_owner: state.keys_owner.clone(),
+        my_position: state.my_position.clone(),
     }
 }
 

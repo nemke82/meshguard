@@ -74,6 +74,7 @@ impl From<meshguard_core::CoreError> for MeshGuardError {
             CoreError::KeyDerivation => Self::KeyDerivation,
             CoreError::Encryption(m) => Self::Encryption(m),
             CoreError::Decryption(m) => Self::Decryption(m),
+            CoreError::InvalidContent(m) => Self::Protocol(m),
         }
     }
 }

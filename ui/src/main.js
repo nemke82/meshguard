@@ -751,16 +751,19 @@ async function sendMessage() {
 
 function renderMessage(msg) {
   const el = document.createElement("div");
-  el.className = `message ${msg.mine ? "mine" : "peer"}`;
+  const urgent = msg.checkin && URGENT_KINDS.has(msg.checkin.kind);
+  el.className = `message ${msg.mine ? "mine" : "peer"}${urgent ? " urgent" : ""}`;
   el.id = `msg-${msg.id}`;
+  const body = msg.checkin ? renderCheckin(msg.checkin) : escapeHtml(msg.text);
   el.innerHTML = `
-    <div class="msg-text">${escapeHtml(msg.text)}</div>
+    <div class="msg-text">${body}</div>
     <div class="msg-meta">
       <span>${formatTime(msg.timestamp)}</span>
       ${msg.mine ? `<span class="msg-status" id="status-${msg.id}">${statusIcon(msg.status)}</span>` : ""}
     </div>
   `;
   messagesContainer.appendChild(el);
+  wireMapLinks(el);
   messagesContainer.scrollTop = messagesContainer.scrollHeight;
 }
 
@@ -867,6 +870,38 @@ async function setupEventListeners() {
         }
       },
     });
+  });
+
+  await listen("incoming-status", (event) => {
+    const data = event.payload;
+    const nodeNum = data.from_node;
+    const st = data.status;
+    if (!state.messages[nodeNum]) state.messages[nodeNum] = [];
+    const msg = {
+      id: data.message_id || crypto.randomUUID(),
+      text: st.text,
+      checkin: st,
+      timestamp: data.timestamp * 1000,
+      mine: false,
+      status: "delivered",
+    };
+    state.messages[nodeNum].push(msg);
+
+    const onChatScreen =
+      state.activePeerNodeNum === nodeNum && screenChat.classList.contains("active");
+    if (onChatScreen) renderMessage(msg);
+
+    const name = data.from_name || lookupNodeName(nodeNum);
+    NotificationSound.play();
+    if (URGENT_KINDS.has(st.kind)) {
+      showSosAlert(nodeNum, name, st);
+    } else {
+      Toast.show({
+        sender: name,
+        text: `${KIND_ICONS[st.kind] || ""} ${st.text}`.trim(),
+        onClick: () => openChatFor(nodeNum),
+      });
+    }
   });
 
   await listen("message-delivered", (event) => {
@@ -983,10 +1018,242 @@ function lookupNodeName(nodeNum) {
 }
 
 // ============================================================
+// Check-in, SOS and location
+// ============================================================
+const KIND_ICONS = {
+  ok: "\u2705",
+  on_my_way: "\uD83D\uDEB6",
+  need_help: "\u26A0\uFE0F",
+  sos: "\uD83C\uDD98",
+  location: "\uD83D\uDCCD",
+  custom: "\uD83D\uDCAC",
+};
+const KIND_LABELS = {
+  ok: "OK",
+  on_my_way: "On my way",
+  need_help: "Need help",
+  sos: "SOS",
+  location: "Location",
+  custom: "Message",
+};
+const URGENT_KINDS = new Set(["sos", "need_help"]);
+
+const quickBar = $("#quick-bar");
+const btnSos = $("#btn-sos");
+const sosAlert = $("#sos-alert");
+const presetsOverlay = $("#presets-overlay");
+const presetsList = $("#presets-list");
+
+function mapUrl(fix) {
+  const lat = (fix.lat_e7 / 1e7).toFixed(6);
+  const lon = (fix.lon_e7 / 1e7).toFixed(6);
+  return `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lon}#map=16/${lat}/${lon}`;
+}
+
+// Coordinates, accuracy and how old the fix is. Numbers only, so no
+// escaping is needed; the link is opened through the shell plugin.
+function renderLocation(fix) {
+  if (!fix) return "";
+  const lat = (fix.lat_e7 / 1e7).toFixed(5);
+  const lon = (fix.lon_e7 / 1e7).toFixed(5);
+  const acc = typeof fix.accuracy_m === "number" ? ` \u00B1${fix.accuracy_m} m` : "";
+  const age = fix.fix_time ? ` \u00B7 fix ${formatLastHeard(fix.fix_time)}` : " \u00B7 fix time unknown";
+  return `\uD83D\uDCCD ${lat}, ${lon}${acc}${age}<a href="${mapUrl(fix)}" class="map-link">Map</a>`;
+}
+
+function renderCheckin(st) {
+  const icon = KIND_ICONS[st.kind] || KIND_ICONS.custom;
+  const text = st.text ? escapeHtml(st.text) : escapeHtml(KIND_LABELS[st.kind] || "");
+  const loc = st.location ? `<div class="checkin-loc">${renderLocation(st.location)}</div>` : "";
+  return `<div class="checkin"><div class="checkin-head">${icon} ${text}</div>${loc}</div>`;
+}
+
+function wireMapLinks(root) {
+  root.querySelectorAll("a.map-link").forEach((a) => {
+    a.addEventListener("click", (e) => {
+      e.preventDefault();
+      const shell = window.__TAURI__ && window.__TAURI__.shell;
+      if (shell && shell.open) shell.open(a.href).catch((err) => console.error(err));
+    });
+  });
+}
+
+async function loadPresets() {
+  try {
+    state.presets = (await invoke("get_status_presets")) || [];
+  } catch (err) {
+    console.error("Could not load quick messages:", err);
+    state.presets = state.presets || [];
+  }
+  renderQuickBar();
+}
+
+function renderQuickBar() {
+  quickBar.innerHTML = "";
+  const chip = (label, urgent, onClick) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "quick-chip" + (urgent ? " urgent" : "");
+    b.textContent = label;
+    b.addEventListener("click", onClick);
+    quickBar.appendChild(b);
+    return b;
+  };
+  for (const p of state.presets || []) {
+    // SOS has its own button (with confirmation) on the mesh screen.
+    if (p.kind === "sos") continue;
+    chip(`${KIND_ICONS[p.kind] || ""} ${p.text}`.trim(), URGENT_KINDS.has(p.kind), () =>
+      sendCheckin([state.activePeerNodeNum], p.kind, p.text, p.with_location)
+    );
+  }
+  chip(`${KIND_ICONS.location} Share location`, false, () =>
+    sendCheckin([state.activePeerNodeNum], "location", "", true)
+  );
+  chip("\u270F\uFE0F", false, openPresetsEditor).title = "Edit quick messages";
+}
+
+// Send to each recipient and add our own copy to each chat; ✓✓ arrives via
+// message-delivered like for text messages.
+async function sendCheckin(nodeNums, kind, text, withLocation) {
+  quickBar.querySelectorAll("button").forEach((b) => (b.disabled = true));
+  try {
+    const report = await invoke("send_status", {
+      peerNodeNums: nodeNums,
+      kind,
+      text,
+      includeLocation: withLocation,
+    });
+    const st = { kind, text, location: report.location };
+    let failed = [];
+    for (const r of report.results) {
+      if (r.error) {
+        failed.push(`${lookupNodeName(r.peer_node)}: ${r.error}`);
+        continue;
+      }
+      const msg = {
+        id: crypto.randomUUID(),
+        wireId: r.message_id,
+        text,
+        checkin: st,
+        timestamp: Date.now(),
+        mine: true,
+        status: r.message_id && unmatchedDelivered.delete(r.message_id) ? "delivered" : "sent",
+      };
+      if (!state.messages[r.peer_node]) state.messages[r.peer_node] = [];
+      state.messages[r.peer_node].push(msg);
+      if (state.activePeerNodeNum === r.peer_node && screenChat.classList.contains("active")) {
+        renderMessage(msg);
+      }
+    }
+    if (withLocation && !report.location && kind !== "location") {
+      addSystemMessage("Sent without location — your radio has no GPS fix yet.");
+    }
+    if (failed.length) addSystemMessage("Not sent: " + failed.join("; "));
+    return report;
+  } catch (err) {
+    addSystemMessage(`Not sent: ${err}`);
+    throw err;
+  } finally {
+    quickBar.querySelectorAll("button").forEach((b) => (b.disabled = false));
+  }
+}
+
+btnSos.addEventListener("click", async () => {
+  const recipients = state.peers.map((p) => p.node_num);
+  if (recipients.length === 0) {
+    alert("Pair with at least one contact first — SOS goes to everyone you have paired.");
+    return;
+  }
+  const preset = (state.presets || []).find((p) => p.kind === "sos");
+  const text = preset ? preset.text : "SOS";
+  if (!confirm(`Send SOS with your location to ${recipients.length} paired contact(s)?`)) return;
+  btnSos.disabled = true;
+  try {
+    const report = await sendCheckin(recipients, "sos", text, true);
+    const ok = report.results.filter((r) => !r.error).length;
+    Toast.show({
+      sender: "MeshGuard",
+      text: `SOS sent to ${ok} of ${report.results.length}${report.location ? " with location" : " (no GPS fix)"}`,
+    });
+  } catch (err) {
+    alert("SOS could not be sent: " + err);
+  } finally {
+    btnSos.disabled = false;
+  }
+});
+
+function openChatFor(nodeNum) {
+  const peer = state.peers.find((p) => p.node_num === nodeNum);
+  if (peer) openExistingChat(peer);
+}
+
+function showSosAlert(nodeNum, name, st) {
+  $("#sos-title").textContent =
+    `${KIND_ICONS[st.kind] || ""} ${st.kind === "sos" ? "SOS" : "Needs help"} \u2014 ${name}`;
+  $("#sos-text").textContent = st.text || "";
+  const loc = $("#sos-location");
+  loc.innerHTML = st.location ? renderLocation(st.location) : "No location attached";
+  wireMapLinks(loc);
+  sosAlert.dataset.node = String(nodeNum);
+  sosAlert.style.display = "flex";
+}
+
+$("#sos-dismiss").addEventListener("click", () => {
+  sosAlert.style.display = "none";
+});
+$("#sos-open-chat").addEventListener("click", () => {
+  sosAlert.style.display = "none";
+  openChatFor(Number(sosAlert.dataset.node));
+});
+
+function openPresetsEditor() {
+  presetsList.innerHTML = "";
+  for (const [i, p] of (state.presets || []).entries()) {
+    const row = document.createElement("div");
+    row.className = "preset-row";
+    row.innerHTML = `
+      <span title="${escapeHtml(KIND_LABELS[p.kind] || p.kind)}">${KIND_ICONS[p.kind] || ""}</span>
+      <input type="text" data-i="${i}" maxlength="156" />
+      <label class="preset-loc"><input type="checkbox" data-loc="${i}" /> Attach location</label>
+    `;
+    row.querySelector('input[type="text"]').value = p.text;
+    row.querySelector('input[type="checkbox"]').checked = !!p.with_location;
+    presetsList.appendChild(row);
+  }
+  presetsOverlay.style.display = "flex";
+}
+
+$("#presets-close").addEventListener("click", () => (presetsOverlay.style.display = "none"));
+$("#presets-reset").addEventListener("click", async () => {
+  try {
+    state.presets = await invoke("reset_status_presets");
+    renderQuickBar();
+    openPresetsEditor();
+  } catch (err) {
+    alert("Could not reset: " + err);
+  }
+});
+$("#presets-save").addEventListener("click", async () => {
+  const presets = (state.presets || []).map((p, i) => ({
+    kind: p.kind,
+    text: presetsList.querySelector(`input[data-i="${i}"]`).value,
+    with_location: presetsList.querySelector(`input[data-loc="${i}"]`).checked,
+  }));
+  try {
+    state.presets = await invoke("set_status_presets", { presets });
+    renderQuickBar();
+    presetsOverlay.style.display = "none";
+  } catch (err) {
+    alert(String(err));
+  }
+});
+
+// ============================================================
 // Init
 // ============================================================
 async function init() {
   await setupEventListeners();
+  await loadPresets();
 
   try {
     const connected = await invoke("is_connected");

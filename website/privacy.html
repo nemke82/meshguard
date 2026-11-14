@@ -45,6 +45,9 @@
       </ul>
       <p>Your passphrase is never saved to storage and never transmitted; it is used only to derive the encryption key. Chat history is kept in memory only while the app runs. MeshGuard opts out of Android cloud backup, and uninstalling the app removes everything it stored on the device.</p>
 
+      <h2>Location</h2>
+      <p>MeshGuard does not use your phone's location. When you send a check-in with location, share your location or send an SOS, MeshGuard attaches the last GPS position reported by <strong>your Meshtastic radio</strong> (coordinates, accuracy and when it was measured). It is encrypted like a message and sent only to the contacts you chose; SOS goes to all your paired contacts. Received positions are shown in the chat; the "Map" link opens openstreetmap.org in your browser only when you tap it.</p>
+
       <h2>What leaves your device</h2>
       <p>Messages are encrypted on your device (AES-256-GCM) and sent through your own Meshtastic radio, over Bluetooth, Wi-Fi/TCP or USB, to the LoRa mesh. Other mesh nodes relay the encrypted packets; only the peer who knows the passphrase can read them. Like any radio transmission, Meshtastic packets reveal metadata such as node numbers, signal strength and timing to radios within range.</p>
 

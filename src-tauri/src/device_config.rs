@@ -1,4 +1,5 @@
 use meshguard_core::outbound::WireVersion;
+use meshguard_core::status::StatusKind;
 use serde::{Deserialize, Serialize};
 
 /// Wire protocol negotiated with a peer (ADR-003). Pins both the version we
@@ -40,8 +41,32 @@ pub struct PeerConfig {
     pub protocol: WireProtocol,
 }
 
+/// A one-tap check-in button: what kind of message it sends and its text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatusPreset {
+    pub kind: StatusKind,
+    pub text: String,
+    /// Attach the radio's GPS position when available.
+    #[serde(default)]
+    pub with_location: bool,
+}
+
+pub fn default_status_presets() -> Vec<StatusPreset> {
+    let p = |kind, text: &str, with_location| StatusPreset {
+        kind,
+        text: text.into(),
+        with_location,
+    };
+    vec![
+        p(StatusKind::Ok, "I'm OK", false),
+        p(StatusKind::OnMyWay, "On my way", false),
+        p(StatusKind::NeedHelp, "I need help", true),
+        p(StatusKind::Sos, "SOS — I need urgent help", true),
+    ]
+}
+
 /// Persisted app configuration — saved to disk.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     /// BLE address of the device we last connected to (for auto-reconnect).
     #[serde(default)]
@@ -55,9 +80,25 @@ pub struct AppConfig {
     #[serde(default)]
     pub last_link: Option<crate::link::LinkTarget>,
 
+    /// One-tap check-in messages; the wording is the user's (editable).
+    #[serde(default = "default_status_presets")]
+    pub status_presets: Vec<StatusPreset>,
+
     /// Paired peers — each is a separate P2P conversation.
     #[serde(default)]
     pub peers: Vec<PeerConfig>,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            last_ble_address: None,
+            last_device_name: None,
+            last_link: None,
+            status_presets: default_status_presets(),
+            peers: Vec::new(),
+        }
+    }
 }
 
 impl AppConfig {
@@ -89,6 +130,16 @@ mod tests {
         let json = r#"{"peers":[{"id":"x","device_name":"Bob","node_num":7}]}"#;
         let cfg: AppConfig = serde_json::from_str(json).unwrap();
         assert_eq!(cfg.peers[0].protocol, WireProtocol::V1);
+    }
+
+    #[test]
+    fn old_config_gets_default_presets() {
+        let cfg: AppConfig = serde_json::from_str(r#"{"peers":[]}"#).unwrap();
+        assert_eq!(cfg.status_presets, default_status_presets());
+        assert!(cfg
+            .status_presets
+            .iter()
+            .any(|p| p.kind == StatusKind::Sos && p.with_location));
     }
 
     #[test]
