@@ -96,7 +96,8 @@ pub struct AppState {
     /// Our device's long name (set after connecting).
     pub my_device_name: Arc<Mutex<Option<String>>>,
 
-    /// Session keys per peer node_num — derived in memory, never persisted.
+    /// Session keys per peer node_num. Remembered across restarts only
+    /// through the platform-protected key store (ADR-002).
     pub session_keys: Arc<Mutex<HashMap<u32, SessionKey>>>,
 
     /// Pending pair requests (node_num -> encrypted payload bytes)
@@ -107,9 +108,28 @@ pub struct AppState {
     pub config_dir: PathBuf,
 
     pub inbound: Arc<InboundState>,
+
+    /// Radio link lifecycle (auto-reconnect).
+    pub link: Arc<crate::link::LinkManager>,
+
+    /// Local radio (node number) that `session_keys` belong to.
+    pub keys_owner: Arc<Mutex<Option<u32>>>,
+
+    /// Local vault key protecting remembered chat keys; opened lazily and
+    /// retried after a failure.
+    vault: Mutex<Option<Arc<SessionKey>>>,
 }
 
 impl AppState {
+    /// The vault key, or `None` when this platform has no key store.
+    pub async fn vault(&self, app: &tauri::AppHandle) -> Option<Arc<SessionKey>> {
+        let mut vault = self.vault.lock().await;
+        if vault.is_none() {
+            *vault = crate::key_store::open_vault(app, &self.config_dir).await;
+        }
+        vault.clone()
+    }
+
     pub fn new(config_dir: PathBuf) -> Self {
         let config = AppConfig::load(&config_dir);
         let inbound = Arc::new(InboundState::new(&config_dir));
@@ -123,6 +143,9 @@ impl AppState {
             config: Arc::new(Mutex::new(config)),
             config_dir,
             inbound,
+            link: Arc::new(crate::link::LinkManager::default()),
+            keys_owner: Arc::new(Mutex::new(None)),
+            vault: Mutex::new(None),
         }
     }
 }

@@ -30,6 +30,7 @@ graph LR
 - **Delivery confirmations** — ✓ means queued for transmission, ✓✓ means the peer's app received and decrypted it (2.0 mode)
 - **Duplicate and replay protection** (2.0 mode) — relayed copies are shown once, and a captured message cannot be replayed, even after a restart
 - **Backward compatible** — turn off *MeshGuard 2.0 mode* to chat with peers on an older version
+- **Remembers your chats and radio** — reconnects to the last radio on start and whenever it comes back (battery, range, reboot); on Android, paired chats open without re-entering the passphrase
 - **Compact binary protocol** — messages fit within Meshtastic's ~228-byte LoRa payload limit, checked in bytes before sending
 - **Notification sounds** — audible alert + popup toast for incoming messages, with custom sound support
 - **Cross-platform** — Android, Linux (deb/rpm/AppImage), macOS
@@ -211,6 +212,7 @@ flowchart LR
 | Channel encryption | Meshtastic PSK (LoRa-layer encryption, device to device) |
 | Memory safety | Written in Rust — no buffer overflows; keys zeroized on drop |
 | Passphrase handling | Never saved to storage, never transmitted |
+| Remembered chats | Android: derived chat keys sealed with a vault key held in the Android Keystore ([ADR-002](docs/adr/002-key-persistence.md)); desktop: memory only |
 | Transport | LoRa mesh — no internet, no servers, no DNS |
 | MQTT/uplink | Disabled — no data leaves the mesh |
 

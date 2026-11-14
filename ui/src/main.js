@@ -182,6 +182,9 @@ const btnScan = $("#btn-scan");
 const scanStatus = $("#scan-status");
 const scanResults = $("#scan-results");
 const connectProgress = $("#connect-progress");
+const linkStatus = $("#link-status");
+const linkStatusText = $("#link-status-text");
+const btnLinkStop = $("#btn-link-stop");
 const connectProgressText = $("#connect-progress-text");
 
 const blePin = $("#ble-pin");
@@ -335,6 +338,7 @@ function renderBleDevice(device) {
 async function connectToDevice(device) {
   scanResults.innerHTML = "";
   scanStatus.textContent = "";
+  hideLinkStatus();
   connectProgress.style.display = "flex";
   connectProgressText.textContent = "Connecting to " + device.name + "...";
   btnScan.disabled = true;
@@ -805,6 +809,20 @@ async function setupEventListeners() {
     }
   });
 
+  // The radio dropped (battery, range, reboot): the backend retries on its
+  // own. Stay on the current screen and show the status bar.
+  await listen("reconnecting", (event) => {
+    const { target, attempt, retry_in_secs } = event.payload;
+    showLinkStatus(attempt <= 1 ? `Connecting to ${target}…` : `Waiting for ${target}…`);
+    linkStatus.title = `Attempt ${attempt}, next retry in ${retry_in_secs}s`;
+  });
+
+  await listen("reconnected", async () => {
+    hideLinkStatus();
+    await loadMeshData();
+    if (screenConnect.classList.contains("active")) showScreen(screenMesh);
+  });
+
   await listen("mesh-nodes-updated", async () => {
     try {
       const nodes = await invoke("get_mesh_nodes");
@@ -979,17 +997,40 @@ async function init() {
     }
   } catch (_) {}
 
-  // Try auto-reconnect to last device
-  try {
-    const lastBle = await invoke("get_last_connection");
-    if (lastBle) {
-      scanStatus.textContent = `Last device: ${lastBle}`;
-      setScanStatusType("info");
-    }
-  } catch (_) {}
-
   showScreen(screenConnect);
+
+  // Come back to the last radio on our own; retries until it is reachable.
+  try {
+    const target = await invoke("get_last_link");
+    if (target && (await invoke("auto_connect"))) {
+      showLinkStatus(`Connecting to ${target.name || target.address || target.port}…`);
+    }
+  } catch (err) {
+    console.error("Auto-connect failed to start:", err);
+  }
 }
+
+// ============================================================
+// Link status (auto-connect / auto-reconnect)
+// ============================================================
+function showLinkStatus(text) {
+  linkStatusText.textContent = text;
+  linkStatus.style.display = "flex";
+  document.getElementById("app").classList.add("link-status-visible");
+}
+
+function hideLinkStatus() {
+  linkStatus.style.display = "none";
+  document.getElementById("app").classList.remove("link-status-visible");
+}
+
+btnLinkStop.addEventListener("click", async () => {
+  hideLinkStatus();
+  try {
+    await invoke("disconnect_device");
+  } catch (_) {}
+  showScreen(screenConnect);
+});
 
 // ============================================================
 // Utilities

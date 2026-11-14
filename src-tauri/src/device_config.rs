@@ -51,6 +51,10 @@ pub struct AppConfig {
     #[serde(default)]
     pub last_device_name: Option<String>,
 
+    /// How to reach the radio again (auto-connect / auto-reconnect).
+    #[serde(default)]
+    pub last_link: Option<crate::link::LinkTarget>,
+
     /// Paired peers — each is a separate P2P conversation.
     #[serde(default)]
     pub peers: Vec<PeerConfig>,
@@ -71,8 +75,7 @@ impl AppConfig {
         let path = config_dir.join("meshguard.json");
         let data = serde_json::to_string_pretty(self)
             .map_err(|e| crate::error::MeshGuardError::Serialization(e.to_string()))?;
-        std::fs::write(&path, data)
-            .map_err(|e| crate::error::MeshGuardError::Io(e.to_string()))?;
+        std::fs::write(&path, data).map_err(|e| crate::error::MeshGuardError::Io(e.to_string()))?;
         Ok(())
     }
 }

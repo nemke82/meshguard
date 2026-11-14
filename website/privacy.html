@@ -37,8 +37,9 @@
 
       <h2>What the app stores on your device</h2>
       <ul>
-        <li><strong>Connection settings</strong> — the name and Bluetooth address of the radio you last connected to.</li>
+        <li><strong>Connection settings</strong> — the name and Bluetooth address (or network address / USB port) of the radio you last connected to, so MeshGuard can reconnect to it automatically.</li>
         <li><strong>Paired peers</strong> — each peer's radio name, Meshtastic node number and protocol version.</li>
+        <li><strong>Chat keys</strong> (Android) — the encryption key for each paired chat, so you don't have to re-enter the passphrase. Each key is encrypted with a key held in the Android Keystore, which never leaves the device's secure hardware. Removing a peer deletes its key.</li>
         <li><strong>Duplicate-protection records</strong> — message IDs and timestamps used to detect replayed or relayed copies. They never contain message text.</li>
         <li><strong>Notification settings</strong>, including a custom sound if you choose one.</li>
       </ul>

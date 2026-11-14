@@ -4,6 +4,8 @@ pub mod crypto;
 pub mod dedup_store;
 pub mod device_config;
 pub mod error;
+pub mod key_store;
+pub mod link;
 pub mod mesh_radio;
 pub mod protocol;
 pub mod state;
@@ -47,6 +49,8 @@ pub fn run() {
             commands::list_peers,
             commands::remove_peer,
             commands::get_last_connection,
+            commands::get_last_link,
+            commands::auto_connect,
         ])
         .run(tauri::generate_context!())
         .expect("error while running MeshGuard");

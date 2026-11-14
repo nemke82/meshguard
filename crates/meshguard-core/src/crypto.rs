@@ -102,6 +102,25 @@ pub struct SessionKey {
 }
 
 impl SessionKey {
+    /// Rebuild a key from its raw bytes, e.g. after loading it from the
+    /// platform-protected key store (ADR-002).
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self { key: bytes }
+    }
+
+    /// A fresh random key (OS RNG), e.g. the local vault key.
+    pub fn random() -> Self {
+        let mut key = [0u8; 32];
+        OsRng.fill_bytes(&mut key);
+        Self { key }
+    }
+
+    /// Raw key bytes for sealing into the key store. The copy is wiped when
+    /// dropped; never log or transmit it.
+    pub fn to_bytes(&self) -> zeroize::Zeroizing<[u8; 32]> {
+        zeroize::Zeroizing::new(self.key)
+    }
+
     /// Encrypt plaintext with AES-256-GCM. Returns nonce || ciphertext.
     pub fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>, CoreError> {
         let cipher = Aes256Gcm::new_from_slice(&self.key)

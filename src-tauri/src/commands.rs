@@ -11,7 +11,8 @@ use meshguard_core::PeerIdentity;
 use crate::crypto;
 use crate::device_config::{PeerConfig, WireProtocol};
 use crate::error::MeshGuardError;
-use crate::mesh_radio::{ConnectParams, MeshRadio, ScannedBleDevice, SerialPortInfo};
+use crate::link::{self, LinkTarget};
+use crate::mesh_radio::{ScannedBleDevice, SerialPortInfo};
 use crate::state::{AppState, MeshNodeInfo};
 
 // ── BLE Scanning ──────────────────────────────────────────────
@@ -57,47 +58,6 @@ pub async fn get_serial_ports() -> Result<Vec<SerialPortInfo>, MeshGuardError> {
 
 // ── Connection ────────────────────────────────────────────────
 
-/// Disconnect any existing connection and store the new radio.
-async fn store_radio(
-    radio: MeshRadio,
-    state: &AppState,
-    connection_label: String,
-) -> Result<(), MeshGuardError> {
-    *state.radio.lock().await = Some(radio);
-
-    let mut config = state.config.lock().await;
-    config.last_ble_address = Some(connection_label);
-    if let Some(name) = state.my_device_name.lock().await.as_ref() {
-        config.last_device_name = Some(name.clone());
-    }
-    config.save(&state.config_dir)?;
-
-    tracing::info!("Connected and configured");
-    Ok(())
-}
-
-async fn disconnect_existing(state: &AppState) {
-    let mut radio_guard = state.radio.lock().await;
-    if radio_guard.is_some() {
-        *radio_guard = None;
-    }
-}
-
-fn make_connect_params(app_handle: tauri::AppHandle, state: &AppState) -> ConnectParams {
-    ConnectParams {
-        app_handle,
-        mesh_nodes: state.mesh_nodes.clone(),
-        my_node_num: state.my_node_num.clone(),
-        my_device_name: state.my_device_name.clone(),
-        session_keys: state.session_keys.clone(),
-        pending_pair_requests: state.pending_pair_requests.clone(),
-        radio: state.radio.clone(),
-        config: state.config.clone(),
-        config_dir: state.config_dir.clone(),
-        inbound: state.inbound.clone(),
-    }
-}
-
 /// Connect via Bluetooth LE.
 /// `pin` is the BLE pairing PIN — defaults to 123456 (Meshtastic standard).
 /// `ble_address` is the device MAC address — required on Android.
@@ -109,11 +69,11 @@ pub async fn connect_device(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), MeshGuardError> {
-    let pin = pin.unwrap_or(123456);
-    disconnect_existing(&state).await;
-    let p = make_connect_params(app_handle, &state);
-    let radio = MeshRadio::connect_ble(&ble_name, ble_address, pin, p).await?;
-    store_radio(radio, &state, format!("ble:{ble_name}")).await
+    let target = LinkTarget::Ble {
+        name: ble_name,
+        address: ble_address,
+    };
+    link::connect(target, pin, &app_handle, &state).await
 }
 
 /// Connect via WiFi / TCP.
@@ -123,10 +83,7 @@ pub async fn connect_tcp(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), MeshGuardError> {
-    disconnect_existing(&state).await;
-    let p = make_connect_params(app_handle, &state);
-    let radio = MeshRadio::connect_tcp(&address, p).await?;
-    store_radio(radio, &state, format!("tcp:{address}")).await
+    link::connect(LinkTarget::Tcp { address }, None, &app_handle, &state).await
 }
 
 /// Connect via USB serial.
@@ -136,18 +93,20 @@ pub async fn connect_serial(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), MeshGuardError> {
-    disconnect_existing(&state).await;
-    let p = make_connect_params(app_handle, &state);
-    let radio = MeshRadio::connect_serial(&port_name, p).await?;
-    store_radio(radio, &state, format!("serial:{port_name}")).await
+    link::connect(
+        LinkTarget::Serial { port: port_name },
+        None,
+        &app_handle,
+        &state,
+    )
+    .await
 }
 
 /// Disconnect from the Meshtastic device.
 #[tauri::command]
 pub async fn disconnect_device(state: State<'_, AppState>) -> Result<(), MeshGuardError> {
-    *state.radio.lock().await = None;
-    *state.my_node_num.lock().await = None;
-    state.mesh_nodes.lock().await.clear();
+    // Also stops any automatic reconnect.
+    link::disconnect(&state).await;
     tracing::info!("Disconnected");
     Ok(())
 }
@@ -237,6 +196,86 @@ async fn peer_long_name(state: &AppState, peer_node_num: u32) -> Result<String, 
     Ok(node.long_name.clone())
 }
 
+/// Transmit `frame` as radio `my_num`. Fails if the radio changed since the
+/// frame was sealed for `my_num` (the identity is part of the AAD).
+async fn send_as(
+    state: &AppState,
+    my_num: u32,
+    peer_node_num: u32,
+    frame: Vec<u8>,
+) -> Result<(), MeshGuardError> {
+    let mut radio_guard = state.radio.lock().await;
+    let radio = radio_guard.as_mut().ok_or(MeshGuardError::NotConnected)?;
+    if *state.my_node_num.lock().await != Some(my_num) {
+        return Err(MeshGuardError::Protocol(
+            "The radio changed while sending — please try again".into(),
+        ));
+    }
+    radio.send_private_app(frame, peer_node_num).await
+}
+
+fn key_copy(key: &crate::crypto::SessionKey) -> crate::crypto::SessionKey {
+    crate::crypto::SessionKey::from_bytes(*key.to_bytes())
+}
+
+/// Install a chat key before transmitting, so the peer's immediate reply can
+/// be decrypted. Returns the key it replaced, for rollback. Refuses if the
+/// in-memory keys now belong to another radio than `my_num`.
+async fn install_key(
+    state: &AppState,
+    my_num: u32,
+    peer_node_num: u32,
+    key: crate::crypto::SessionKey,
+) -> Result<Option<crate::crypto::SessionKey>, MeshGuardError> {
+    let owner = state.keys_owner.lock().await;
+    if *owner != Some(my_num) {
+        return Err(MeshGuardError::Protocol(
+            "The radio changed — please try again".into(),
+        ));
+    }
+    Ok(state.session_keys.lock().await.insert(peer_node_num, key))
+}
+
+/// Undo [`install_key`], unless the keys meanwhile belong to another radio.
+async fn rollback_key(
+    state: &AppState,
+    my_num: u32,
+    peer_node_num: u32,
+    previous: Option<crate::crypto::SessionKey>,
+) {
+    let owner = state.keys_owner.lock().await;
+    if *owner != Some(my_num) {
+        return;
+    }
+    let mut keys = state.session_keys.lock().await;
+    match previous {
+        Some(k) => {
+            keys.insert(peer_node_num, k);
+        }
+        None => {
+            keys.remove(&peer_node_num);
+        }
+    }
+}
+
+/// Remember `key` for `peer_node_num` across restarts (ADR-002). Best
+/// effort: without a platform key store, or on a write error, the chat
+/// still works for this session.
+async fn remember_key(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    my_num: u32,
+    peer_node_num: u32,
+    key: &crate::crypto::SessionKey,
+) {
+    let Some(vault) = state.vault(app).await else {
+        return;
+    };
+    if let Err(e) = crate::key_store::save(&state.config_dir, &vault, my_num, peer_node_num, key) {
+        tracing::warn!("Could not remember the chat key for {peer_node_num}: {e}");
+    }
+}
+
 /// Persist (or replace) a peer. Re-pairing resets the protocol pin.
 async fn save_peer(
     state: &AppState,
@@ -267,6 +306,7 @@ pub async fn start_chat(
     peer_node_num: u32,
     passphrase: String,
     protocol: Option<WireProtocol>,
+    app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<PeerConfig, MeshGuardError> {
     let protocol = protocol.unwrap_or_default();
@@ -287,19 +327,14 @@ pub async fn start_chat(
     )
     .map_err(seal_err)?;
 
-    {
-        let mut radio_guard = state.radio.lock().await;
-        let radio = radio_guard.as_mut().ok_or(MeshGuardError::NotConnected)?;
-        radio.send_private_app(sealed.frame, peer_node_num).await?;
+    let previous = install_key(&state, my_num, peer_node_num, key_copy(&session_key)).await?;
+    if let Err(e) = send_as(&state, my_num, peer_node_num, sealed.frame).await {
+        rollback_key(&state, my_num, peer_node_num, previous).await;
+        return Err(e);
     }
 
-    state
-        .session_keys
-        .lock()
-        .await
-        .insert(peer_node_num, session_key);
-
     let peer = save_peer(&state, peer_node_num, peer_name, protocol).await?;
+    remember_key(&app_handle, &state, my_num, peer_node_num, &session_key).await;
     tracing::info!("Chat initiated with node {peer_node_num} ({protocol:?})");
     Ok(peer)
 }
@@ -311,6 +346,7 @@ pub async fn start_chat(
 pub async fn accept_chat(
     peer_node_num: u32,
     passphrase: String,
+    app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<PeerConfig, MeshGuardError> {
     let (my_num, my_name) = my_identity(&state).await?;
@@ -422,14 +458,21 @@ pub async fn accept_chat(
         }
     }
 
-    let sent = {
-        let mut radio_guard = state.radio.lock().await;
-        match radio_guard.as_mut() {
-            Some(radio) => radio.send_private_app(sealed.frame, peer_node_num).await,
-            None => Err(MeshGuardError::NotConnected),
+    let previous = match install_key(&state, my_num, peer_node_num, key_copy(&session_key)).await {
+        Ok(p) => p,
+        Err(e) => {
+            // Not accepted after all: un-record the request so it can be retried.
+            if let Some(id) = accepted_v2_request {
+                let mut dedup = state.inbound.dedup.lock().await;
+                dedup.forget(&peer_id, &id);
+                let _ = crate::dedup_store::save(&state.config_dir, &dedup);
+            }
+            return Err(e);
         }
     };
+    let sent = send_as(&state, my_num, peer_node_num, sealed.frame).await;
     if let Err(e) = sent {
+        rollback_key(&state, my_num, peer_node_num, previous).await;
         // Not accepted after all: let the user retry the same request.
         if let Some(id) = accepted_v2_request {
             let mut dedup = state.inbound.dedup.lock().await;
@@ -444,13 +487,8 @@ pub async fn accept_chat(
         .lock()
         .await
         .remove(&peer_node_num);
-    state
-        .session_keys
-        .lock()
-        .await
-        .insert(peer_node_num, session_key);
-
     let peer = save_peer(&state, peer_node_num, peer_name, protocol).await?;
+    remember_key(&app_handle, &state, my_num, peer_node_num, &session_key).await;
     tracing::info!("Chat accepted with node {peer_node_num} ({protocol:?})");
     Ok(peer)
 }
@@ -500,9 +538,7 @@ pub async fn send_message(
         .map_err(seal_err)?
     };
 
-    let mut radio_guard = state.radio.lock().await;
-    let radio = radio_guard.as_mut().ok_or(MeshGuardError::NotConnected)?;
-    radio.send_private_app(sealed.frame, peer_node_num).await?;
+    send_as(&state, my_num, peer_node_num, sealed.frame).await?;
 
     Ok(SendReceipt {
         message_id: sealed.message_id.map(|id| id.to_hex()),
@@ -534,6 +570,7 @@ pub async fn remove_peer(
     state: State<'_, AppState>,
 ) -> Result<(), MeshGuardError> {
     state.session_keys.lock().await.remove(&peer_node_num);
+    crate::key_store::remove_peer(&state.config_dir, peer_node_num)?;
 
     let mut config = state.config.lock().await;
     config.peers.retain(|p| p.node_num != peer_node_num);
@@ -548,4 +585,19 @@ pub async fn get_last_connection(
 ) -> Result<Option<String>, MeshGuardError> {
     let config = state.config.lock().await;
     Ok(config.last_ble_address.clone())
+}
+
+/// The saved radio to reconnect to, if any.
+#[tauri::command]
+pub async fn get_last_link(
+    state: State<'_, AppState>,
+) -> Result<Option<LinkTarget>, MeshGuardError> {
+    Ok(state.config.lock().await.last_link.clone())
+}
+
+/// Connect to the saved radio in the background, retrying until it is
+/// reachable or the user disconnects. Returns false when nothing is saved.
+#[tauri::command]
+pub async fn auto_connect(app_handle: tauri::AppHandle) -> Result<bool, MeshGuardError> {
+    Ok(link::start_reconnect_loop(app_handle).await)
 }

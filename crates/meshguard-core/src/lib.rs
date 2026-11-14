@@ -29,6 +29,7 @@ pub mod envelope;
 pub mod error;
 pub mod ids;
 pub mod inbound;
+pub mod keystore;
 pub mod outbound;
 pub mod ratelimit;
 pub mod transport;

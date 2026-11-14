@@ -151,6 +151,13 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
+import java.security.KeyStore
+import javax.crypto.Cipher
+import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
 
 @TauriPlugin
 class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
@@ -163,6 +170,9 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
             UUID.fromString("2c55e69e-4993-11ed-b878-0242ac120002")
         private val TORADIO_UUID: UUID =
             UUID.fromString("f75c76d2-129e-4dad-a1dd-7866124401e7")
+        // Android Keystore alias of the key that wraps MeshGuard's vault key.
+        private const val VAULT_ALIAS = "meshguard_vault_v1"
+        private const val GCM_IV_LEN = 12
         private val MESHTASTIC_NAME_HINTS = listOf(
             "meshtastic", "p1000", "t-beam", "heltec", "rak",
             "sensecap", "t-echo", "lora", "mesh"
@@ -172,6 +182,41 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
     private var bluetoothGatt: BluetoothGatt? = null
     private var fromRadioChar: BluetoothGattCharacteristic? = null
     private var toRadioChar: BluetoothGattCharacteristic? = null
+    // False once the GATT link drops, so readFromRadio reports the loss
+    // instead of returning empty data forever.
+    @Volatile private var linkUp = false
+    // Incremented for every GATT connection. Callers pass it back so the I/O
+    // loop of an old connection cannot touch a newer one.
+    @Volatile private var session = 0L
+
+    private fun sessionMatches(invoke: Invoke): Boolean {
+        val s = invoke.getArgs().optLong("session", -1L)
+        return s == -1L || s == session
+    }
+
+    // GATT objects of closed connections. Their late callbacks are ignored so
+    // they cannot clear linkUp or feed the new connection's queues. (Matching
+    // against bluetoothGatt instead would drop a callback that arrives before
+    // connectGatt() has returned.)
+    private val retiredGatts: MutableSet<BluetoothGatt> =
+        java.util.Collections.synchronizedSet(
+            java.util.Collections.newSetFromMap(java.util.WeakHashMap<BluetoothGatt, Boolean>())
+        )
+
+    private fun isRetired(gatt: BluetoothGatt): Boolean = retiredGatts.contains(gatt)
+
+    @SuppressLint("MissingPermission")
+    private fun closeGatt() {
+        bluetoothGatt?.let {
+            retiredGatts.add(it)
+            try { it.disconnect() } catch (_: Exception) {}
+            try { it.close() } catch (_: Exception) {}
+        }
+        bluetoothGatt = null
+        fromRadioChar = null
+        toRadioChar = null
+        linkUp = false
+    }
 
     private val connectQueue = LinkedBlockingQueue<Int>(1)
     private val servicesQueue = LinkedBlockingQueue<Int>(1)
@@ -180,11 +225,16 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
 
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            if (isRetired(gatt)) return
             Log.d(TAG, "GATT state: $newState (status=$status)")
+            if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                linkUp = false
+            }
             connectQueue.offer(newState)
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+            if (isRetired(gatt)) return
             Log.d(TAG, "Services discovered: status=$status")
             servicesQueue.offer(status)
         }
@@ -195,6 +245,7 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
             value: ByteArray,
             status: Int
         ) {
+            if (isRetired(gatt)) return
             readQueue.offer(if (status == BluetoothGatt.GATT_SUCCESS) value else ByteArray(0))
         }
 
@@ -204,6 +255,7 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
             characteristic: BluetoothGattCharacteristic,
             status: Int
         ) {
+            if (isRetired(gatt)) return
             @Suppress("DEPRECATION")
             readQueue.offer(
                 if (status == BluetoothGatt.GATT_SUCCESS) characteristic.value ?: ByteArray(0)
@@ -216,6 +268,7 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
             characteristic: BluetoothGattCharacteristic,
             status: Int
         ) {
+            if (isRetired(gatt)) return
             writeQueue.offer(status)
         }
     }
@@ -474,6 +527,9 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
             invoke.reject("No address provided")
             return
         }
+        // A new connection replaces any previous one (and its session).
+        session += 1
+        closeGatt()
 
         val btManager = activity.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
         val adapter = btManager?.adapter
@@ -481,15 +537,6 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
             invoke.reject("No Bluetooth adapter")
             return
         }
-
-        // Close any existing connection
-        bluetoothGatt?.let {
-            try { it.disconnect() } catch (_: Exception) {}
-            try { it.close() } catch (_: Exception) {}
-        }
-        bluetoothGatt = null
-        fromRadioChar = null
-        toRadioChar = null
 
         val device: BluetoothDevice
         try {
@@ -546,8 +593,7 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
 
         val connState = connectQueue.poll(15, TimeUnit.SECONDS)
         if (connState != BluetoothProfile.STATE_CONNECTED) {
-            bluetoothGatt?.close()
-            bluetoothGatt = null
+            closeGatt()
             invoke.reject("GATT connection timed out")
             return
         }
@@ -556,9 +602,7 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
         bluetoothGatt?.discoverServices()
         val svcStatus = servicesQueue.poll(10, TimeUnit.SECONDS)
         if (svcStatus != BluetoothGatt.GATT_SUCCESS) {
-            bluetoothGatt?.disconnect()
-            bluetoothGatt?.close()
-            bluetoothGatt = null
+            closeGatt()
             invoke.reject("Service discovery failed")
             return
         }
@@ -577,16 +621,16 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
         }
 
         if (fromRadioChar == null || toRadioChar == null) {
-            bluetoothGatt?.disconnect()
-            bluetoothGatt?.close()
-            bluetoothGatt = null
+            closeGatt()
             invoke.reject("Meshtastic GATT characteristics not found")
             return
         }
 
         Log.d(TAG, "GATT ready — fromradio and toradio found")
+        linkUp = true
         val result = JSObject()
         result.put("success", true)
+        result.put("session", session)
         invoke.resolve(result)
     }
 
@@ -597,8 +641,8 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
     fun readFromRadio(invoke: Invoke) {
         val gatt = bluetoothGatt
         val char = fromRadioChar
-        if (gatt == null || char == null) {
-            invoke.resolve(JSObject().put("data", ""))
+        if (gatt == null || char == null || !linkUp || !sessionMatches(invoke)) {
+            invoke.reject("Disconnected")
             return
         }
 
@@ -630,7 +674,7 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
 
         val gatt = bluetoothGatt
         val char = toRadioChar
-        if (gatt == null || char == null) {
+        if (gatt == null || char == null || !linkUp || !sessionMatches(invoke)) {
             invoke.reject("Not connected")
             return
         }
@@ -661,15 +705,79 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
     @SuppressLint("MissingPermission")
     @Command
     fun disconnectBleDevice(invoke: Invoke) {
-        bluetoothGatt?.let {
-            try { it.disconnect() } catch (_: Exception) {}
-            try { it.close() } catch (_: Exception) {}
+        if (!sessionMatches(invoke)) {
+            // An old link's cleanup: the current connection is not its own.
+            invoke.resolve(JSObject().put("success", true))
+            return
         }
-        bluetoothGatt = null
-        fromRadioChar = null
-        toRadioChar = null
+        closeGatt()
         Log.d(TAG, "BLE device disconnected")
         invoke.resolve(JSObject().put("success", true))
+    }
+
+    // ── Vault key wrapping (ADR-002) ────────────────────────────
+    //
+    // A non-exportable AES-256-GCM key in the Android Keystore wraps the
+    // random vault key that protects remembered chat keys. The wrapped bytes
+    // are iv(12) || ciphertext+tag. The key is not bound to user
+    // authentication, so the app can reconnect and decrypt in the background.
+
+    private fun vaultKey(): SecretKey {
+        val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        (ks.getKey(VAULT_ALIAS, null) as? SecretKey)?.let { return it }
+        val gen = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
+        gen.init(
+            KeyGenParameterSpec.Builder(
+                VAULT_ALIAS,
+                KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+            )
+                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                .setKeySize(256)
+                .build()
+        )
+        return gen.generateKey()
+    }
+
+    @Command
+    fun wrapSecret(invoke: Invoke) {
+        try {
+            val plain = Base64.decode(invoke.getArgs().getString("data") ?: "", Base64.NO_WRAP)
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.ENCRYPT_MODE, vaultKey())
+            val out = cipher.iv + cipher.doFinal(plain)
+            plain.fill(0)
+            invoke.resolve(JSObject().put("data", Base64.encodeToString(out, Base64.NO_WRAP)))
+        } catch (e: Exception) {
+            invoke.reject("wrapSecret failed: ${e.javaClass.simpleName}")
+        }
+    }
+
+    @Command
+    fun unwrapSecret(invoke: Invoke) {
+        try {
+            val blob = Base64.decode(invoke.getArgs().getString("data") ?: "", Base64.NO_WRAP)
+            if (blob.size <= GCM_IV_LEN) {
+                invoke.reject("unwrapSecret: blob too short")
+                return
+            }
+            val iv = blob.copyOfRange(0, GCM_IV_LEN)
+            val ct = blob.copyOfRange(GCM_IV_LEN, blob.size)
+            val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+            val key = ks.getKey(VAULT_ALIAS, null) as? SecretKey
+            if (key == null) {
+                invoke.reject("unwrapSecret: no vault key")
+                return
+            }
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, iv))
+            val plain = cipher.doFinal(ct)
+            val encoded = Base64.encodeToString(plain, Base64.NO_WRAP)
+            plain.fill(0)
+            invoke.resolve(JSObject().put("data", encoded))
+        } catch (e: Exception) {
+            invoke.reject("unwrapSecret failed: ${e.javaClass.simpleName}")
+        }
     }
 
     // ── show_notification — native Android notification ────────
