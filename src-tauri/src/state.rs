@@ -124,6 +124,11 @@ pub struct AppState {
     /// budget across concurrent requests.
     pub status_tx: Mutex<crate::status_tx::StatusTx>,
 
+    /// Signal history per node (diagnostics), in memory only.
+    pub node_history: Arc<Mutex<crate::diagnostics::History>>,
+    /// Outstanding path tests (traceroute).
+    pub path_tests: Arc<Mutex<crate::diagnostics::PathTests>>,
+
     /// Latest GPS fix reported by our radio (for check-ins and SOS).
     pub my_position: Arc<Mutex<Option<meshguard_core::status::GeoFix>>>,
 
@@ -158,6 +163,8 @@ impl AppState {
             link: Arc::new(crate::link::LinkManager::default()),
             keys_owner: Arc::new(Mutex::new(None)),
             my_position: Arc::new(Mutex::new(None)),
+            node_history: Arc::new(Mutex::new(crate::diagnostics::History::default())),
+            path_tests: Arc::new(Mutex::new(crate::diagnostics::PathTests::default())),
             status_tx: Mutex::new(crate::status_tx::StatusTx::default()),
             vault: Mutex::new(None),
         }

@@ -70,6 +70,11 @@ impl LinkManager {
     pub fn is_current(&self, link_gen: u64) -> bool {
         self.link_gen.load(Ordering::SeqCst) == link_gen
     }
+
+    /// The current link generation.
+    pub fn current(&self) -> u64 {
+        self.link_gen.load(Ordering::SeqCst)
+    }
 }
 
 /// How long to wait for the old transport's workers to stop.
@@ -118,6 +123,8 @@ fn connect_params(
         vault,
         keys_owner: state.keys_owner.clone(),
         my_position: state.my_position.clone(),
+        node_history: state.node_history.clone(),
+        path_tests: state.path_tests.clone(),
     }
 }
 
@@ -133,6 +140,8 @@ async fn connect_locked(
     // Close the old link first; its listener's end is then stale.
     let link_gen = state.link.link_gen.fetch_add(1, Ordering::SeqCst) + 1;
     shutdown_radio(state).await;
+    // Outstanding path tests belong to the old link.
+    state.path_tests.lock().await.clear();
 
     // Open the vault before the listener starts, so remembered keys are in
     // place for the first packet (see key_store::prepare_for_radio).
