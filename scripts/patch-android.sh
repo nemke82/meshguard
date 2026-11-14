@@ -538,15 +538,6 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
             return
         }
 
-        // Close any existing connection
-        bluetoothGatt?.let {
-            try { it.disconnect() } catch (_: Exception) {}
-            try { it.close() } catch (_: Exception) {}
-        }
-        bluetoothGatt = null
-        fromRadioChar = null
-        toRadioChar = null
-
         val device: BluetoothDevice
         try {
             device = adapter.getRemoteDevice(address)
