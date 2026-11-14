@@ -26,7 +26,11 @@ graph LR
 - **Passphrase-based chat** — tap a node, enter a shared passphrase, start chatting
 - **End-to-end encryption** — AES-256-GCM with deterministic key derivation (HKDF-SHA256)
 - **No key exchange over the air** — both peers derive identical keys locally from the passphrase
-- **Compact binary protocol** — messages fit within Meshtastic's ~228-byte LoRa payload limit
+- **MeshGuard 2.0 protocol** — every message carries a stable ID, timestamp and lifetime, and is bound to its sender and recipient
+- **Delivery confirmations** — ✓ means handed to your radio, ✓✓ means the peer's app received and decrypted it
+- **Duplicate and replay protection** — relayed copies are shown once, and a captured message cannot be replayed, even after a restart
+- **Backward compatible** — turn off *MeshGuard 2.0 mode* to chat with peers on an older version
+- **Compact binary protocol** — messages fit within Meshtastic's ~228-byte LoRa payload limit, checked in bytes before sending
 - **Notification sounds** — audible alert + popup toast for incoming messages, with custom sound support
 - **Cross-platform** — Android, Linux (deb/rpm/AppImage), macOS
 - **WiFi & USB serial** — connect to Meshtastic devices over TCP or serial, not just Bluetooth
@@ -74,12 +78,15 @@ Or grab the APK directly from the latest [**GitHub Release**](https://github.com
 1. On the **Mesh Network** screen, you'll see all discovered nodes
 2. Tap the peer you want to chat with
 3. Enter a **shared passphrase** that you and your peer agreed on beforehand (in person, phone call, etc.)
-4. MeshGuard derives an AES-256 encryption key from both device identities + passphrase
-5. You're in — type and send encrypted messages
+4. Leave **MeshGuard 2.0 mode** on if your peer also runs MeshGuard 2.0. Turn it off only to chat with an older version
+5. MeshGuard derives an AES-256 encryption key from both device identities + passphrase
+6. You're in — type and send encrypted messages
 
 ### Step 3 — On the Other Side
 
 Your peer does the same: scans, connects to their radio, taps your node, enters the **same passphrase**. Both sides derive identical keys — no key exchange needed.
+
+In MeshGuard 2.0 mode, a chat paired in 2.0 mode stays on 2.0: an old-format request from that peer is refused instead of silently downgrading the chat. To go back to the old format, remove the peer and pair again with 2.0 mode off.
 
 ---
 
@@ -116,18 +123,34 @@ sequenceDiagram
 
     Note over Alice,Bob: Both entered same passphrase → identical AES-256 keys
 
-    Alice->>Alice: Serialize [0x01 | "Hello!"]
-    Alice->>Alice: Encrypt AES-256-GCM
+    Alice->>Alice: Build envelope (message ID, time, TTL, "Hello!")
+    Alice->>Alice: Encrypt AES-256-GCM, bound to Alice → Bob
     Alice->>RA: BLE write (PrivateApp packet)
     RA->>RA: Encrypt with channel PSK
     RA->>RB: LoRa transmission
     RB->>RB: Decrypt channel PSK
     RB->>Bob: BLE read (PrivateApp packet)
-    Bob->>Bob: Decrypt AES-256-GCM
-    Bob->>Bob: Parse binary → "Hello!"
+    Bob->>Bob: Decrypt AES-256-GCM, check freshness + duplicates
     Bob->>Bob: 🔔 Play notification sound
     Note over Bob: Display message + toast popup
+    Bob-->>Alice: Encrypted ACK (message ID) over the mesh
+    Note over Alice: ✓ → ✓✓ delivered
 ```
+
+### Wire Protocol
+
+MeshGuard 2.0 frames fit in one LoRa packet (228-byte budget):
+
+```
+"MG2" | nonce (12) | AES-256-GCM( version | type | message_id (16) | created_at | ttl | body ) | tag (16)
+```
+
+- **Message ID** — 16 random bytes, the same on every relayed copy, used for duplicate detection and delivery ACKs
+- **Freshness** — messages older than their lifetime, or too far in the future, are dropped
+- **Direction binding** — sender and recipient are authenticated as associated data, so a frame cannot be reflected back to its sender
+- **Max text** — 173 bytes in 2.0 mode, 199 bytes in the older format (multi-byte characters such as č, ш or emoji count as 2–4 bytes)
+
+The older format (`nonce | AES-GCM([type][UTF-8 text])`) is still read, so 2.0 can talk to earlier versions. The full specification is in [ADR-003](docs/adr/003-wire-protocol-v2.md).
 
 ### Key Derivation
 
@@ -180,7 +203,10 @@ flowchart LR
 |-------|-----------|
 | Message encryption | AES-256-GCM (authenticated, 256-bit key) |
 | Key derivation | HKDF-SHA256 from sorted device identities + passphrase |
-| Wire format | Compact binary (1 byte type + payload), encrypted once |
+| Wire format | MeshGuard 2.0 envelope (ID, timestamp, TTL), encrypted once; older format still readable |
+| Message integrity | AEAD bound to sender and recipient; no reflection, no silent protocol downgrade |
+| Replay protection | Freshness window + persistent duplicate cache (IDs and timestamps only, never content) |
+| Logging | Message contents are never written to logs |
 | Key exchange | **None over the air** — keys derived locally from shared secret |
 | Channel encryption | Meshtastic PSK (LoRa-layer encryption, device to device) |
 | Memory safety | Written in Rust — no buffer overflows; keys zeroized on drop |
@@ -202,11 +228,15 @@ graph TB
         HTML["index.html"]
     end
 
+    subgraph "Core (meshguard-core)"
+        CORE["envelope, codec, crypto<br/>dedup, delivery, rate limits"]
+    end
+
     subgraph "Backend (Rust / Tauri)"
         CMD["commands.rs<br/>Tauri IPC"]
         RADIO["mesh_radio.rs<br/>BLE scan, connect, I/O"]
-        CRYPTO["crypto.rs<br/>AES-256-GCM + HKDF"]
-        PROTO["protocol.rs<br/>binary wire format"]
+        CRYPTO["crypto.rs<br/>re-exports core crypto"]
+        PROTO["protocol.rs<br/>v1 compatibility"]
         STATE["state.rs<br/>nodes, keys, radio"]
         CFG["device_config.rs<br/>saved config"]
     end
@@ -228,6 +258,8 @@ graph TB
     CMD --> PROTO
     CMD --> STATE
     CMD --> CFG
+    CMD --> CORE
+    RADIO --> CORE
     RADIO --> CRATE
     RADIO --> BTLEPLUG
     RADIO --> BLUER
@@ -242,14 +274,22 @@ graph TB
 
 ```
 meshguard/
+├── crates/
+│   └── meshguard-core/        # Platform-free core: v2 envelope, codec, crypto, dedup,
+│                              # delivery state, rate limits, test vectors
+├── docs/
+│   ├── design/                # MeshGuard 2.0 design RFC
+│   ├── adr/                   # Architecture decision records
+│   └── audit/                 # Baseline audit
 ├── src-tauri/
 │   ├── src/
 │   │   ├── lib.rs             # Tauri app entry point
 │   │   ├── main.rs            # Binary entry point
 │   │   ├── mesh_radio.rs      # BLE scan, connect, polling stream, message I/O
 │   │   ├── ble_plugin.rs      # Native Android BLE plugin (Kotlin bridge)
-│   │   ├── crypto.rs          # AES-256-GCM + HKDF-SHA256 key derivation
-│   │   ├── protocol.rs        # Compact binary wire format for mesh messages
+│   │   ├── crypto.rs          # Re-exports AES-256-GCM + HKDF from meshguard-core
+│   │   ├── protocol.rs        # v1 wire format (compatibility)
+│   │   ├── dedup_store.rs     # Persists the duplicate/replay cache
 │   │   ├── commands.rs        # Tauri IPC commands (scan, connect, chat, pair)
 │   │   ├── device_config.rs   # Saved device/peer configuration
 │   │   ├── state.rs           # Shared app state (nodes, keys, radio)
@@ -326,8 +366,8 @@ cargo tauri android build   # release APK
 
 Tag with a date version — CI builds all platforms automatically:
 ```bash
-git tag v2026.03.29
-git push origin v2026.03.29
+git tag v2026.11.14
+git push origin v2026.11.14
 ```
 
 Produces: Android APK, .deb, .rpm, .AppImage, macOS .dmg, plus SHA256 checksums.
@@ -356,6 +396,10 @@ MeshGuard works with any Meshtastic-compatible radio, including:
 | Connection timeout | Try scanning again. On Linux, ensure `bluetoothd` is running |
 | Messages not arriving | Both radios must be on the same channel + region. Re-enter passphrase on both sides |
 | "No session" error | Passphrase hasn't been entered this session. Tap the peer and re-enter it |
+| Peer runs an older MeshGuard | Turn off **MeshGuard 2.0 mode** when pairing, on both sides |
+| "Paired in MeshGuard 2.0 mode" error | The peer sent an old-format request to a 2.0 chat. Remove the peer and pair again if you really want the older format |
+| Message stays at ✓ | It reached your radio but no confirmation came back yet. The peer may be out of range or on an older version (no ✓✓ there) |
+| "Message too long" | The message is over the byte limit — shorten it (the counter shows bytes left) |
 | Short range | Use Long Range modem preset. Elevate devices. Use external antenna if available |
 
 ### Tips for Best Range
@@ -364,7 +408,7 @@ MeshGuard works with any Meshtastic-compatible radio, including:
 - **Line of sight** — LoRa reaches 15+ km over water/flat terrain, 2–5 km in urban areas
 - **External antenna** — dramatically improves range on supported devices
 - **Long Range modem preset** — trades speed for maximum distance
-- **Message length** — keep messages under 160 characters for reliable single-packet delivery
+- **Message length** — the counter shows remaining bytes (173 in 2.0 mode); every message fits in a single packet
 
 ---
 
@@ -373,8 +417,11 @@ MeshGuard works with any Meshtastic-compatible radio, including:
 Pull requests welcome. Run checks before submitting:
 
 ```bash
-cd src-tauri && cargo clippy -- -D warnings && cargo test
+(cd crates/meshguard-core && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test)
+(cd src-tauri && cargo clippy -- -D warnings && cargo test)
 ```
+
+Design notes: [MeshGuard 2.0 RFC](docs/design/MESHGUARD_2_0_DESIGN_RFC.md) · [ADRs](docs/adr/README.md)
 
 ## License
 

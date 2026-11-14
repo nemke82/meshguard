@@ -31,6 +31,9 @@ cargo tauri android init && bash scripts/patch-android.sh && cargo tauri android
 ## Project Structure
 ```
 meshguard/
+├── crates/meshguard-core/  # Platform-free core: v2 envelope, codec, crypto, dedup, delivery
+├── docs/                   # Design RFC, ADRs, audit
+├── website/                # meshguard.net (deployed to Vercel on push to main)
 ├── src-tauri/
 │   ├── src/
 │   │   ├── lib.rs             # Tauri app entry
@@ -59,12 +62,18 @@ meshguard/
 ```
 
 ## Wire Protocol
-Messages use compact binary format to fit Meshtastic's LoRa payload limit (~228 bytes):
-- Type 0x01 (Text): `[0x01][UTF-8 text]` → max 160 chars
-- Type 0x02 (PairRequest): `[0x02][UTF-8 sender name]`
-- Type 0x03 (PairAccept): `[0x03][UTF-8 responder name]`
+Messages are sent as `PortNum::PrivateApp` (256) and must fit the 228-byte frame budget (checked in bytes).
 
-Entire binary blob is AES-256-GCM encrypted (single layer). Sent as `PortNum::PrivateApp` (256).
+**v2 (MeshGuard 2.0, default for new pairings)** — see `docs/adr/003-wire-protocol-v2.md`:
+- Frame: `"MG2" | nonce(12) | AES-256-GCM(inner) | tag(16)`
+- Inner: `version 0x02 | type | message_id(16) | created_at u32 BE | ttl_mins u16 BE | body`
+- AAD binds sender and recipient; max text body is 173 bytes
+- Types: 0x01 Text, 0x02 PairRequest, 0x03 PairAccept, 0x10 AppAck
+
+**v1 (still read for older peers)**: `nonce(12) | AES-256-GCM([type][UTF-8 payload])`; max text 199 bytes.
+Types: 0x01 Text, 0x02 PairRequest, 0x03 PairAccept.
+
+Each peer is pinned to a protocol version; a v2 pin is never silently downgraded. Codec, dedup, delivery and rate limits live in `crates/meshguard-core`.
 
 ## Release Versioning
 Date-based: `v2026.03.29`
