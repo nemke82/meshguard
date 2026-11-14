@@ -19,11 +19,29 @@ pub struct MeshNodeInfo {
     pub long_name: String,
     pub short_name: String,
     pub hw_model: String,
+    /// SNR of the last packet heard from this node, in dB.
     pub snr: f32,
+    /// RSSI of the last packet heard directly, in dBm (0 = unknown).
     pub rssi: i32,
+    /// Unix seconds; refreshed by every packet we hear from the node.
     pub last_heard: i64,
     pub is_online: bool,
+    /// Relay hops between us and the node (0 = heard directly).
+    pub hops_away: Option<u32>,
+    /// Battery percentage; above 100 means powered externally.
+    pub battery_level: Option<u32>,
+    pub voltage: Option<f32>,
+    /// Channel utilisation seen by the node, in percent.
+    pub channel_utilization: Option<f32>,
+    /// The node's own transmit airtime over the last hour, in percent.
+    pub air_util_tx: Option<f32>,
+    /// Heard through an MQTT bridge rather than over the air.
+    pub via_mqtt: bool,
 }
+
+/// A node counts as online when heard within this window (as in the
+/// Meshtastic apps).
+pub const ONLINE_WINDOW_SECS: i64 = 2 * 60 * 60;
 
 /// Receive-side protection state shared with the radio listener.
 ///
