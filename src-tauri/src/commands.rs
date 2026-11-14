@@ -901,6 +901,21 @@ pub async fn pair_with_code(
         ));
     }
     let peer = code.node;
+    // The showing device refuses known contacts (ADR-004), so a rescan would
+    // only replace our working key with one the other side never accepts.
+    if state
+        .config
+        .lock()
+        .await
+        .peers
+        .iter()
+        .any(|p| p.node_num == peer)
+    {
+        return Err(MeshGuardError::Protocol(
+            "This contact is already paired. Remove it on both phones first to pair again with a code."
+                .into(),
+        ));
+    }
     let hs = meshguard_core::qrpair::scan(&code, my_num, &my_name)?;
     let sealed = outbound::seal(
         WireProtocol::V2.into(),
