@@ -78,19 +78,20 @@ impl DedupCache {
         }
     }
 
-    /// Rebuild from persisted `(sender, id, seen_at)` entries, oldest first.
+    /// Rebuild from persisted `(sender, id, seen_at, copies)` entries, oldest
+    /// first. Persisting `copies` keeps the ACK budget across restarts.
     ///
     /// Unexpired entries are all kept, even beyond `capacity`; new ids are then
     /// refused until enough of them expire.
     pub fn restore(
         capacity: usize,
         retention_secs: u64,
-        entries: impl IntoIterator<Item = (PeerIdentity, MessageId, u64)>,
+        entries: impl IntoIterator<Item = (PeerIdentity, MessageId, u64, u32)>,
         now: u64,
     ) -> Self {
         let mut cache = Self::new(capacity, retention_secs);
-        for (sender, id, seen_at) in entries {
-            cache.insert((sender, id), seen_at);
+        for (sender, id, seen_at, copies) in entries {
+            cache.insert((sender, id), seen_at, copies.max(1));
         }
         cache.prune(now);
         cache
@@ -107,7 +108,7 @@ impl DedupCache {
         if self.seen.len() >= self.capacity {
             return Seen::Refused;
         }
-        self.insert(key, now);
+        self.insert(key, now, 1);
         Seen::New
     }
 
@@ -123,12 +124,15 @@ impl DedupCache {
         self.seen.is_empty()
     }
 
-    /// Entries for persistence, oldest first.
-    pub fn entries(&self) -> impl Iterator<Item = (&PeerIdentity, &MessageId, u64)> {
-        self.order.iter().map(|((p, id), t)| (p, id, *t))
+    /// `(sender, id, seen_at, copies)` for persistence, oldest first.
+    pub fn entries(&self) -> impl Iterator<Item = (&PeerIdentity, &MessageId, u64, u32)> {
+        self.order.iter().filter_map(|(key, t)| {
+            let e = self.seen.get(key)?;
+            (e.seen_at == *t).then_some((&key.0, &key.1, *t, e.copies))
+        })
     }
 
-    fn insert(&mut self, key: Key, at: u64) {
+    fn insert(&mut self, key: Key, at: u64, copies: u32) {
         if self.seen.contains_key(&key) {
             return;
         }
@@ -136,7 +140,7 @@ impl DedupCache {
             key.clone(),
             Entry {
                 seen_at: at,
-                copies: 1,
+                copies,
             },
         );
         self.order.push_back((key, at));
@@ -144,11 +148,16 @@ impl DedupCache {
 
     /// Drop entries whose retention has expired. Entries are only ever
     /// removed here, never for capacity.
+    ///
+    /// An entry is kept *through* `seen_at + retention` inclusive, matching
+    /// the inclusive expiry boundary of `check_freshness`: with retention =
+    /// max TTL + 2·skew, the last instant a frame can pass freshness is still
+    /// covered.
     fn prune(&mut self, now: u64) {
         // `order` is insertion order; with a non-monotonic clock an older
         // entry may sit behind a newer one, which only delays its removal.
         while let Some((key, at)) = self.order.front() {
-            if at.saturating_add(self.retention_secs) > now {
+            if at.saturating_add(self.retention_secs) >= now {
                 break;
             }
             if self.seen.get(key).map(|e| e.seen_at) == Some(*at) {
@@ -193,7 +202,12 @@ mod tests {
     fn retention_expires_entries() {
         let mut c = DedupCache::new(10, 100);
         c.observe(&peer(1), id(1), 0);
-        assert_eq!(c.observe(&peer(1), id(1), 100), Seen::New);
+        // Still remembered at exactly seen_at + retention (inclusive).
+        assert_eq!(
+            c.observe(&peer(1), id(1), 100),
+            Seen::Duplicate { copies: 2 }
+        );
+        assert_eq!(c.observe(&peer(1), id(1), 101), Seen::New);
     }
 
     #[test]
@@ -206,7 +220,7 @@ mod tests {
         assert_eq!(c.observe(&peer(1), id(1), 3), Seen::Duplicate { copies: 2 });
         assert_eq!(c.len(), 2);
         // Once id(1) expires there is room again.
-        assert_eq!(c.observe(&peer(1), id(3), 1000), Seen::New);
+        assert_eq!(c.observe(&peer(1), id(3), 1001), Seen::New);
         assert!(!c.contains(&peer(1), &id(1)));
     }
 
@@ -221,7 +235,7 @@ mod tests {
 
     #[test]
     fn restore_keeps_unexpired_entries_beyond_capacity() {
-        let saved = (0..4u8).map(|i| (peer(1), id(i), u64::from(i)));
+        let saved = (0..4u8).map(|i| (peer(1), id(i), u64::from(i), 1));
         let mut c = DedupCache::restore(2, 1000, saved, 10);
         assert_eq!(c.len(), 4);
         assert_eq!(
@@ -236,7 +250,10 @@ mod tests {
         let mut c = DedupCache::new(10, 100);
         c.observe(&peer(1), id(1), 10);
         c.observe(&peer(1), id(2), 50);
-        let saved: Vec<_> = c.entries().map(|(p, i, t)| (p.clone(), *i, t)).collect();
+        let saved: Vec<_> = c
+            .entries()
+            .map(|(p, i, t, n)| (p.clone(), *i, t, n))
+            .collect();
         let mut r = DedupCache::restore(10, 100, saved, 120);
         // id(1) seen at 10 is past retention at 120; id(2) is not.
         assert_eq!(r.len(), 1);
@@ -245,6 +262,38 @@ mod tests {
             Seen::Duplicate { copies: 2 }
         );
         assert_eq!(r.observe(&peer(1), id(1), 120), Seen::New);
+    }
+
+    #[test]
+    fn ack_budget_survives_restart() {
+        let mut c = DedupCache::new(10, 100);
+        c.observe(&peer(1), id(1), 0);
+        c.observe(&peer(1), id(1), 1);
+        c.observe(&peer(1), id(1), 2);
+        let saved: Vec<_> = c
+            .entries()
+            .map(|(p, i, t, n)| (p.clone(), *i, t, n))
+            .collect();
+        let mut r = DedupCache::restore(10, 100, saved, 3);
+        let next = r.observe(&peer(1), id(1), 3);
+        assert_eq!(next, Seen::Duplicate { copies: 4 });
+        assert!(!next.should_ack(3));
+    }
+
+    #[test]
+    fn max_future_dated_frame_is_covered_at_freshness_boundary() {
+        use crate::envelope::EnvelopeV2;
+        let (skew, ttl_mins) = (30u64, 2u16);
+        let retention = u64::from(ttl_mins) * 60 + 2 * skew;
+        let mut c = DedupCache::new(10, retention);
+        let now0 = 1000;
+        let env = EnvelopeV2::text("x", (now0 + skew) as u32, ttl_mins);
+        assert!(env.check_freshness(now0, skew, ttl_mins).is_ok());
+        assert_eq!(c.observe(&peer(1), env.message_id, now0), Seen::New);
+        let last_ok = env.expires_at() + skew;
+        assert!(env.check_freshness(last_ok, skew, ttl_mins).is_ok());
+        assert_ne!(c.observe(&peer(1), env.message_id, last_ok), Seen::New);
+        assert!(env.check_freshness(last_ok + 1, skew, ttl_mins).is_err());
     }
 
     #[test]

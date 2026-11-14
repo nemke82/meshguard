@@ -362,7 +362,7 @@ fn dedup_survives_restart() {
     let saved: Vec<_> =
         s.b.dedup
             .entries()
-            .map(|(p, i, t)| (p.clone(), *i, t))
+            .map(|(p, i, t, n)| (p.clone(), *i, t, n))
             .collect();
     s.b.dedup = DedupCache::restore(1024, TTL_SECS + 2 * SKEW, saved, s.now + 10);
     s.b.shown.clear();
