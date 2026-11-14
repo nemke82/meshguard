@@ -13,6 +13,9 @@
 //! * [`delivery`] — truthful delivery states, retry policy and outbound
 //!   bookkeeping.
 //! * [`transport`] — the opaque-frame transport contract and a mock.
+//! * [`outbound`] / [`inbound`] — sealing per negotiated [`outbound::WireVersion`]
+//!   and the receive-side decision for one frame (the start of the engine).
+//! * [`ratelimit`] — airtime budgets and notification cooldowns.
 //!
 //! The crate has no Tauri, tokio, BLE or Android dependency on purpose, so it
 //! can later be exposed to a native Android service (see
@@ -25,6 +28,9 @@ pub mod delivery;
 pub mod envelope;
 pub mod error;
 pub mod ids;
+pub mod inbound;
+pub mod outbound;
+pub mod ratelimit;
 pub mod transport;
 pub mod v1;
 

@@ -16,8 +16,15 @@ use tauri::Emitter;
 use tokio::io::{AsyncWriteExt, DuplexStream};
 use tokio::sync::Mutex;
 
+use std::path::PathBuf;
+
+use meshguard_core::inbound::{process_inbound, Inbound, InboundContext};
+use meshguard_core::outbound::WireVersion;
+use meshguard_core::PeerIdentity;
+
+use crate::device_config::{AppConfig, WireProtocol};
 use crate::error::MeshGuardError;
-use crate::state::MeshNodeInfo;
+use crate::state::{InboundState, MeshNodeInfo};
 
 /// The BLE service UUID that all Meshtastic firmware advertises.
 const MESHTASTIC_SERVICE_UUID: uuid::Uuid =
@@ -638,6 +645,41 @@ pub struct ConnectParams {
     pub my_device_name: Arc<Mutex<Option<String>>>,
     pub session_keys: Arc<Mutex<HashMap<u32, crate::crypto::SessionKey>>>,
     pub pending_pair_requests: Arc<Mutex<HashMap<u32, Vec<u8>>>>,
+    /// The radio slot in `AppState`, so the listener can transmit ACKs.
+    pub radio: Arc<Mutex<Option<MeshRadio>>>,
+    pub config: Arc<Mutex<AppConfig>>,
+    pub config_dir: PathBuf,
+    pub inbound: Arc<InboundState>,
+}
+
+/// Everything the background listener needs; cheap to clone.
+#[derive(Clone)]
+struct ListenerCtx {
+    app_handle: tauri::AppHandle,
+    mesh_nodes: Arc<Mutex<HashMap<u32, MeshNodeInfo>>>,
+    my_node_num: u32,
+    session_keys: Arc<Mutex<HashMap<u32, crate::crypto::SessionKey>>>,
+    pending_pair_requests: Arc<Mutex<HashMap<u32, Vec<u8>>>>,
+    radio: Arc<Mutex<Option<MeshRadio>>>,
+    config: Arc<Mutex<AppConfig>>,
+    config_dir: PathBuf,
+    inbound: Arc<InboundState>,
+}
+
+impl ListenerCtx {
+    fn new(p: &ConnectParams, my_node_num: u32) -> Self {
+        Self {
+            app_handle: p.app_handle.clone(),
+            mesh_nodes: p.mesh_nodes.clone(),
+            my_node_num,
+            session_keys: p.session_keys.clone(),
+            pending_pair_requests: p.pending_pair_requests.clone(),
+            radio: p.radio.clone(),
+            config: p.config.clone(),
+            config_dir: p.config_dir.clone(),
+            inbound: p.inbound.clone(),
+        }
+    }
 }
 
 pub struct MeshRadio {
@@ -766,10 +808,7 @@ impl MeshRadio {
         let (node_num, configured_api) =
             run_config_and_listen(configured_api, &mut decoded_listener, &p).await?;
 
-        spawn_listener(
-            decoded_listener, p.app_handle.clone(), p.mesh_nodes.clone(),
-            node_num, p.session_keys.clone(), p.pending_pair_requests.clone(),
-        );
+        spawn_listener(decoded_listener, ListenerCtx::new(&p, node_num));
 
         Ok(Self::from_configured(configured_api, node_num))
     }
@@ -795,10 +834,7 @@ impl MeshRadio {
         let (node_num, configured_api) =
             run_config_and_listen(configured_api, &mut decoded_listener, &p).await?;
 
-        spawn_listener(
-            decoded_listener, p.app_handle.clone(), p.mesh_nodes.clone(),
-            node_num, p.session_keys.clone(), p.pending_pair_requests.clone(),
-        );
+        spawn_listener(decoded_listener, ListenerCtx::new(&p, node_num));
 
         Ok(Self::from_configured(configured_api, node_num))
     }
@@ -823,10 +859,7 @@ impl MeshRadio {
         let (node_num, configured_api) =
             run_config_and_listen(configured_api, &mut decoded_listener, &p).await?;
 
-        spawn_listener(
-            decoded_listener, p.app_handle.clone(), p.mesh_nodes.clone(),
-            node_num, p.session_keys.clone(), p.pending_pair_requests.clone(),
-        );
+        spawn_listener(decoded_listener, ListenerCtx::new(&p, node_num));
 
         Ok(Self::from_configured(configured_api, node_num))
     }
@@ -908,14 +941,7 @@ fn node_info_to_mesh_node(ni: &protobufs::NodeInfo) -> MeshNodeInfo {
     }
 }
 
-fn spawn_listener(
-    mut listener: meshtastic::packet::PacketReceiver,
-    app_handle: tauri::AppHandle,
-    mesh_nodes: Arc<Mutex<HashMap<u32, MeshNodeInfo>>>,
-    my_node_num: u32,
-    session_keys: Arc<Mutex<HashMap<u32, crate::crypto::SessionKey>>>,
-    pending_pair_requests: Arc<Mutex<HashMap<u32, Vec<u8>>>>,
-) {
+fn spawn_listener(mut listener: meshtastic::packet::PacketReceiver, ctx: ListenerCtx) {
     tokio::spawn(async move {
         let mut pkt_counter: u64 = 0;
         while let Some(from_radio) = listener.recv().await {
@@ -929,14 +955,14 @@ fn spawn_listener(
                 match variant {
                     PayloadVariant::NodeInfo(node_info) => {
                         let node = node_info_to_mesh_node(node_info);
-                        if node.node_num != my_node_num {
+                        if node.node_num != ctx.my_node_num {
                             tracing::info!(
                                 "Mesh node update: {} ({})",
                                 node.long_name,
                                 node.node_num
                             );
-                            mesh_nodes.lock().await.insert(node.node_num, node);
-                            let _ = app_handle.emit("mesh-nodes-updated", ());
+                            ctx.mesh_nodes.lock().await.insert(node.node_num, node);
+                            let _ = ctx.app_handle.emit("mesh-nodes-updated", ());
                         }
                     }
                     PayloadVariant::Packet(mesh_packet) => {
@@ -955,20 +981,14 @@ fn spawn_listener(
                             mesh_packet.to,
                             mesh_packet.channel
                         );
-                        handle_incoming_packet(
-                            mesh_packet,
-                            &app_handle,
-                            &session_keys,
-                            &pending_pair_requests,
-                        )
-                        .await;
+                        handle_incoming_packet(mesh_packet, &ctx).await;
                     }
                     _ => {}
                 }
             }
         }
         tracing::warn!("Mesh radio listener ended — radio disconnected");
-        emit_connection_state(&app_handle, "disconnected");
+        emit_connection_state(&ctx.app_handle, "disconnected");
     });
 }
 
@@ -979,6 +999,19 @@ pub struct IncomingMessageEvent {
     pub text: String,
     pub timestamp: i64,
     pub message_id: String,
+}
+
+/// The peer app confirmed receipt of one of our v2 messages (authenticated).
+#[derive(Clone, serde::Serialize)]
+pub struct MessageDeliveredEvent {
+    pub peer_node: u32,
+    pub message_id: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct PeerProtocolEvent {
+    pub node_num: u32,
+    pub protocol: WireProtocol,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -1004,12 +1037,7 @@ fn show_android_notification(app_handle: &tauri::AppHandle, title: &str, body: &
     }
 }
 
-async fn handle_incoming_packet(
-    packet: &protobufs::MeshPacket,
-    app_handle: &tauri::AppHandle,
-    session_keys: &Arc<Mutex<HashMap<u32, crate::crypto::SessionKey>>>,
-    pending_pair_requests: &Arc<Mutex<HashMap<u32, Vec<u8>>>>,
-) {
+async fn handle_incoming_packet(packet: &protobufs::MeshPacket, ctx: &ListenerCtx) {
     let decoded = match &packet.payload_variant {
         Some(protobufs::mesh_packet::PayloadVariant::Decoded(d)) => d,
         Some(protobufs::mesh_packet::PayloadVariant::Encrypted(e)) => {
@@ -1048,91 +1076,192 @@ async fn handle_incoming_packet(
         payload.len()
     );
 
-    let keys = session_keys.lock().await;
-    if let Some(key) = keys.get(&from_node) {
-        match crate::protocol::MeshMessage::decrypt_envelope(payload, key) {
-            Ok(msg) => {
-                tracing::info!("Decrypted envelope from {from_node}: {:?}", msg.id());
-                match msg {
-                    crate::protocol::MeshMessage::Text {
-                        id, text, timestamp,
-                    } => {
-                        // Never log decrypted content (RFC §5.4).
-                        tracing::info!(
-                            "Incoming text from {from_node} ({} bytes, id={id})",
-                            text.len()
-                        );
-
-                        #[cfg(target_os = "android")]
-                        show_android_notification(
-                            app_handle,
-                            "New Message",
-                            &text,
-                            from_node,
-                        );
-
-                        let _ = app_handle.emit(
-                            "incoming-message",
-                            IncomingMessageEvent {
-                                from_node,
-                                from_name: String::new(),
-                                text,
-                                timestamp,
-                                message_id: id,
-                            },
-                        );
-                    }
-                    crate::protocol::MeshMessage::PairAccept { responder_name, .. } => {
-                        tracing::info!("Pair accepted by {responder_name} (node {from_node})");
-                        let _ = app_handle.emit(
-                            "pair-accepted",
-                            PairRequestEvent {
-                                from_node,
-                                from_name: responder_name,
-                                timestamp: chrono::Utc::now().timestamp(),
-                            },
-                        );
-                    }
-                    crate::protocol::MeshMessage::PairRequest { sender_name, .. } => {
-                        tracing::info!(
-                            "Pair request from {sender_name} (node {from_node}) — already have key"
-                        );
-                    }
-                }
-                return;
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "Envelope decryption failed from known peer {from_node}: {e} — key mismatch?"
-                );
-            }
-        }
-    } else {
-        tracing::info!(
-            "No session key for node {from_node} — treating as pair request"
-        );
-    }
-    drop(keys);
-
-    pending_pair_requests
+    let now = chrono::Utc::now().timestamp().max(0) as u64;
+    let sender = PeerIdentity::meshtastic_node(from_node);
+    let me = PeerIdentity::meshtastic_node(ctx.my_node_num);
+    let pinned: Option<WireVersion> = ctx
+        .config
         .lock()
         .await
-        .insert(from_node, payload.clone());
+        .peers
+        .iter()
+        .find(|p| p.node_num == from_node)
+        .map(|p| p.protocol.into());
+
+    let outcome = {
+        let keys = ctx.session_keys.lock().await;
+        let mut dedup = ctx.inbound.dedup.lock().await;
+        let ictx = InboundContext {
+            sender: &sender,
+            me: &me,
+            key: keys.get(&from_node),
+            pinned,
+            now,
+        };
+        process_inbound(payload, &ictx, &mut dedup, &ctx.inbound.policy)
+    };
+
+    // ADR-003 §3 rule (a): an authenticated v2 frame upgrades a v1 peer.
+    if outcome.authenticated_version() == Some(WireVersion::V2)
+        && pinned == Some(WireVersion::V1)
+    {
+        upgrade_peer_to_v2(ctx, from_node).await;
+    }
+
+    match outcome {
+        Inbound::Text {
+            version,
+            message_id,
+            text,
+            sent_at,
+            ack,
+        } => {
+            let message_id = message_id
+                .map(|id| id.to_hex())
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            // Never log decrypted content (RFC §5.4).
+            tracing::info!(
+                "Incoming {version:?} text from {from_node} ({} bytes, id={message_id})",
+                text.len()
+            );
+
+            #[cfg(target_os = "android")]
+            show_android_notification(&ctx.app_handle, "New Message", &text, from_node);
+
+            let _ = ctx.app_handle.emit(
+                "incoming-message",
+                IncomingMessageEvent {
+                    from_node,
+                    from_name: String::new(),
+                    text,
+                    timestamp: sent_at.map(i64::from).unwrap_or(now as i64),
+                    message_id,
+                },
+            );
+            if let Some(frame) = ack {
+                send_ack(ctx, from_node, frame, now).await;
+            }
+        }
+        Inbound::Duplicate { ack } => {
+            tracing::debug!("Duplicate frame from {from_node} suppressed");
+            if let Some(frame) = ack {
+                send_ack(ctx, from_node, frame, now).await;
+            }
+        }
+        Inbound::PeerAck { acked } => {
+            tracing::info!("Peer ACK from {from_node} for {acked}");
+            let _ = ctx.app_handle.emit(
+                "message-delivered",
+                MessageDeliveredEvent {
+                    peer_node: from_node,
+                    message_id: acked.to_hex(),
+                },
+            );
+        }
+        Inbound::PairAccept { version, name } => {
+            tracing::info!("Pair accepted ({version:?}) by node {from_node}");
+            let _ = ctx.app_handle.emit(
+                "pair-accepted",
+                PairRequestEvent {
+                    from_node,
+                    from_name: name,
+                    timestamp: now as i64,
+                },
+            );
+        }
+        Inbound::PairRequest { version, .. } => {
+            tracing::info!(
+                "Pair request ({version:?}) from node {from_node} — already have key"
+            );
+        }
+        Inbound::Dropped(reason) => {
+            tracing::info!("Dropped frame from {from_node}: {reason:?}");
+        }
+        Inbound::Undecryptable(reason) => {
+            tracing::info!(
+                "Cannot decrypt frame from {from_node} ({reason}) — treating as pair request"
+            );
+            handle_possible_pair_request(ctx, from_node, payload.clone(), now).await;
+        }
+    }
+}
+
+/// Store an undecryptable frame as a pending pairing attempt and, subject to
+/// rate limits, tell the user. Rate limiting stops unknown nodes on a public
+/// channel from flooding the user with "chat request" notifications.
+async fn handle_possible_pair_request(
+    ctx: &ListenerCtx,
+    from_node: u32,
+    payload: Vec<u8>,
+    now: u64,
+) {
+    ctx.pending_pair_requests
+        .lock()
+        .await
+        .insert(from_node, payload);
+
+    let allowed = ctx
+        .inbound
+        .pair_notify_per_node
+        .lock()
+        .await
+        .try_fire(&from_node, now)
+        && ctx.inbound.pair_notify_global.lock().await.try_take(now);
+    if !allowed {
+        tracing::info!("Pair-request notification from {from_node} rate-limited");
+        return;
+    }
 
     #[cfg(target_os = "android")]
     show_android_notification(
-        app_handle,
+        &ctx.app_handle,
         "Chat Request",
         &format!("Node {from_node} wants to start a secure chat"),
         from_node,
     );
 
-    let _ = app_handle.emit(
+    let _ = ctx.app_handle.emit(
         "pair-request",
         PairRequestEvent {
             from_node,
             from_name: String::new(),
-            timestamp: chrono::Utc::now().timestamp(),
+            timestamp: now as i64,
+        },
+    );
+}
+
+/// Transmit an application ACK if the global airtime budget allows it.
+async fn send_ack(ctx: &ListenerCtx, to_node: u32, frame: Vec<u8>, now: u64) {
+    if !ctx.inbound.ack_budget.lock().await.try_take(now) {
+        tracing::info!("ACK to {to_node} skipped: airtime budget exhausted");
+        return;
+    }
+    let mut radio = ctx.radio.lock().await;
+    match radio.as_mut() {
+        Some(r) => {
+            if let Err(e) = r.send_private_app(frame, to_node).await {
+                tracing::warn!("ACK to {to_node} failed: {e}");
+            }
+        }
+        None => tracing::debug!("ACK to {to_node} skipped: radio not stored yet"),
+    }
+}
+
+async fn upgrade_peer_to_v2(ctx: &ListenerCtx, node_num: u32) {
+    let mut config = ctx.config.lock().await;
+    let Some(peer) = config.peers.iter_mut().find(|p| p.node_num == node_num) else {
+        return;
+    };
+    peer.protocol = WireProtocol::V2;
+    match config.save(&ctx.config_dir) {
+        Ok(()) => tracing::info!("Peer {node_num} upgraded to wire protocol v2"),
+        Err(e) => tracing::warn!("Peer {node_num} upgraded to v2 but saving failed: {e}"),
+    }
+    let _ = ctx.app_handle.emit(
+        "peer-protocol",
+        PeerProtocolEvent {
+            node_num,
+            protocol: WireProtocol::V2,
         },
     );
 }

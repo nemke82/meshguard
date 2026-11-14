@@ -179,6 +179,13 @@
               <span class="field-hint">Min 8 characters — never stored, never sent over mesh</span>
             </label>
 
+            <label class="field toggle-field" id="v2-pairing-field">
+              <span class="field-label">MeshGuard 2.0 mode</span>
+              <input type="checkbox" id="v2-pairing" checked />
+              <span class="toggle-switch"></span>
+            </label>
+            <span class="field-hint" id="v2-pairing-hint">Delivery confirmations and duplicate protection. Both phones must run MeshGuard 2.0 — turn off to chat with an older version.</span>
+
             <div class="btn-group">
               <button type="button" id="btn-back-mesh" class="btn btn-secondary">Back</button>
               <button type="submit" class="btn btn-primary btn-glow" id="btn-submit-passphrase">
@@ -229,9 +236,8 @@
               id="message-input"
               placeholder="Type a secure message..."
               rows="1"
-              maxlength="160"
             ></textarea>
-            <span class="char-count" id="char-count">160</span>
+            <span class="char-count" id="char-count" title="Bytes left (UTF-8)">173</span>
           </div>
           <button id="btn-send" class="btn-send" disabled>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
