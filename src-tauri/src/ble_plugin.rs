@@ -25,7 +25,8 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             #[cfg(target_os = "android")]
             {
                 use tauri::Manager;
-                let handle = api.register_android_plugin("com.meshguard.app", "BlePlugin")?;
+                let handle =
+                    api.register_android_plugin("com.meshguard.app", "BlePlugin")?;
                 app.manage(BlePluginState(handle));
             }
             #[cfg(not(target_os = "android"))]
