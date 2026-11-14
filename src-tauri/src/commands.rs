@@ -9,11 +9,12 @@ use meshguard_core::v1::V1Payload;
 use meshguard_core::PeerIdentity;
 
 use crate::crypto;
-use crate::device_config::{PeerConfig, WireProtocol};
+use crate::device_config::{PeerConfig, StatusPreset, WireProtocol};
 use crate::error::MeshGuardError;
 use crate::link::{self, LinkTarget};
 use crate::mesh_radio::{ScannedBleDevice, SerialPortInfo};
 use crate::state::{AppState, MeshNodeInfo};
+use meshguard_core::status::{GeoFix, StatusBody, StatusKind, FEATURE_STATUS};
 
 // ── BLE Scanning ──────────────────────────────────────────────
 
@@ -152,7 +153,7 @@ pub async fn get_my_device_info(
 
 // ── Chat / Pairing ────────────────────────────────────────────
 
-fn unix_now() -> u32 {
+pub(crate) fn unix_now() -> u32 {
     chrono::Utc::now().timestamp().clamp(0, i64::from(u32::MAX)) as u32
 }
 
@@ -198,7 +199,7 @@ async fn peer_long_name(state: &AppState, peer_node_num: u32) -> Result<String, 
 
 /// Transmit `frame` as radio `my_num`. Fails if the radio changed since the
 /// frame was sealed for `my_num` (the identity is part of the AAD).
-async fn send_as(
+pub(crate) async fn send_as(
     state: &AppState,
     my_num: u32,
     peer_node_num: u32,
@@ -282,12 +283,17 @@ async fn save_peer(
     peer_node_num: u32,
     peer_name: String,
     protocol: WireProtocol,
+    // true when we accepted the peer's request (it already holds the key).
+    confirmed: bool,
 ) -> Result<PeerConfig, MeshGuardError> {
     let peer = PeerConfig {
         id: uuid::Uuid::new_v4().to_string(),
         device_name: peer_name,
         node_num: peer_node_num,
         protocol,
+        // Re-pairing may mean a different app version: learn again.
+        features: 0,
+        confirmed,
     };
     let mut config = state.config.lock().await;
     config.peers.retain(|p| p.node_num != peer_node_num);
@@ -333,7 +339,7 @@ pub async fn start_chat(
         return Err(e);
     }
 
-    let peer = save_peer(&state, peer_node_num, peer_name, protocol).await?;
+    let peer = save_peer(&state, peer_node_num, peer_name, protocol, false).await?;
     remember_key(&app_handle, &state, my_num, peer_node_num, &session_key).await;
     tracing::info!("Chat initiated with node {peer_node_num} ({protocol:?})");
     Ok(peer)
@@ -487,8 +493,11 @@ pub async fn accept_chat(
         .lock()
         .await
         .remove(&peer_node_num);
-    let peer = save_peer(&state, peer_node_num, peer_name, protocol).await?;
+    let peer = save_peer(&state, peer_node_num, peer_name, protocol, true).await?;
     remember_key(&app_handle, &state, my_num, peer_node_num, &session_key).await;
+    if protocol == WireProtocol::V2 {
+        crate::status_tx::probe_peers(&state).await;
+    }
     tracing::info!("Chat accepted with node {peer_node_num} ({protocol:?})");
     Ok(peer)
 }
@@ -600,4 +609,208 @@ pub async fn get_last_link(
 #[tauri::command]
 pub async fn auto_connect(app_handle: tauri::AppHandle) -> Result<bool, MeshGuardError> {
     Ok(link::start_reconnect_loop(app_handle).await)
+}
+
+// ── Check-in, SOS and location ────────────────────────────────
+
+const MAX_STATUS_PRESETS: usize = 8;
+
+#[derive(Serialize)]
+pub struct StatusSendResult {
+    pub peer_node: u32,
+    /// Stable id for v2 peers (matches their delivery ACK).
+    pub message_id: Option<String>,
+    pub protocol: WireProtocol,
+    pub error: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct StatusSendReport {
+    /// The position attached, if any (also shown in our own chat).
+    pub location: Option<GeoFix>,
+    pub results: Vec<StatusSendResult>,
+}
+
+/// The user's one-tap check-in buttons.
+#[tauri::command]
+pub async fn get_status_presets(
+    state: State<'_, AppState>,
+) -> Result<Vec<StatusPreset>, MeshGuardError> {
+    Ok(state.config.lock().await.status_presets.clone())
+}
+
+/// Replace the check-in buttons (wording is free; length is checked so every
+/// preset fits one LoRa frame, with a location attached).
+#[tauri::command]
+pub async fn set_status_presets(
+    presets: Vec<StatusPreset>,
+    state: State<'_, AppState>,
+) -> Result<Vec<StatusPreset>, MeshGuardError> {
+    if presets.is_empty() || presets.len() > MAX_STATUS_PRESETS {
+        return Err(MeshGuardError::Protocol(format!(
+            "Use between 1 and {MAX_STATUS_PRESETS} quick messages"
+        )));
+    }
+    let max = outbound::max_status_text_bytes(true, DEFAULT_FRAME_BUDGET);
+    let mut cleaned = Vec::with_capacity(presets.len());
+    for p in presets {
+        let text = p.text.trim().to_string();
+        if text.is_empty() {
+            return Err(MeshGuardError::Protocol(
+                "Quick messages cannot be empty".into(),
+            ));
+        }
+        if text.len() > max {
+            return Err(MeshGuardError::Protocol(format!(
+                "\"{text}\" is too long ({} bytes, limit {max})",
+                text.len()
+            )));
+        }
+        cleaned.push(StatusPreset { text, ..p });
+    }
+    let mut config = state.config.lock().await;
+    config.status_presets = cleaned;
+    config.save(&state.config_dir)?;
+    Ok(config.status_presets.clone())
+}
+
+/// Restore the built-in English check-in buttons.
+#[tauri::command]
+pub async fn reset_status_presets(
+    state: State<'_, AppState>,
+) -> Result<Vec<StatusPreset>, MeshGuardError> {
+    let mut config = state.config.lock().await;
+    config.status_presets = crate::device_config::default_status_presets();
+    config.save(&state.config_dir)?;
+    Ok(config.status_presets.clone())
+}
+
+/// Latest GPS fix of our radio, if it has one.
+#[tauri::command]
+pub async fn get_my_position(state: State<'_, AppState>) -> Result<Option<GeoFix>, MeshGuardError> {
+    Ok(*state.my_position.lock().await)
+}
+
+/// Send a check-in, SOS or location share to one or more paired peers.
+/// SOS always attaches the radio's position when one is known.
+#[tauri::command]
+pub async fn send_status(
+    peer_node_nums: Vec<u32>,
+    kind: StatusKind,
+    text: String,
+    include_location: bool,
+    state: State<'_, AppState>,
+) -> Result<StatusSendReport, MeshGuardError> {
+    let mut peers = peer_node_nums;
+    peers.sort_unstable();
+    peers.dedup();
+    if peers.is_empty() {
+        return Err(MeshGuardError::Protocol("No recipients".into()));
+    }
+    let text = text.trim().to_string();
+    if text.is_empty() && kind != StatusKind::Location {
+        return Err(MeshGuardError::Protocol("The message is empty".into()));
+    }
+
+    let my_num = (*state.my_node_num.lock().await).ok_or(MeshGuardError::NotConnected)?;
+    let location = if include_location || kind == StatusKind::Sos {
+        *state.my_position.lock().await
+    } else {
+        None
+    };
+    if kind == StatusKind::Location && location.is_none() {
+        return Err(MeshGuardError::Protocol(
+            "Your radio has no GPS position yet — take it outside for a fix".into(),
+        ));
+    }
+    let body = StatusBody {
+        kind,
+        location,
+        text,
+    };
+
+    let urgent = kind.is_urgent();
+
+    // One transmit path for all check-ins: spacing + airtime budget across
+    // concurrent requests (see status_tx).
+    let mut tx = state.status_tx.lock().await;
+    let mut results = Vec::with_capacity(peers.len());
+    for peer in peers {
+        let (protocol, capable) = state
+            .config
+            .lock()
+            .await
+            .peers
+            .iter()
+            .find(|p| p.node_num == peer)
+            .map(|p| (p.protocol, p.features & FEATURE_STATUS != 0))
+            .unwrap_or_default();
+        // v1 peers get the fallback inside `seal`; v2 peers on an older
+        // build would drop a Status frame, so they get v2 text until they
+        // are known to understand it.
+        let payload = if protocol == WireProtocol::V2 && !capable {
+            OutPayload::StatusAsText(&body)
+        } else {
+            OutPayload::Status(&body)
+        };
+        let sealed = {
+            let keys = state.session_keys.lock().await;
+            keys.get(&peer)
+                .ok_or(MeshGuardError::NoSession)
+                .and_then(|key| {
+                    outbound::seal(
+                        protocol.into(),
+                        payload,
+                        key,
+                        &PeerIdentity::meshtastic_node(my_num),
+                        &PeerIdentity::meshtastic_node(peer),
+                        unix_now(),
+                        DEFAULT_FRAME_BUDGET,
+                    )
+                    .map_err(seal_err)
+                })
+        };
+        let outcome = match sealed {
+            Ok(s) => {
+                if tx.admit(urgent).await {
+                    let r = send_as(&state, my_num, peer, s.frame)
+                        .await
+                        .map(|()| s.message_id);
+                    if r.is_ok() {
+                        tx.mark_sent();
+                    }
+                    r
+                } else {
+                    Err(MeshGuardError::Protocol(
+                        "Airtime budget reached — wait a minute and try again".into(),
+                    ))
+                }
+            }
+            Err(e) => Err(e),
+        };
+        tracing::info!(
+            "Status {kind:?} to {peer} ({}): {}",
+            if matches!(payload, OutPayload::Status(_)) {
+                "status"
+            } else {
+                "text fallback"
+            },
+            if outcome.is_ok() { "sent" } else { "failed" }
+        );
+        results.push(match outcome {
+            Ok(id) => StatusSendResult {
+                peer_node: peer,
+                message_id: id.map(|id| id.to_hex()),
+                protocol,
+                error: None,
+            },
+            Err(e) => StatusSendResult {
+                peer_node: peer,
+                message_id: None,
+                protocol,
+                error: Some(e.to_string()),
+            },
+        });
+    }
+    Ok(StatusSendReport { location, results })
 }

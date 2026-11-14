@@ -85,3 +85,32 @@ Proposed rollout:
 - Stable cryptographic peer identity and KDF migration. This is a separate ADR; the RFC calls for Argon2id or a QR-shared key.
 - Key persistence and lock behaviour (ADR-002).
 - Read receipts (`READ`) and Meshtastic-level ACK mapping (`MESH_ACK`) on the wire.
+
+
+## Addendum (2026-11-14): `Status` message type 0x04
+
+Family check-ins, SOS and location shares use v2 type `0x04`. Body:
+
+```
+kind u8 | flags u8 | [location, 15 bytes, if flags & 0x01] | text (UTF-8)
+location = lat_e7 i32 BE | lon_e7 i32 BE | accuracy_m u16 BE (0xFFFF unknown)
+         | fix_time u32 BE | source u8 (0 radio GPS, 1 phone, 2 manual)
+```
+
+- `kind`: 0 custom, 1 OK, 2 on my way, 3 need help, 4 SOS, 5 location. Unknown kinds are shown as custom; unknown flag bits make the body invalid (they could change the layout).
+- `text` is the sender's wording (presets are user-editable), so it is not localised by the receiver.
+- Requires an app ACK like `Text`. TTL is 60 minutes, 6 hours for SOS and need help.
+- Text limit: 156 bytes with a location, 171 without.
+- v1 peers receive the plain-text fallback (`text 📍 lat, lon ±acc m`).
+- v2 builds older than this addendum drop unknown types, which would silently lose an SOS. Senders therefore use **v2 Text with the fallback** until the peer is known to understand `Status`.
+
+### `Caps` message type 0x05
+
+Body: `features u32 BE` (bit 0 = understands `Status`; extra trailing bytes are ignored for future fields). ACKed like `Text`.
+
+- A peer is marked capable when we receive a `Status` or `Caps` from it, or when it ACKs a `Caps` probe we sent (older builds drop the unknown type, so no ACK).
+- Probes go only to v2 peers that are *confirmed* to hold our key (they sent us an authenticated frame, or we accepted their request). Before that, any frame from us would look like a new chat request and replace the pending one.
+- Probes and check-ins share one transmit path with 400 ms spacing. Routine traffic has a token bucket (burst 24, then one per 15 s) and is refused when it is empty. SOS and need-help have their own bucket (burst 64, then one per 5 s) and wait for it (up to 3 minutes) instead of being refused, so routine traffic cannot block an SOS and repeated SOS taps cannot flood the channel.
+- One outstanding probe per peer; unanswered probes expire after an hour.
+- The text fallback is cut to fit one frame (coordinates kept whole) and keeps the 6-hour TTL for urgent kinds.
+- Implementation: `meshguard-core::status`.

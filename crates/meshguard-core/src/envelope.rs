@@ -58,6 +58,12 @@ pub enum MessageType {
     Text = 0x01,
     PairRequest = 0x02,
     PairAccept = 0x03,
+    /// Check-in, SOS or location share; body is a [`crate::status::StatusBody`].
+    Status = 0x04,
+    /// Feature announcement / probe; body is a u32 BE bit set
+    /// ([`crate::status::FEATURE_STATUS`], ...). Older receivers drop the
+    /// unknown type, so an ACK for it proves the peer understands it.
+    Caps = 0x05,
     /// Authenticated application ACK. Body = acknowledged [`MessageId`].
     AppAck = 0x10,
 }
@@ -68,6 +74,8 @@ impl MessageType {
             0x01 => Some(Self::Text),
             0x02 => Some(Self::PairRequest),
             0x03 => Some(Self::PairAccept),
+            0x04 => Some(Self::Status),
+            0x05 => Some(Self::Caps),
             0x10 => Some(Self::AppAck),
             _ => None,
         }
@@ -77,7 +85,7 @@ impl MessageType {
     ///
     /// ACKs are never acknowledged, which rules out ACK-of-ACK loops.
     pub fn requires_ack(self) -> bool {
-        matches!(self, Self::Text)
+        matches!(self, Self::Text | Self::Status | Self::Caps)
     }
 }
 
@@ -164,6 +172,8 @@ fn body_is_valid(ty: MessageType, body: &[u8]) -> bool {
         MessageType::Text | MessageType::PairRequest | MessageType::PairAccept => {
             std::str::from_utf8(body).is_ok()
         }
+        MessageType::Status => crate::status::StatusBody::decode(body).is_some(),
+        MessageType::Caps => body.len() >= 4,
         MessageType::AppAck => body.len() == MESSAGE_ID_LEN,
     }
 }
@@ -194,7 +204,7 @@ impl EnvelopeV2 {
     /// Body as text for text-like types.
     pub fn text_body(&self) -> Option<&str> {
         match self.message_type {
-            MessageType::AppAck => None,
+            MessageType::AppAck | MessageType::Status | MessageType::Caps => None,
             _ => std::str::from_utf8(&self.body).ok(),
         }
     }

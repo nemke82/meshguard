@@ -9,6 +9,7 @@ pub mod link;
 pub mod mesh_radio;
 pub mod protocol;
 pub mod state;
+pub mod status_tx;
 
 use state::AppState;
 use tauri::Manager;
@@ -51,6 +52,11 @@ pub fn run() {
             commands::get_last_connection,
             commands::get_last_link,
             commands::auto_connect,
+            commands::get_status_presets,
+            commands::set_status_presets,
+            commands::reset_status_presets,
+            commands::get_my_position,
+            commands::send_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running MeshGuard");

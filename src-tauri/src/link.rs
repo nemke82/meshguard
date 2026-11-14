@@ -117,6 +117,7 @@ fn connect_params(
         link: state.link.clone(),
         vault,
         keys_owner: state.keys_owner.clone(),
+        my_position: state.my_position.clone(),
     }
 }
 
@@ -165,6 +166,15 @@ async fn connect_locked(
     }
 
     tracing::info!("Connected to {}", target.label());
+
+    // Learn which peers understand check-in/SOS messages (in the background;
+    // the connect call should not wait for airtime).
+    let app_for_probe = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        let state = app_for_probe.state::<AppState>();
+        crate::status_tx::probe_peers(&state).await;
+    });
     Ok(())
 }
 
