@@ -650,11 +650,16 @@ async fn build_android_ble_stream(
 
 pub struct MeshGuardRouter {
     node_id: u32,
+    /// Id of the last packet sent with echo_response (see send_traceroute).
+    last_sent_id: Option<u32>,
 }
 
 impl MeshGuardRouter {
     pub fn new(node_id: u32) -> Self {
-        Self { node_id }
+        Self {
+            node_id,
+            last_sent_id: None,
+        }
     }
 }
 
@@ -677,7 +682,10 @@ impl PacketRouter<(), RouterError> for MeshGuardRouter {
         Ok(())
     }
 
-    fn handle_mesh_packet(&mut self, _packet: protobufs::MeshPacket) -> Result<(), RouterError> {
+    fn handle_mesh_packet(&mut self, packet: protobufs::MeshPacket) -> Result<(), RouterError> {
+        // Only called for packets we send with echo_response: remember the
+        // id so a reply (Data.request_id) can be matched to its request.
+        self.last_sent_id = Some(packet.id);
         Ok(())
     }
 
@@ -958,9 +966,11 @@ impl MeshRadio {
 
     /// Send a Meshtastic traceroute request to `destination_node`; the reply
     /// arrives as a TRACEROUTE_APP packet from that node.
-    pub async fn send_traceroute(&mut self, destination_node: u32) -> Result<(), MeshGuardError> {
+    /// Returns the request's packet id.
+    pub async fn send_traceroute(&mut self, destination_node: u32) -> Result<u32, MeshGuardError> {
         use meshtastic::Message as _;
         let body = protobufs::RouteDiscovery::default().encode_to_vec();
+        self.router.last_sent_id = None;
         self.api
             .send_mesh_packet(
                 &mut self.router,
@@ -970,12 +980,17 @@ impl MeshRadio {
                 MeshChannel::new(0).unwrap(),
                 false,
                 true,
-                false,
+                // Echo the sent packet to our router to learn its id.
+                true,
                 None,
                 None,
             )
             .await
-            .map_err(|e| MeshGuardError::MeshRadio(format!("Path test failed: {e}")))
+            .map_err(|e| MeshGuardError::MeshRadio(format!("Path test failed: {e}")))?;
+        self.router
+            .last_sent_id
+            .take()
+            .ok_or_else(|| MeshGuardError::MeshRadio("Path test id unknown".into()))
     }
 
     pub async fn send_private_app(
@@ -1170,7 +1185,7 @@ async fn observe_mesh_packet(packet: &protobufs::MeshPacket, ctx: &ListenerCtx) 
     // Path test (traceroute) reply addressed to us.
     if portnum == Some(protobufs::PortNum::TracerouteApp as i32) && packet.to == ctx.my_node_num {
         if let Some(protobufs::mesh_packet::PayloadVariant::Decoded(d)) = &packet.payload_variant {
-            handle_path_test_reply(ctx, packet.from, &d.payload).await;
+            handle_path_test_reply(ctx, packet.from, d).await;
         }
     }
 
@@ -1266,12 +1281,17 @@ async fn observe_mesh_packet(packet: &protobufs::MeshPacket, ctx: &ListenerCtx) 
 }
 
 /// A traceroute reply: report the route if we have a test outstanding.
-async fn handle_path_test_reply(ctx: &ListenerCtx, from: u32, payload: &[u8]) {
+async fn handle_path_test_reply(ctx: &ListenerCtx, from: u32, data: &protobufs::Data) {
     use meshtastic::Message as _;
-    let Ok(rd) = protobufs::RouteDiscovery::decode(payload) else {
+    // Replies carry our request's id; incoming requests and stale replies
+    // do not match.
+    if !ctx.link.is_current(ctx.link_gen) {
+        return;
+    }
+    let Ok(rd) = protobufs::RouteDiscovery::decode(data.payload.as_slice()) else {
         return;
     };
-    let Some(rtt) = ctx.path_tests.lock().await.finish(from) else {
+    let Some(rtt) = ctx.path_tests.lock().await.finish(from, data.request_id) else {
         return; // not ours, late, or already reported
     };
     let result = crate::diagnostics::path_result(

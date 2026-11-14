@@ -135,6 +135,8 @@ async fn connect_locked(
     // Close the old link first; its listener's end is then stale.
     let link_gen = state.link.link_gen.fetch_add(1, Ordering::SeqCst) + 1;
     shutdown_radio(state).await;
+    // Outstanding path tests belong to the old link.
+    state.path_tests.lock().await.clear();
 
     // Open the vault before the listener starts, so remembered keys are in
     // place for the first packet (see key_store::prepare_for_radio).

@@ -918,7 +918,8 @@ async function setupEventListeners() {
 
   await listen("path-test-result", (event) => {
     const r = event.payload;
-    if (diag.node !== r.node) return;
+    if (diag.node !== r.node || !diag.pending) return;
+    diag.pending = false;
     clearTimeout(diag.timer);
     renderPathResult(r);
   });
@@ -1271,7 +1272,9 @@ $("#presets-save").addEventListener("click", async () => {
 // Mesh diagnostics
 // ============================================================
 const diagOverlay = $("#diag-overlay");
-const diag = { node: null, timer: null };
+// `panel` changes whenever the sheet is opened for a node; `run` whenever a
+// path test starts. Async continuations check them before touching the UI.
+const diag = { node: null, timer: null, panel: 0, run: 0, pending: false };
 
 function fmtNum(v, digits, unit) {
   return typeof v === "number" ? `${v.toFixed(digits)}${unit}` : "\u2014";
@@ -1283,6 +1286,8 @@ function diagStat(k, v) {
 
 async function openDiagnostics(nodeNum) {
   diag.node = nodeNum;
+  const panel = ++diag.panel;
+  diag.pending = false;
   clearTimeout(diag.timer);
   const node = state.meshNodes.find((n) => n.node_num === nodeNum) || { node_num: nodeNum };
   $("#diag-title").textContent = nodeDisplayName(node);
@@ -1312,10 +1317,12 @@ async function openDiagnostics(nodeNum) {
   $("#diag-path").textContent = "Sends a Meshtastic traceroute and shows each hop with its SNR.";
   $("#diag-run-path").disabled = false;
   diagOverlay.style.display = "flex";
+  $("#diag-chart").textContent = "Loading…";
   try {
-    renderSignalChart(await invoke("get_node_history", { nodeNum }));
+    const history = await invoke("get_node_history", { nodeNum });
+    if (panel === diag.panel) renderSignalChart(history);
   } catch (err) {
-    $("#diag-chart").textContent = "No history: " + err;
+    if (panel === diag.panel) $("#diag-chart").textContent = "No history: " + err;
   }
 }
 
@@ -1395,19 +1402,28 @@ function renderPathResult(r) {
 
 $("#diag-run-path").addEventListener("click", async () => {
   const nodeNum = diag.node;
+  const panel = diag.panel;
+  const run = ++diag.run;
   const btn = $("#diag-run-path");
   btn.disabled = true;
   $("#diag-path").textContent = "Waiting for the reply (up to 90 s)…";
+  // Pending before the request: a fast reply may arrive before invoke()
+  // resolves, and the timeout only fires if this run is still pending.
+  diag.pending = true;
+  clearTimeout(diag.timer);
+  diag.timer = setTimeout(() => {
+    if (panel !== diag.panel || run !== diag.run || !diag.pending) return;
+    diag.pending = false;
+    $("#diag-path").textContent =
+      "No reply within 90 s. The node may be out of range, asleep, or its firmware may not answer path tests.";
+    btn.disabled = false;
+  }, 90_000);
   try {
     await invoke("run_path_test", { nodeNum });
-    clearTimeout(diag.timer);
-    diag.timer = setTimeout(() => {
-      if (diag.node !== nodeNum) return;
-      $("#diag-path").textContent =
-        "No reply within 90 s. The node may be out of range, asleep, or its firmware may not answer path tests.";
-      btn.disabled = false;
-    }, 90_000);
   } catch (err) {
+    if (panel !== diag.panel || run !== diag.run) return;
+    diag.pending = false;
+    clearTimeout(diag.timer);
     $("#diag-path").textContent = String(err);
     btn.disabled = false;
   }
@@ -1416,6 +1432,8 @@ $("#diag-run-path").addEventListener("click", async () => {
 $("#diag-close").addEventListener("click", () => {
   diagOverlay.style.display = "none";
   diag.node = null;
+  diag.panel++;
+  diag.pending = false;
   clearTimeout(diag.timer);
 });
 

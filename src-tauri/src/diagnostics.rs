@@ -69,7 +69,15 @@ impl History {
 /// Outstanding and recent path tests, per target node.
 #[derive(Default)]
 pub struct PathTests {
-    started: HashMap<u32, Instant>,
+    tests: HashMap<u32, PathTest>,
+}
+
+struct PathTest {
+    /// When the request was transmitted (drives the cooldown).
+    started: Instant,
+    /// Packet id of our request; a reply carries it as `request_id`.
+    request_id: Option<u32>,
+    answered: bool,
 }
 
 impl PathTests {
@@ -77,38 +85,55 @@ impl PathTests {
     /// wait otherwise.
     pub fn try_start(&mut self, node: u32) -> Result<(), Duration> {
         let now = Instant::now();
-        self.started.retain(|_, at| {
-            now.duration_since(*at) < PATH_TEST_TIMEOUT.max(PATH_TEST_MIN_INTERVAL)
-        });
-        if let Some(at) = self.started.get(&node) {
-            let since = now.duration_since(*at);
+        let keep = PATH_TEST_TIMEOUT.max(PATH_TEST_MIN_INTERVAL);
+        self.tests
+            .retain(|_, t| now.duration_since(t.started) < keep);
+        if let Some(t) = self.tests.get(&node) {
+            let since = now.duration_since(t.started);
             if since < PATH_TEST_MIN_INTERVAL {
                 return Err(PATH_TEST_MIN_INTERVAL - since);
             }
         }
-        self.started.insert(node, now);
+        self.tests.insert(
+            node,
+            PathTest {
+                started: now,
+                request_id: None,
+                answered: false,
+            },
+        );
         Ok(())
     }
 
-    /// Match a reply from `node`; returns the round-trip time if a test for
-    /// it is outstanding (and closes it).
-    pub fn finish(&mut self, node: u32) -> Option<Duration> {
-        let at = self.started.get(&node).copied()?;
-        let rtt = at.elapsed();
+    /// Record the packet id of the request just transmitted to `node`.
+    pub fn sent(&mut self, node: u32, request_id: u32) {
+        if let Some(t) = self.tests.get_mut(&node) {
+            t.request_id = Some(request_id);
+        }
+    }
+
+    /// Match a reply from `node` to our request `request_id`; returns the
+    /// round-trip time once (later replies or other packets return None).
+    pub fn finish(&mut self, node: u32, request_id: u32) -> Option<Duration> {
+        let t = self.tests.get_mut(&node)?;
+        if t.answered || t.request_id != Some(request_id) || request_id == 0 {
+            return None;
+        }
+        let rtt = t.started.elapsed();
         if rtt > PATH_TEST_TIMEOUT {
             return None;
         }
-        // Keep the entry for rate limiting, but mark it answered by moving
-        // it back so a second reply is not reported twice.
-        self.started.insert(
-            node,
-            Instant::now() - PATH_TEST_TIMEOUT - Duration::from_secs(1),
-        );
+        t.answered = true;
         Some(rtt)
     }
 
     pub fn forget(&mut self, node: u32) {
-        self.started.remove(&node);
+        self.tests.remove(&node);
+    }
+
+    /// Drop everything (the local radio or link changed).
+    pub fn clear(&mut self) {
+        self.tests.clear();
     }
 }
 
@@ -214,9 +239,15 @@ mod tests {
         let mut p = PathTests::default();
         assert!(p.try_start(7).is_ok());
         assert!(p.try_start(7).is_err());
-        assert!(p.finish(7).is_some());
-        assert!(p.finish(7).is_none(), "second reply ignored");
-        assert!(p.finish(8).is_none(), "no test for 8");
+        p.sent(7, 42);
+        assert!(p.finish(7, 41).is_none(), "other request");
+        assert!(p.finish(7, 42).is_some());
+        assert!(p.finish(7, 42).is_none(), "second reply ignored");
+        assert!(
+            p.try_start(7).is_err(),
+            "cooldown still applies after a reply"
+        );
+        assert!(p.finish(8, 42).is_none(), "no test for 8");
     }
 
     #[test]

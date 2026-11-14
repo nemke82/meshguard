@@ -860,8 +860,9 @@ pub async fn run_path_test(
         }
     };
     match sent {
-        Ok(()) => {
+        Ok(request_id) => {
             tx.mark_sent();
+            state.path_tests.lock().await.sent(node_num, request_id);
             Ok(())
         }
         Err(e) => {
