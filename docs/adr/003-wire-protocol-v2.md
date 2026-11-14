@@ -1,6 +1,6 @@
 # ADR-003: Wire protocol v2 — stable message id, direction-bound AEAD, dual-read
 
-**Status:** Proposed. The codec is implemented and tested in `crates/meshguard-core`; the live app does **not** send v2 yet.
+**Status:** Accepted (2026-11-14). The owner approved the format and the rollout in §3. The codec is implemented in `crates/meshguard-core`; the live-path rollout follows in a separate PR.
 **Date:** 2026-11-14
 **Related:** RFC §4, ADR-001, `docs/audit/p0-baseline.md`
 
@@ -60,7 +60,7 @@ None of these errors carry plaintext.
 - Show and notify only on the first observation.
 - **ACK budget:** duplicates are re-ACKed so a lost ACK can recover, but at most `max_acks_per_message` times per id (`Seen::should_ack`). A replay flood therefore costs at most that many transmissions per captured frame. The engine slice must also add a **global outbound airtime budget** (token bucket per transport) covering ACKs and retries, so many distinct captured frames cannot exhaust the channel.
 
-## 3. Rollout and negotiation (needs owner approval)
+## 3. Rollout and negotiation (approved)
 
 An old (v1-only) build that receives a v2 frame cannot decrypt it, and today it treats *any* undecryptable `PrivateApp` packet as a **pair request** and posts a "Chat Request" notification (audit D6). So v2 must never be sent to a peer that may still run v1.
 

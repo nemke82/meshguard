@@ -1,6 +1,6 @@
 # ADR-001: Android engine boundary — sharing the Rust core with a native service
 
-**Status:** Proposed. The architecture is recommended; the gate in §6 is not yet proven on a device.
+**Status:** Accepted (2026-11-14). The owner approved option D, a Rust-owned SQLite store and minSdk ≥ 26. The device gate in §6 is still pending and must pass before P2 feature work.
 **Date:** 2026-11-14
 **Context docs:** `docs/design/MESHGUARD_2_0_DESIGN_RFC.md` §3, `docs/audit/p0-baseline.md` §3
 
@@ -63,7 +63,7 @@ Tauri already builds `libmeshguard_lib.so` (`crate-type` includes `cdylib`). We 
 
 **UniFFI vs hand-written JNI:** at fewer than about 10 byte-array functions, hand-written `jni` is less machinery than UniFFI + JNA. Revisit if the surface grows; UniFFI can generate bindings against the same `.so`.
 
-## 4. Decision (proposed)
+## 4. Decision
 
 Adopt **Option D**:
 
@@ -89,7 +89,7 @@ Actions are a compact, versioned binary or JSON blob defined in Rust. Plaintext 
 ## 5. Consequences
 
 - `AppState` gradually turns into a view over the engine. Until P2, the desktop path is unchanged.
-- **Store ownership:** recommended to be Rust-owned SQLite (`rusqlite`, SQLCipher if ADR-002 needs it), so desktop and Android share schema and migrations, and Kotlin does not get Room. Confirm in a separate ADR before any schema lands.
+- **Store ownership (decided):** a single Rust-owned SQLite store (`rusqlite`, SQLCipher if ADR-002 needs it), so desktop and Android share schema and migrations. No Room on the Kotlin side. The schema and migration plan still get their own ADR before they land.
 - Requires `jni` (Android-only, `cfg(target_os = "android")`) in `src-tauri`.
 - Needs a check that no Tauri/wry `JNI_OnLoad` or `ndk-context` initialisation is required before our JNI functions run. That check is part of the gate.
 
@@ -105,8 +105,9 @@ This is a minimal spike on a real Android device. No NDK is available in this en
 
 If step 3 fails because the library cannot run without Tauri initialisation, fall back to Option C, with the service as the sole engine owner and the UI as its client.
 
-## 7. Open questions for the owner
+## 7. Owner decisions (2026-11-14)
 
-1. Do you agree that the Tauri UI on Android becomes a client of the service-owned engine, rather than owning BLE itself?
-2. Is `minSdk` ≥ 26 acceptable? The tauri-cli template default needs confirming, and it simplifies notification channels and FGS handling.
-3. CompanionDeviceManager: evaluate it in the P2 spike or defer it? It could improve background start eligibility for the T1000-E.
+1. **Accepted:** on Android the Tauri UI becomes a client of the service-owned engine; it no longer owns BLE.
+2. **Accepted:** `minSdk` ≥ 26.
+3. **Accepted:** Rust-owned SQLite as the single store (see §5).
+4. **Still open:** CompanionDeviceManager. Evaluate it during the P2 gate spike.
