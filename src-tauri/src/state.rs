@@ -112,17 +112,22 @@ pub struct AppState {
     /// Radio link lifecycle (auto-reconnect).
     pub link: Arc<crate::link::LinkManager>,
 
-    /// Local vault key protecting remembered chat keys; opened lazily.
-    vault: tokio::sync::OnceCell<Option<Arc<SessionKey>>>,
+    /// Local radio (node number) that `session_keys` belong to.
+    pub keys_owner: Arc<Mutex<Option<u32>>>,
+
+    /// Local vault key protecting remembered chat keys; opened lazily and
+    /// retried after a failure.
+    vault: Mutex<Option<Arc<SessionKey>>>,
 }
 
 impl AppState {
     /// The vault key, or `None` when this platform has no key store.
     pub async fn vault(&self, app: &tauri::AppHandle) -> Option<Arc<SessionKey>> {
-        self.vault
-            .get_or_init(|| crate::key_store::open_vault(app, &self.config_dir))
-            .await
-            .clone()
+        let mut vault = self.vault.lock().await;
+        if vault.is_none() {
+            *vault = crate::key_store::open_vault(app, &self.config_dir).await;
+        }
+        vault.clone()
     }
 
     pub fn new(config_dir: PathBuf) -> Self {
@@ -139,7 +144,8 @@ impl AppState {
             config_dir,
             inbound,
             link: Arc::new(crate::link::LinkManager::default()),
-            vault: tokio::sync::OnceCell::new(),
+            keys_owner: Arc::new(Mutex::new(None)),
+            vault: Mutex::new(None),
         }
     }
 }

@@ -684,6 +684,11 @@ pub struct ConnectParams {
     pub inbound: Arc<InboundState>,
     /// Generation of this link (see `link.rs`).
     pub link_gen: u64,
+    pub link: Arc<crate::link::LinkManager>,
+    /// Vault key for restoring remembered chat keys (ADR-002), if available.
+    pub vault: Option<Arc<crate::crypto::SessionKey>>,
+    /// Local radio the in-memory chat keys belong to.
+    pub keys_owner: Arc<Mutex<Option<u32>>>,
 }
 
 /// Everything the background listener needs; cheap to clone.
@@ -699,6 +704,7 @@ struct ListenerCtx {
     config_dir: PathBuf,
     inbound: Arc<InboundState>,
     link_gen: u64,
+    link: Arc<crate::link::LinkManager>,
 }
 
 impl ListenerCtx {
@@ -714,6 +720,7 @@ impl ListenerCtx {
             config_dir: p.config_dir.clone(),
             inbound: p.inbound.clone(),
             link_gen: p.link_gen,
+            link: p.link.clone(),
         }
     }
 }
@@ -798,6 +805,13 @@ async fn run_config_and_listen(
 }
 
 impl MeshRadio {
+    /// Stop the transport's worker tasks (reader, writer, processor).
+    pub async fn shutdown(self) {
+        if let Err(e) = self.api.disconnect().await {
+            tracing::debug!("Radio transport shutdown: {e}");
+        }
+    }
+
     fn from_configured(api: ConnectedStreamApi<Configured>, node_num: u32) -> Self {
         Self {
             api,
@@ -844,6 +858,7 @@ impl MeshRadio {
         let (node_num, configured_api) =
             run_config_and_listen(configured_api, &mut decoded_listener, &p).await?;
 
+        crate::key_store::prepare_for_radio(&p, node_num).await;
         spawn_listener(decoded_listener, ListenerCtx::new(&p, node_num));
 
         Ok(Self::from_configured(configured_api, node_num))
@@ -869,6 +884,7 @@ impl MeshRadio {
         let (node_num, configured_api) =
             run_config_and_listen(configured_api, &mut decoded_listener, &p).await?;
 
+        crate::key_store::prepare_for_radio(&p, node_num).await;
         spawn_listener(decoded_listener, ListenerCtx::new(&p, node_num));
 
         Ok(Self::from_configured(configured_api, node_num))
@@ -894,6 +910,7 @@ impl MeshRadio {
         let (node_num, configured_api) =
             run_config_and_listen(configured_api, &mut decoded_listener, &p).await?;
 
+        crate::key_store::prepare_for_radio(&p, node_num).await;
         spawn_listener(decoded_listener, ListenerCtx::new(&p, node_num));
 
         Ok(Self::from_configured(configured_api, node_num))
@@ -1103,6 +1120,10 @@ fn spawn_listener(mut listener: meshtastic::packet::PacketReceiver, ctx: Listene
     tokio::spawn(async move {
         let mut pkt_counter: u64 = 0;
         while let Some(from_radio) = listener.recv().await {
+            if !ctx.link.is_current(ctx.link_gen) {
+                tracing::debug!("Listener of a replaced link stopping");
+                break;
+            }
             if let Some(ref variant) = from_radio.payload_variant {
                 pkt_counter += 1;
                 let vname = variant_name(variant);
@@ -1426,6 +1447,9 @@ async fn handle_possible_pair_request(
 
 /// Transmit an application ACK if the global airtime budget allows it.
 async fn send_ack(ctx: &ListenerCtx, to_node: u32, frame: Vec<u8>, now: u64) {
+    if !ctx.link.is_current(ctx.link_gen) {
+        return;
+    }
     if !ctx.inbound.ack_budget.lock().await.try_take(now) {
         tracing::info!("ACK to {to_node} skipped: airtime budget exhausted");
         return;

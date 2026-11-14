@@ -24,6 +24,14 @@ const KEYS_FILE: &str = "session_keys.json";
 const VAULT_FILE: &str = "vault.key";
 const FORMAT_VERSION: u32 = 1;
 
+/// Serialises every read-modify-write of `session_keys.json`, so concurrent
+/// pairings or a removal racing a save cannot lose or resurrect entries.
+static FILE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn file_lock() -> std::sync::MutexGuard<'static, ()> {
+    FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[derive(Serialize, Deserialize, Default)]
 struct Stored {
     version: u32,
@@ -79,6 +87,7 @@ pub fn save(
 ) -> Result<(), MeshGuardError> {
     let blob = seal_session_key(vault, my_node, peer_node, key)
         .map_err(|e| MeshGuardError::Encryption(e.to_string()))?;
+    let _guard = file_lock();
     let mut stored = read(dir);
     stored.version = FORMAT_VERSION;
     stored
@@ -94,6 +103,7 @@ pub fn save(
 
 /// Forget every stored key for `peer_node` (any local radio).
 pub fn remove_peer(dir: &Path, peer_node: u32) -> Result<(), MeshGuardError> {
+    let _guard = file_lock();
     let mut stored = read(dir);
     let before = stored.entries.len();
     stored.entries.retain(|e| e.peer_node != peer_node);
@@ -112,7 +122,11 @@ pub fn load_for(
     my_node: u32,
     peers: &[u32],
 ) -> Vec<(u32, SessionKey)> {
-    read(dir)
+    let stored = {
+        let _guard = file_lock();
+        read(dir)
+    };
+    stored
         .entries
         .into_iter()
         .filter(|e| e.my_node == my_node && peers.contains(&e.peer_node))
@@ -127,6 +141,48 @@ pub fn load_for(
             }
         })
         .collect()
+}
+
+/// Make the in-memory chat keys match the radio we just connected to, then
+/// restore its remembered keys. Runs before the listener starts, so the
+/// first packets can already be decrypted.
+pub async fn prepare_for_radio(p: &crate::mesh_radio::ConnectParams, my_node: u32) {
+    let peers: Vec<u32> = p
+        .config
+        .lock()
+        .await
+        .peers
+        .iter()
+        .map(|c| c.node_num)
+        .collect();
+    let loaded = match &p.vault {
+        Some(vault) => {
+            let (dir, vault, peers) = (p.config_dir.clone(), vault.clone(), peers);
+            tokio::task::spawn_blocking(move || load_for(&dir, &vault, my_node, &peers))
+                .await
+                .unwrap_or_default()
+        }
+        None => Vec::new(),
+    };
+
+    let mut owner = p.keys_owner.lock().await;
+    let mut keys = p.session_keys.lock().await;
+    if *owner != Some(my_node) {
+        // Keys are tied to one local radio (identity is in the key and AAD).
+        keys.clear();
+        *owner = Some(my_node);
+    }
+    let mut restored = 0;
+    for (peer, key) in loaded {
+        // A key set up in this session wins over the stored one.
+        if let std::collections::hash_map::Entry::Vacant(e) = keys.entry(peer) {
+            e.insert(key);
+            restored += 1;
+        }
+    }
+    if restored > 0 {
+        tracing::info!("Restored {restored} remembered chat key(s)");
+    }
 }
 
 /// The local vault key, created on first use. `None` when this platform has
@@ -144,7 +200,7 @@ pub async fn open_vault(app: &tauri::AppHandle, dir: &Path) -> Option<Arc<Sessio
 
 #[cfg(not(target_os = "android"))]
 pub async fn open_vault(_app: &tauri::AppHandle, _dir: &Path) -> Option<Arc<SessionKey>> {
-    tracing::info!("No platform key store here — chat keys are kept in memory only");
+    tracing::debug!("No platform key store here — chat keys are kept in memory only");
     None
 }
 
@@ -175,6 +231,20 @@ mod android {
             .map_err(|e| MeshGuardError::Encryption(format!("{cmd}: {e}")))
     }
 
+    /// Errors after which the wrapped vault key can never be opened again.
+    fn is_permanent(e: &MeshGuardError) -> bool {
+        let msg = e.to_string();
+        [
+            "no vault key",
+            "KeyPermanentlyInvalidatedException",
+            "UnrecoverableKeyException",
+            "AEADBadTagException",
+            "blob too short",
+        ]
+        .iter()
+        .any(|m| msg.contains(m))
+    }
+
     pub(super) fn open_or_create(app: &tauri::AppHandle, dir: &Path) -> Option<SessionKey> {
         let path = dir.join(VAULT_FILE);
         if let Ok(wrapped) = std::fs::read(&path) {
@@ -186,12 +256,19 @@ mod android {
                     }
                     tracing::warn!("Vault key has the wrong length — starting a new vault");
                 }
+                Err(e) if is_permanent(&e) => {
+                    // The Keystore key is gone or invalidated (e.g. app data
+                    // restored to a new device): stored keys cannot be opened.
+                    tracing::warn!("Vault key is no longer usable ({e}) — starting a new vault");
+                }
                 Err(e) => {
-                    // The Keystore key is gone (e.g. app data restored to a
-                    // new device). Stored chat keys can no longer be opened.
-                    tracing::warn!("Vault key could not be unwrapped ({e}) — starting a new vault");
+                    // Possibly temporary (Keystore busy, plugin not ready):
+                    // keep everything and try again on the next connect.
+                    tracing::warn!("Vault key could not be unwrapped right now ({e})");
+                    return None;
                 }
             }
+            let _guard = file_lock();
             let _ = std::fs::remove_file(dir.join(KEYS_FILE));
         }
 

@@ -60,8 +60,33 @@ pub struct LinkManager {
     link_gen: AtomicU64,
     /// Bumped to cancel a running reconnect loop.
     reconnect_gen: AtomicU64,
-    /// Serialises connection attempts (manual and automatic).
+    /// Serialises connection attempts, disconnects and link-loss handling.
     connect_lock: Mutex<()>,
+}
+
+impl LinkManager {
+    /// Whether `link_gen` is still the live link. Listeners of replaced
+    /// links use this to stop acting (e.g. sending ACKs).
+    pub fn is_current(&self, link_gen: u64) -> bool {
+        self.link_gen.load(Ordering::SeqCst) == link_gen
+    }
+}
+
+/// How long to wait for the old transport's workers to stop.
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Take the radio out of the shared slot and stop its transport workers.
+/// Dropping `MeshRadio` alone would leave them running.
+async fn shutdown_radio(state: &AppState) {
+    let old = state.radio.lock().await.take();
+    if let Some(radio) = old {
+        if tokio::time::timeout(SHUTDOWN_TIMEOUT, radio.shutdown())
+            .await
+            .is_err()
+        {
+            tracing::warn!("Old radio transport did not stop within {SHUTDOWN_TIMEOUT:?}");
+        }
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -71,7 +96,12 @@ pub struct ReconnectEvent {
     pub retry_in_secs: u64,
 }
 
-fn connect_params(app: &tauri::AppHandle, state: &AppState, link_gen: u64) -> ConnectParams {
+fn connect_params(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    link_gen: u64,
+    vault: Option<std::sync::Arc<crate::crypto::SessionKey>>,
+) -> ConnectParams {
     ConnectParams {
         app_handle: app.clone(),
         mesh_nodes: state.mesh_nodes.clone(),
@@ -84,6 +114,9 @@ fn connect_params(app: &tauri::AppHandle, state: &AppState, link_gen: u64) -> Co
         config_dir: state.config_dir.clone(),
         inbound: state.inbound.clone(),
         link_gen,
+        link: state.link.clone(),
+        vault,
+        keys_owner: state.keys_owner.clone(),
     }
 }
 
@@ -94,12 +127,14 @@ async fn connect_locked(
     app: &tauri::AppHandle,
     state: &AppState,
 ) -> Result<(), MeshGuardError> {
-    // Drop the old link first; its listener's end is then stale.
+    // Close the old link first; its listener's end is then stale.
     let link_gen = state.link.link_gen.fetch_add(1, Ordering::SeqCst) + 1;
-    *state.radio.lock().await = None;
+    shutdown_radio(state).await;
 
-    let previous_node = *state.my_node_num.lock().await;
-    let p = connect_params(app, state, link_gen);
+    // Open the vault before the listener starts, so remembered keys are in
+    // place for the first packet (see key_store::prepare_for_radio).
+    let vault = state.vault(app).await;
+    let p = connect_params(app, state, link_gen, vault);
     let radio = match target {
         LinkTarget::Ble { name, address } => {
             MeshRadio::connect_ble(name, address.clone(), pin, p).await?
@@ -109,7 +144,6 @@ async fn connect_locked(
     };
     *state.radio.lock().await = Some(radio);
 
-    let my_node = *state.my_node_num.lock().await;
     {
         let mut config = state.config.lock().await;
         config.last_link = Some(target.clone());
@@ -128,45 +162,8 @@ async fn connect_locked(
         config.save(&state.config_dir)?;
     }
 
-    // Keys belong to one local radio: drop in-memory keys from another one,
-    // then restore the remembered keys for this radio.
-    if previous_node.is_some() && previous_node != my_node {
-        state.session_keys.lock().await.clear();
-    }
-    if let Some(my_node) = my_node {
-        restore_keys(app, state, my_node).await;
-    }
     tracing::info!("Connected to {}", target.label());
     Ok(())
-}
-
-/// Load remembered chat keys for `my_node` into memory (ADR-002).
-async fn restore_keys(app: &tauri::AppHandle, state: &AppState, my_node: u32) {
-    let Some(vault) = state.vault(app).await else {
-        return;
-    };
-    let peers: Vec<u32> = state
-        .config
-        .lock()
-        .await
-        .peers
-        .iter()
-        .map(|p| p.node_num)
-        .collect();
-    let loaded = crate::key_store::load_for(&state.config_dir, &vault, my_node, &peers);
-    if loaded.is_empty() {
-        return;
-    }
-    let mut keys = state.session_keys.lock().await;
-    let mut restored = 0;
-    for (peer, key) in loaded {
-        // A key set up in this session wins over the stored one.
-        if let std::collections::hash_map::Entry::Vacant(e) = keys.entry(peer) {
-            e.insert(key);
-            restored += 1;
-        }
-    }
-    tracing::info!("Restored {restored} remembered chat key(s)");
 }
 
 /// User-initiated connect: cancels any reconnect loop first.
@@ -186,7 +183,7 @@ pub async fn disconnect(state: &AppState) {
     state.link.reconnect_gen.fetch_add(1, Ordering::SeqCst);
     let _guard = state.link.connect_lock.lock().await;
     state.link.link_gen.fetch_add(1, Ordering::SeqCst);
-    *state.radio.lock().await = None;
+    shutdown_radio(state).await;
     *state.my_node_num.lock().await = None;
     state.mesh_nodes.lock().await.clear();
 }
@@ -247,10 +244,13 @@ pub async fn start_reconnect_loop(app: tauri::AppHandle) -> bool {
 pub fn on_link_lost(app: tauri::AppHandle, link_gen: u64) {
     tauri::async_runtime::spawn(async move {
         let state = app.state::<AppState>();
-        if state.link.link_gen.load(Ordering::SeqCst) != link_gen {
-            return; // an old link we already replaced or closed
+        // Serialised with connect/disconnect, so a link replaced or closed
+        // meanwhile is recognised as stale here.
+        let _guard = state.link.connect_lock.lock().await;
+        if !state.link.is_current(link_gen) {
+            return;
         }
-        *state.radio.lock().await = None;
+        shutdown_radio(&state).await;
         tracing::warn!("Radio link lost — reconnecting automatically");
         if !start_reconnect_loop(app.clone()).await {
             let _ = app.emit("connection-state", "disconnected");

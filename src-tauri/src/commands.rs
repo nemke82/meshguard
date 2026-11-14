@@ -196,6 +196,54 @@ async fn peer_long_name(state: &AppState, peer_node_num: u32) -> Result<String, 
     Ok(node.long_name.clone())
 }
 
+/// Transmit `frame` as radio `my_num`. Fails if the radio changed since the
+/// frame was sealed for `my_num` (the identity is part of the AAD).
+async fn send_as(
+    state: &AppState,
+    my_num: u32,
+    peer_node_num: u32,
+    frame: Vec<u8>,
+) -> Result<(), MeshGuardError> {
+    let mut radio_guard = state.radio.lock().await;
+    let radio = radio_guard.as_mut().ok_or(MeshGuardError::NotConnected)?;
+    if *state.my_node_num.lock().await != Some(my_num) {
+        return Err(MeshGuardError::Protocol(
+            "The radio changed while sending — please try again".into(),
+        ));
+    }
+    radio.send_private_app(frame, peer_node_num).await
+}
+
+fn key_copy(key: &crate::crypto::SessionKey) -> crate::crypto::SessionKey {
+    crate::crypto::SessionKey::from_bytes(*key.to_bytes())
+}
+
+/// Install a chat key before transmitting, so the peer's immediate reply can
+/// be decrypted. Returns the key it replaced, for rollback.
+async fn install_key(
+    state: &AppState,
+    peer_node_num: u32,
+    key: crate::crypto::SessionKey,
+) -> Option<crate::crypto::SessionKey> {
+    state.session_keys.lock().await.insert(peer_node_num, key)
+}
+
+async fn rollback_key(
+    state: &AppState,
+    peer_node_num: u32,
+    previous: Option<crate::crypto::SessionKey>,
+) {
+    let mut keys = state.session_keys.lock().await;
+    match previous {
+        Some(k) => {
+            keys.insert(peer_node_num, k);
+        }
+        None => {
+            keys.remove(&peer_node_num);
+        }
+    }
+}
+
 /// Remember `key` for `peer_node_num` across restarts (ADR-002). Best
 /// effort: without a platform key store, or on a write error, the chat
 /// still works for this session.
@@ -265,19 +313,14 @@ pub async fn start_chat(
     )
     .map_err(seal_err)?;
 
-    {
-        let mut radio_guard = state.radio.lock().await;
-        let radio = radio_guard.as_mut().ok_or(MeshGuardError::NotConnected)?;
-        radio.send_private_app(sealed.frame, peer_node_num).await?;
+    let previous = install_key(&state, peer_node_num, key_copy(&session_key)).await;
+    if let Err(e) = send_as(&state, my_num, peer_node_num, sealed.frame).await {
+        rollback_key(&state, peer_node_num, previous).await;
+        return Err(e);
     }
 
     let peer = save_peer(&state, peer_node_num, peer_name, protocol).await?;
     remember_key(&app_handle, &state, my_num, peer_node_num, &session_key).await;
-    state
-        .session_keys
-        .lock()
-        .await
-        .insert(peer_node_num, session_key);
     tracing::info!("Chat initiated with node {peer_node_num} ({protocol:?})");
     Ok(peer)
 }
@@ -401,14 +444,10 @@ pub async fn accept_chat(
         }
     }
 
-    let sent = {
-        let mut radio_guard = state.radio.lock().await;
-        match radio_guard.as_mut() {
-            Some(radio) => radio.send_private_app(sealed.frame, peer_node_num).await,
-            None => Err(MeshGuardError::NotConnected),
-        }
-    };
+    let previous = install_key(&state, peer_node_num, key_copy(&session_key)).await;
+    let sent = send_as(&state, my_num, peer_node_num, sealed.frame).await;
     if let Err(e) = sent {
+        rollback_key(&state, peer_node_num, previous).await;
         // Not accepted after all: let the user retry the same request.
         if let Some(id) = accepted_v2_request {
             let mut dedup = state.inbound.dedup.lock().await;
@@ -425,11 +464,6 @@ pub async fn accept_chat(
         .remove(&peer_node_num);
     let peer = save_peer(&state, peer_node_num, peer_name, protocol).await?;
     remember_key(&app_handle, &state, my_num, peer_node_num, &session_key).await;
-    state
-        .session_keys
-        .lock()
-        .await
-        .insert(peer_node_num, session_key);
     tracing::info!("Chat accepted with node {peer_node_num} ({protocol:?})");
     Ok(peer)
 }
@@ -479,9 +513,7 @@ pub async fn send_message(
         .map_err(seal_err)?
     };
 
-    let mut radio_guard = state.radio.lock().await;
-    let radio = radio_guard.as_mut().ok_or(MeshGuardError::NotConnected)?;
-    radio.send_private_app(sealed.frame, peer_node_num).await?;
+    send_as(&state, my_num, peer_node_num, sealed.frame).await?;
 
     Ok(SendReceipt {
         message_id: sealed.message_id.map(|id| id.to_hex()),
