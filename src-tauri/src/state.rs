@@ -124,6 +124,9 @@ pub struct AppState {
     /// budget across concurrent requests.
     pub status_tx: Mutex<crate::status_tx::StatusTx>,
 
+    /// The QR pairing offer this device is showing, if any.
+    pub pair_offer: Mutex<Option<crate::commands::PairOffer>>,
+
     /// Latest GPS fix reported by our radio (for check-ins and SOS).
     pub my_position: Arc<Mutex<Option<meshguard_core::status::GeoFix>>>,
 
@@ -158,6 +161,7 @@ impl AppState {
             link: Arc::new(crate::link::LinkManager::default()),
             keys_owner: Arc::new(Mutex::new(None)),
             my_position: Arc::new(Mutex::new(None)),
+            pair_offer: Mutex::new(None),
             status_tx: Mutex::new(crate::status_tx::StatusTx::default()),
             vault: Mutex::new(None),
         }

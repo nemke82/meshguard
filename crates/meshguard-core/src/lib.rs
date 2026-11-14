@@ -31,6 +31,7 @@ pub mod ids;
 pub mod inbound;
 pub mod keystore;
 pub mod outbound;
+pub mod qrpair;
 pub mod ratelimit;
 pub mod status;
 pub mod transport;

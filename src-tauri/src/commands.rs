@@ -814,3 +814,219 @@ pub async fn send_status(
     }
     Ok(StatusSendReport { location, results })
 }
+
+// ── Offline QR pairing ────────────────────────────────────────
+
+/// A QR pairing offer is valid this long (and can be scanned by several
+/// family members meanwhile).
+const PAIR_OFFER_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// The offer this device is currently showing.
+pub struct PairOffer {
+    code: meshguard_core::qrpair::PairCode,
+    created: std::time::Instant,
+}
+
+#[derive(Serialize)]
+pub struct PairOfferView {
+    /// The text in the QR code; can also be typed on the other device.
+    pub uri: String,
+    /// The QR code as SVG markup (generated locally).
+    pub svg: String,
+    pub expires_in_secs: u64,
+}
+
+/// Show a pairing QR code. Anyone who scans it within 10 minutes and sends
+/// the resulting pair request is accepted automatically.
+#[tauri::command]
+pub async fn create_pair_offer(
+    state: State<'_, AppState>,
+) -> Result<PairOfferView, MeshGuardError> {
+    let my_num = (*state.my_node_num.lock().await).ok_or(MeshGuardError::NotConnected)?;
+    let code = meshguard_core::qrpair::PairCode::generate(my_num);
+    let uri = code.to_uri();
+    let svg = qrcode::QrCode::with_error_correction_level(uri.as_bytes(), qrcode::EcLevel::M)
+        .map_err(|e| MeshGuardError::Protocol(format!("QR code: {e}")))?
+        .render::<qrcode::render::svg::Color>()
+        .min_dimensions(240, 240)
+        .quiet_zone(true)
+        .dark_color(qrcode::render::svg::Color("#000000"))
+        .light_color(qrcode::render::svg::Color("#ffffff"))
+        .build();
+    *state.pair_offer.lock().await = Some(PairOffer {
+        code,
+        created: std::time::Instant::now(),
+    });
+    tracing::info!("Showing a QR pairing offer");
+    Ok(PairOfferView {
+        uri,
+        svg,
+        expires_in_secs: PAIR_OFFER_TTL.as_secs(),
+    })
+}
+
+/// Stop accepting the current QR code.
+#[tauri::command]
+pub async fn cancel_pair_offer(state: State<'_, AppState>) -> Result<(), MeshGuardError> {
+    *state.pair_offer.lock().await = None;
+    Ok(())
+}
+
+/// Pair using a scanned (or typed) code from another device: derive the key
+/// from it and send a v2 pair request. The other device accepts it
+/// automatically while it shows the code.
+#[tauri::command]
+pub async fn pair_with_code(
+    code: String,
+    app_handle: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<PeerConfig, MeshGuardError> {
+    let code = meshguard_core::qrpair::PairCode::parse(&code)?;
+    let (my_num, my_name) = my_identity(&state).await?;
+    if code.node == my_num {
+        return Err(MeshGuardError::Protocol(
+            "That is this radio's own code — scan it with the other phone".into(),
+        ));
+    }
+    let peer = code.node;
+    let session_key = code.derive_key(my_num)?;
+    let sealed = outbound::seal(
+        WireProtocol::V2.into(),
+        OutPayload::PairRequest(&my_name),
+        &session_key,
+        &PeerIdentity::meshtastic_node(my_num),
+        &PeerIdentity::meshtastic_node(peer),
+        unix_now(),
+        DEFAULT_FRAME_BUDGET,
+    )
+    .map_err(seal_err)?;
+    let previous = install_key(&state, my_num, peer, key_copy(&session_key)).await?;
+    if let Err(e) = send_as(&state, my_num, peer, sealed.frame).await {
+        rollback_key(&state, my_num, peer, previous).await;
+        return Err(e);
+    }
+    let name = state
+        .mesh_nodes
+        .lock()
+        .await
+        .get(&peer)
+        .map(|n| n.long_name.clone())
+        .filter(|n| !n.trim().is_empty())
+        .unwrap_or_else(|| format!("!{peer:08x}"));
+    let saved = save_peer(&state, peer, name, WireProtocol::V2, false).await?;
+    remember_key(&app_handle, &state, my_num, peer, &session_key).await;
+    tracing::info!("QR pair request sent to {peer}");
+    Ok(saved)
+}
+
+#[derive(Clone, Serialize)]
+pub struct PeerPairedEvent {
+    pub node_num: u32,
+    pub name: String,
+}
+
+/// Called by the listener for an undecryptable frame: if we are showing a
+/// QR code and the frame is a fresh v2 pair request sealed with the key
+/// derived from it, accept automatically. Returns true when handled.
+pub(crate) async fn try_accept_qr(app: &tauri::AppHandle, from_node: u32, frame: &[u8]) -> bool {
+    use tauri::{Emitter, Manager};
+    let state = app.state::<AppState>();
+    let code = {
+        let mut offer = state.pair_offer.lock().await;
+        match offer.as_ref() {
+            Some(o) if o.created.elapsed() < PAIR_OFFER_TTL => o.code.clone(),
+            Some(_) => {
+                *offer = None;
+                return false;
+            }
+            None => return false,
+        }
+    };
+    let Ok((my_num, my_name)) = my_identity(&state).await else {
+        return false;
+    };
+    if code.node != my_num || from_node == my_num {
+        return false; // offer from another radio, or a loop
+    }
+    let Ok(session_key) = code.derive_key(from_node) else {
+        return false;
+    };
+    let me = PeerIdentity::meshtastic_node(my_num);
+    let peer_id = PeerIdentity::meshtastic_node(from_node);
+    let Ok(DecodedFrame::V2(env)) =
+        decode_frame(frame, Some(&session_key), &aad_context(&peer_id, &me))
+    else {
+        return false;
+    };
+    if env.message_type != MessageType::PairRequest {
+        return false;
+    }
+    let policy = state.inbound.policy;
+    let now = u64::from(unix_now());
+    if env
+        .check_freshness(now, policy.max_skew_secs, policy.max_ttl_mins)
+        .is_err()
+    {
+        tracing::info!("Stale QR pair request from {from_node} ignored");
+        return true;
+    }
+    // Replay protection: each request is accepted once, durably.
+    {
+        let mut dedup = state.inbound.dedup.lock().await;
+        if dedup.observe(&peer_id, env.message_id, now) != Seen::New {
+            return true;
+        }
+        if crate::dedup_store::save(&state.config_dir, &dedup).is_err() {
+            dedup.forget(&peer_id, &env.message_id);
+            return true;
+        }
+    }
+    let Ok(sealed) = outbound::seal(
+        WireProtocol::V2.into(),
+        OutPayload::PairAccept(&my_name),
+        &session_key,
+        &me,
+        &peer_id,
+        unix_now(),
+        DEFAULT_FRAME_BUDGET,
+    ) else {
+        return true;
+    };
+    let Ok(previous) = install_key(&state, my_num, from_node, key_copy(&session_key)).await else {
+        return true;
+    };
+    if let Err(e) = send_as(&state, my_num, from_node, sealed.frame).await {
+        rollback_key(&state, my_num, from_node, previous).await;
+        let mut dedup = state.inbound.dedup.lock().await;
+        dedup.forget(&peer_id, &env.message_id);
+        let _ = crate::dedup_store::save(&state.config_dir, &dedup);
+        tracing::warn!("QR pair accept to {from_node} not sent: {e}");
+        return true;
+    }
+    let name = state
+        .mesh_nodes
+        .lock()
+        .await
+        .get(&from_node)
+        .map(|n| n.long_name.clone())
+        .filter(|n| !n.trim().is_empty())
+        .or_else(|| {
+            env.text_body()
+                .map(str::to_string)
+                .filter(|n| !n.trim().is_empty())
+        })
+        .unwrap_or_else(|| format!("!{from_node:08x}"));
+    if let Err(e) = save_peer(&state, from_node, name.clone(), WireProtocol::V2, true).await {
+        tracing::warn!("Could not save QR peer {from_node}: {e}");
+    }
+    remember_key(app, &state, my_num, from_node, &session_key).await;
+    tracing::info!("Paired with {from_node} via QR");
+    let _ = app.emit(
+        "peer-paired",
+        PeerPairedEvent {
+            node_num: from_node,
+            name,
+        },
+    );
+    true
+}
