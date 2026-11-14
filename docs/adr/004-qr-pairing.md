@@ -31,9 +31,12 @@ known yet or changed.
    independent chat key, because it depends on their own X25519 key.
 5. **No silent replacement.** A request from a node that is already a
    contact is refused (shown to the user): anyone who saw the code could
-   otherwise claim a known node number. To re-pair, remove the contact
-   first. A node paired under the current offer may scan again (lost
-   accept) up to three times.
+   otherwise claim a known node number with their own key. This includes a
+   node paired a minute ago under the same offer: to re-pair (e.g. the
+   accept was lost), remove the contact first.
+7. Pairing operations (passphrase, QR scan, QR accept) run one at a time,
+   and saving a contact is transactional, so a failure never leaves a
+   half-paired contact or a lost previous key.
 6. **Camera** use is only to read the code (Tauri barcode-scanner plugin,
    mobile only), with the **bundled** ML Kit model, so scanning works
    offline and without Google Play Services. No image is stored. Typing

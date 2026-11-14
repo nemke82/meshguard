@@ -259,6 +259,10 @@ async fn rollback_key(
     }
 }
 
+/// Serialises pairing operations (passphrase, QR scan, QR accept), so two
+/// attempts for the same peer cannot interleave key installs and rollbacks.
+static PAIRING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Remember `key` for `peer_node_num` across restarts (ADR-002). Best
 /// effort: without a platform key store, or on a write error, the chat
 /// still works for this session.
@@ -296,9 +300,14 @@ async fn save_peer(
         confirmed,
     };
     let mut config = state.config.lock().await;
+    let before = config.peers.clone();
     config.peers.retain(|p| p.node_num != peer_node_num);
     config.peers.push(peer.clone());
-    config.save(&state.config_dir)?;
+    if let Err(e) = config.save(&state.config_dir) {
+        // Transactional: an unsaved change must not linger in memory.
+        config.peers = before;
+        return Err(e);
+    }
     Ok(peer)
 }
 
@@ -315,6 +324,7 @@ pub async fn start_chat(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<PeerConfig, MeshGuardError> {
+    let _pairing = PAIRING.lock().await;
     let protocol = protocol.unwrap_or_default();
     let (my_num, my_name) = my_identity(&state).await?;
 
@@ -355,6 +365,7 @@ pub async fn accept_chat(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<PeerConfig, MeshGuardError> {
+    let _pairing = PAIRING.lock().await;
     let (my_num, my_name) = my_identity(&state).await?;
 
     let peer_name = peer_long_name(&state, peer_node_num).await?;
@@ -820,16 +831,11 @@ pub async fn send_status(
 /// A QR pairing offer is valid this long (and can be scanned by several
 /// family members meanwhile; each gets an independent key).
 const PAIR_OFFER_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
-/// How often one device may (re)pair under a single offer, e.g. after a
-/// lost accept it scans again.
-const MAX_QR_ACCEPTS_PER_NODE: u8 = 3;
 
 /// The offer this device is currently showing.
 pub struct PairOffer {
     offer: meshguard_core::qrpair::PairOffer,
     created: std::time::Instant,
-    /// Nodes paired under this offer, with how many times.
-    accepted: std::collections::HashMap<u32, u8>,
 }
 
 #[derive(Serialize)]
@@ -861,7 +867,6 @@ pub async fn create_pair_offer(
     *state.pair_offer.lock().await = Some(PairOffer {
         offer,
         created: std::time::Instant::now(),
-        accepted: std::collections::HashMap::new(),
     });
     tracing::info!("Showing a QR pairing offer");
     Ok(PairOfferView {
@@ -887,6 +892,7 @@ pub async fn pair_with_code(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<PeerConfig, MeshGuardError> {
+    let _pairing = PAIRING.lock().await;
     let code = meshguard_core::qrpair::PairCode::parse(&code)?;
     let (my_num, my_name) = my_identity(&state).await?;
     if code.node == my_num {
@@ -908,6 +914,7 @@ pub async fn pair_with_code(
     .map_err(seal_err)?;
     // The accept is sealed with the chat key: install it before sending.
     let previous = install_key(&state, my_num, peer, key_copy(&hs.chat_key)).await?;
+    let previous_copy = previous.as_ref().map(key_copy);
     if let Err(e) = send_as(&state, my_num, peer, sealed.frame).await {
         rollback_key(&state, my_num, peer, previous).await;
         return Err(e);
@@ -920,10 +927,12 @@ pub async fn pair_with_code(
         .map(|n| n.long_name.clone())
         .filter(|n| !n.trim().is_empty())
         .unwrap_or_else(|| format!("!{peer:08x}"));
+    // install_key's `previous` is consumed by the send-failure path above,
+    // so keep a copy of what was there for a save failure here.
     let saved = match save_peer(&state, peer, name, WireProtocol::V2, false).await {
         Ok(p) => p,
         Err(e) => {
-            rollback_key(&state, my_num, peer, None).await;
+            rollback_key(&state, my_num, peer, previous_copy).await;
             return Err(e);
         }
     };
@@ -953,10 +962,11 @@ pub struct PeerPairedEvent {
 /// Holds the offer lock throughout, so *Done* (cancel) cannot interleave
 /// with an acceptance.
 pub(crate) async fn try_accept_qr(app: &tauri::AppHandle, from_node: u32, frame: &[u8]) -> bool {
+    let _pairing = PAIRING.lock().await;
     use tauri::{Emitter, Manager};
     let state = app.state::<AppState>();
     let mut slot = state.pair_offer.lock().await;
-    let Some(offer) = slot.as_mut() else {
+    let Some(offer) = slot.as_ref() else {
         return false;
     };
     if offer.created.elapsed() >= PAIR_OFFER_TTL {
@@ -999,11 +1009,10 @@ pub(crate) async fn try_accept_qr(app: &tauri::AppHandle, from_node: u32, frame:
         return true;
     };
 
-    // Never silently replace an existing contact: anyone who saw the code
-    // could otherwise claim a known node number. Re-pairing a known contact
-    // means removing it first. Nodes paired under this very offer may scan
-    // again (e.g. the accept was lost), a bounded number of times.
-    let accepted_here = offer.accepted.get(&from_node).copied().unwrap_or(0);
+    // Never silently replace an existing contact (including one paired a
+    // minute ago under this offer): anyone who saw the code could otherwise
+    // claim a known node number with their own key. Re-pairing means
+    // removing the contact first.
     let known = state
         .config
         .lock()
@@ -1011,12 +1020,9 @@ pub(crate) async fn try_accept_qr(app: &tauri::AppHandle, from_node: u32, frame:
         .peers
         .iter()
         .any(|p| p.node_num == from_node);
-    if known && accepted_here == 0 {
+    if known {
         tracing::warn!("QR pair request from already-paired node {from_node} refused");
         let _ = app.emit("qr-pair-refused", from_node);
-        return true;
-    }
-    if accepted_here >= MAX_QR_ACCEPTS_PER_NODE {
         return true;
     }
 
@@ -1064,14 +1070,15 @@ pub(crate) async fn try_accept_qr(app: &tauri::AppHandle, from_node: u32, frame:
         .or_else(|| Some(announced).filter(|n| !n.trim().is_empty()))
         .unwrap_or_else(|| format!("!{from_node:08x}"));
     if let Err(e) = save_peer(&state, from_node, name.clone(), WireProtocol::V2, true).await {
-        // Keep memory and disk consistent: no half-paired contact.
+        // Keep memory and disk consistent: no half-paired contact, and the
+        // request may be retried.
         rollback_key(&state, my_num, from_node, previous).await;
+        forget_dedup(&state, &peer_id, &env.message_id).await;
         tracing::warn!("Could not save QR peer {from_node}: {e}");
         let _ = app.emit("qr-pair-failed", e.to_string());
         return true;
     }
     remember_key(app, &state, my_num, from_node, &chat_key).await;
-    offer.accepted.insert(from_node, accepted_here + 1);
     tracing::info!("Paired with {from_node} via QR");
     let _ = app.emit(
         "peer-paired",
