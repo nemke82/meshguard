@@ -248,6 +248,7 @@ const state = {
   passphraseMode: null, // "initiate" or "accept"
   passphraseTargetNode: null,
   pendingPairRequests: [],
+  bannerPairRequest: null,
 };
 
 // ============================================================
@@ -587,10 +588,12 @@ btnBackMesh.addEventListener("click", () => {
 
 function showPendingPairBanner() {
   if (state.pendingPairRequests.length === 0) {
+    state.bannerPairRequest = null;
     pairRequestBanner.style.display = "none";
     return;
   }
-  const req = state.pendingPairRequests[0];
+  const req = state.pendingPairRequests[state.pendingPairRequests.length - 1];
+  state.bannerPairRequest = req;
   pairRequestText.textContent = `Chat request from ${req.from_name || lookupNodeName(req.from_node)}`;
   pairRequestBanner.style.display = "flex";
 }
@@ -646,8 +649,9 @@ formPassphrase.addEventListener("submit", async (e) => {
 // Pair Request Handling
 // ============================================================
 btnAcceptPair.addEventListener("click", () => {
-  if (state.pendingPairRequests.length === 0) return;
-  const req = state.pendingPairRequests[0];
+  // Accept exactly the request the banner shows.
+  const req = state.bannerPairRequest;
+  if (!req) return;
   state.passphraseMode = "accept";
   state.passphraseTargetNode = req.from_node;
   passphraseTitle.textContent = "Accept Chat Request";
@@ -874,8 +878,7 @@ async function setupEventListeners() {
     state.pendingPairRequests.push(data);
 
     const name = data.from_name || lookupNodeName(data.from_node);
-    pairRequestText.textContent = `Chat request from ${name}`;
-    pairRequestBanner.style.display = "flex";
+    showPendingPairBanner();
 
     NotificationSound.play();
     Toast.show({ sender: "MeshGuard", text: `Chat request from ${name}` });

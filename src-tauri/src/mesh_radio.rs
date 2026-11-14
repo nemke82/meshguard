@@ -982,6 +982,9 @@ fn node_info_to_mesh_node(ni: &protobufs::NodeInfo) -> MeshNodeInfo {
     }
 }
 
+/// Radio timestamps before this (2020-09-13) mean the clock was never set.
+const MIN_VALID_UNIX_TIME: u32 = 1_600_000_000;
+
 /// A node we have only heard packets from, before any NodeInfo arrived.
 fn unnamed_node(node_num: u32) -> MeshNodeInfo {
     MeshNodeInfo {
@@ -1030,15 +1033,29 @@ async fn observe_mesh_packet(packet: &protobufs::MeshPacket, ctx: &ListenerCtx) 
         .entry(packet.from)
         .or_insert_with(|| unnamed_node(packet.from));
 
-    node.last_heard = now;
-    node.is_online = true;
+    // Prefer the radio's receive time: packets buffered while we were
+    // disconnected must not look current. Fall back to our clock only when
+    // the radio has no valid time (e.g. no GPS fix yet), and never move
+    // last_heard backwards.
+    let heard_at = if packet.rx_time > MIN_VALID_UNIX_TIME && i64::from(packet.rx_time) <= now + 60
+    {
+        i64::from(packet.rx_time)
+    } else {
+        now
+    };
+    node.last_heard = node.last_heard.max(heard_at);
+    node.is_online = now - node.last_heard < crate::state::ONLINE_WINDOW_SECS;
     node.via_mqtt = packet.via_mqtt;
-    if packet.hop_start > 0 && packet.hop_start >= packet.hop_limit {
-        node.hops_away = Some(packet.hop_start - packet.hop_limit);
+
+    // Hop metadata is only trustworthy when hop_start is set (firmware 2.3+).
+    let hops = (packet.hop_start > 0 && packet.hop_start >= packet.hop_limit)
+        .then(|| packet.hop_start - packet.hop_limit);
+    if let Some(h) = hops {
+        node.hops_away = Some(h);
     }
-    // Signal values describe the last hop; only a direct packet tells us
-    // about the link to this node.
-    if node.hops_away == Some(0) || packet.hop_start == 0 {
+    // Signal values describe the last hop, so they only describe the link to
+    // this node when this very packet was received directly.
+    if hops == Some(0) && !packet.via_mqtt {
         if packet.rx_snr != 0.0 {
             node.snr = packet.rx_snr;
         }
