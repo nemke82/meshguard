@@ -84,6 +84,11 @@ pub enum Inbound {
         sent_at: u32,
         ack: Option<Vec<u8>>,
     },
+    /// The peer announces/probes its features (v2 only). Send `ack`.
+    Caps {
+        features: u32,
+        ack: Option<Vec<u8>>,
+    },
     /// Already seen: do not show again; send `ack` if present.
     Duplicate {
         ack: Option<Vec<u8>>,
@@ -114,9 +119,10 @@ impl Inbound {
             Self::Text { version, .. }
             | Self::PairRequest { version, .. }
             | Self::PairAccept { version, .. } => Some(*version),
-            Self::PeerAck { .. } | Self::Duplicate { .. } | Self::Status { .. } => {
-                Some(WireVersion::V2)
-            }
+            Self::PeerAck { .. }
+            | Self::Duplicate { .. }
+            | Self::Status { .. }
+            | Self::Caps { .. } => Some(WireVersion::V2),
             Self::Undecryptable(_) | Self::Dropped(_) => None,
         }
     }
@@ -216,6 +222,10 @@ pub fn process_inbound(
                 sent_at: env.created_at,
                 ack,
             },
+            None => Inbound::Dropped(DropReason::Malformed),
+        },
+        MessageType::Caps => match crate::status::decode_caps(&env.body) {
+            Some(features) => Inbound::Caps { features, ack },
             None => Inbound::Dropped(DropReason::Malformed),
         },
         MessageType::AppAck => match env.acked_id() {

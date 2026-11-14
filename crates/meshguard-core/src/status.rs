@@ -15,6 +15,21 @@
 
 use crate::error::CoreError;
 
+/// Feature bit: understands the `Status` message type.
+pub const FEATURE_STATUS: u32 = 1 << 0;
+/// Features this build supports (announced in `Caps`).
+pub const SUPPORTED_FEATURES: u32 = FEATURE_STATUS;
+
+/// Encode a `Caps` body. Longer bodies are allowed for future fields.
+pub fn encode_caps(features: u32) -> Vec<u8> {
+    features.to_be_bytes().to_vec()
+}
+
+/// Decode a `Caps` body (extra trailing bytes are ignored).
+pub fn decode_caps(body: &[u8]) -> Option<u32> {
+    Some(u32::from_be_bytes(body.get(..4)?.try_into().ok()?))
+}
+
 const HAS_LOCATION: u8 = 0x01;
 const KNOWN_FLAGS: u8 = HAS_LOCATION;
 const LOCATION_LEN: usize = 15;

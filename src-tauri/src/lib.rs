@@ -9,6 +9,7 @@ pub mod link;
 pub mod mesh_radio;
 pub mod protocol;
 pub mod state;
+pub mod status_tx;
 
 use state::AppState;
 use tauri::Manager;

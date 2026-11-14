@@ -56,6 +56,9 @@ pub struct InboundState {
     pub pair_notify_per_node: Mutex<Cooldown<u32>>,
     /// And a global cap across all unknown nodes.
     pub pair_notify_global: Mutex<TokenBucket>,
+    /// Outstanding feature probes: probe message id -> peer node. An ACK
+    /// for one proves the peer understands the newer message types.
+    pub caps_probes: Mutex<HashMap<meshguard_core::MessageId, u32>>,
 }
 
 /// Maximum remembered `(sender, message_id)` pairs.
@@ -78,6 +81,7 @@ impl InboundState {
             pair_notify_per_node: Mutex::new(Cooldown::new(60, 256)),
             // Burst of 3, then one per minute.
             pair_notify_global: Mutex::new(TokenBucket::new(3, 60)),
+            caps_probes: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -115,6 +119,10 @@ pub struct AppState {
     /// Local radio (node number) that `session_keys` belong to.
     pub keys_owner: Arc<Mutex<Option<u32>>>,
 
+    /// Serialises check-in/SOS transmissions and enforces their airtime
+    /// budget across concurrent requests.
+    pub status_tx: Mutex<crate::status_tx::StatusTx>,
+
     /// Latest GPS fix reported by our radio (for check-ins and SOS).
     pub my_position: Arc<Mutex<Option<meshguard_core::status::GeoFix>>>,
 
@@ -149,6 +157,7 @@ impl AppState {
             link: Arc::new(crate::link::LinkManager::default()),
             keys_owner: Arc::new(Mutex::new(None)),
             my_position: Arc::new(Mutex::new(None)),
+            status_tx: Mutex::new(crate::status_tx::StatusTx::default()),
             vault: Mutex::new(None),
         }
     }

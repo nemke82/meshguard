@@ -24,7 +24,7 @@ use meshguard_core::inbound::{process_inbound, Inbound, InboundContext};
 use meshguard_core::outbound::WireVersion;
 #[cfg(target_os = "android")]
 use meshguard_core::status::StatusKind;
-use meshguard_core::status::{FixSource, GeoFix};
+use meshguard_core::status::{FixSource, GeoFix, FEATURE_STATUS, SUPPORTED_FEATURES};
 use meshguard_core::PeerIdentity;
 
 use crate::device_config::{AppConfig, WireProtocol};
@@ -1045,25 +1045,36 @@ pub fn position_to_fix(pos: &protobufs::Position) -> Option<GeoFix> {
     if lat == 0 && lon == 0 {
         return None; // "no fix" placeholder
     }
-    let accuracy = if pos.gps_accuracy > 0 && pos.pdop > 0 {
-        // gps_accuracy is in mm, PDOP in 1/100 (as in the Meshtastic apps).
-        Some(f64::from(pos.gps_accuracy) / 1000.0 * f64::from(pos.pdop) / 100.0)
-    } else if (1..32).contains(&pos.precision_bits) {
-        // Deliberately reduced precision: one step of the coordinate grid.
-        Some(2f64.powi(32 - pos.precision_bits as i32) * 1e-7 * 111_320.0)
-    } else {
-        None
+    // GPS uncertainty: gps_accuracy is in mm, PDOP in 1/100 (as in the
+    // Meshtastic apps).
+    let gps = (pos.gps_accuracy > 0 && pos.pdop > 0)
+        .then(|| f64::from(pos.gps_accuracy) / 1000.0 * f64::from(pos.pdop) / 100.0);
+    // Deliberately reduced precision: one step of the coordinate grid.
+    let grid = (1..32)
+        .contains(&pos.precision_bits)
+        .then(|| 2f64.powi(32 - pos.precision_bits as i32) * 1e-7 * 111_320.0);
+    // A quantised position is never more accurate than its grid.
+    let accuracy = match (gps, grid) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    };
+    let source = match protobufs::position::LocSource::try_from(pos.location_source) {
+        Ok(protobufs::position::LocSource::LocInternal) => FixSource::RadioGps,
+        Ok(protobufs::position::LocSource::LocManual) => FixSource::Manual,
+        _ => FixSource::Unknown,
     };
     let fix = GeoFix {
         lat_e7: lat,
         lon_e7: lon,
         accuracy_m: accuracy.map(|a| a.round().clamp(1.0, f64::from(u16::MAX - 1)) as u16),
-        fix_time: if pos.time > 0 {
-            pos.time
-        } else {
+        // `timestamp` is when the GPS solution was computed; `time` may be
+        // when the packet was sent.
+        fix_time: if pos.timestamp > 0 {
             pos.timestamp
+        } else {
+            pos.time
         },
-        source: FixSource::RadioGps,
+        source,
     };
     fix.is_valid().then_some(fix)
 }
@@ -1411,6 +1422,28 @@ async fn handle_incoming_packet(packet: &protobufs::MeshPacket, ctx: &ListenerCt
         upgrade_peer_to_v2(ctx, from_node).await;
     }
 
+    // Any authenticated frame proves the peer holds our key; from then on
+    // background frames (feature probes) cannot be mistaken for a request.
+    if outcome.authenticated_version().is_some() {
+        let newly = {
+            let mut config = ctx.config.lock().await;
+            let before = config
+                .peers
+                .iter()
+                .any(|p| p.node_num == from_node && p.confirmed);
+            crate::device_config::mark_peer_confirmed(&mut config, &ctx.config_dir, from_node);
+            !before && config.peers.iter().any(|p| p.node_num == from_node)
+        };
+        if newly {
+            let app = ctx.app_handle.clone();
+            tauri::async_runtime::spawn(async move {
+                use tauri::Manager;
+                let state = app.state::<crate::state::AppState>();
+                crate::status_tx::probe_peers(&state).await;
+            });
+        }
+    }
+
     match outcome {
         Inbound::Text {
             version,
@@ -1456,6 +1489,7 @@ async fn handle_incoming_packet(packet: &protobufs::MeshPacket, ctx: &ListenerCt
                 status.kind,
                 status.location.is_some()
             );
+            mark_features(ctx, from_node, FEATURE_STATUS).await;
             let from_name = ctx
                 .mesh_nodes
                 .lock()
@@ -1495,6 +1529,13 @@ async fn handle_incoming_packet(packet: &protobufs::MeshPacket, ctx: &ListenerCt
                 send_ack(ctx, from_node, frame, now).await;
             }
         }
+        Inbound::Caps { features, ack } => {
+            tracing::info!("Node {from_node} announced features {features:#x}");
+            mark_features(ctx, from_node, features & SUPPORTED_FEATURES).await;
+            if let Some(frame) = ack {
+                send_ack(ctx, from_node, frame, now).await;
+            }
+        }
         Inbound::Duplicate { ack } => {
             tracing::debug!("Duplicate frame from {from_node} suppressed");
             if let Some(frame) = ack {
@@ -1503,6 +1544,12 @@ async fn handle_incoming_packet(packet: &protobufs::MeshPacket, ctx: &ListenerCt
         }
         Inbound::PeerAck { acked } => {
             tracing::info!("Peer ACK from {from_node} for {acked}");
+            let probed = ctx.inbound.caps_probes.lock().await.remove(&acked);
+            if probed == Some(from_node) {
+                tracing::info!("Node {from_node} understands check-in/SOS messages");
+                mark_features(ctx, from_node, FEATURE_STATUS).await;
+                return;
+            }
             let _ = ctx.app_handle.emit(
                 "message-delivered",
                 MessageDeliveredEvent {
@@ -1615,6 +1662,14 @@ async fn send_ack(ctx: &ListenerCtx, to_node: u32, frame: Vec<u8>, now: u64) {
         }
         None => tracing::debug!("ACK to {to_node} skipped: radio not stored yet"),
     }
+}
+
+async fn mark_features(ctx: &ListenerCtx, node_num: u32, bits: u32) {
+    if bits == 0 {
+        return;
+    }
+    let mut config = ctx.config.lock().await;
+    crate::device_config::mark_peer_features(&mut config, &ctx.config_dir, node_num, bits);
 }
 
 async fn upgrade_peer_to_v2(ctx: &ListenerCtx, node_num: u32) {

@@ -39,6 +39,45 @@ pub struct PeerConfig {
     /// Missing in configs written before 2.0, which therefore stay on v1.
     #[serde(default)]
     pub protocol: WireProtocol,
+    /// Message features the peer's app is known to understand
+    /// (`meshguard_core::status::FEATURE_*`); learned, never assumed.
+    #[serde(default)]
+    pub features: u32,
+    /// The peer is known to hold our key: it sent us an authenticated frame,
+    /// or we accepted its request. Only then may we send it background
+    /// frames (feature probes) — before that, any frame from us would look
+    /// like a new chat request and replace the pending one.
+    #[serde(default)]
+    pub confirmed: bool,
+}
+
+/// Record that `node_num` holds our key; saves only on change.
+pub fn mark_peer_confirmed(config: &mut AppConfig, config_dir: &std::path::Path, node_num: u32) {
+    if let Some(p) = config.peers.iter_mut().find(|p| p.node_num == node_num) {
+        if !p.confirmed {
+            p.confirmed = true;
+            if let Err(e) = config.save(config_dir) {
+                tracing::warn!("Could not save peer state: {e}");
+            }
+        }
+    }
+}
+
+/// Record that `node_num` understands `bits`; saves only on change.
+pub fn mark_peer_features(
+    config: &mut AppConfig,
+    config_dir: &std::path::Path,
+    node_num: u32,
+    bits: u32,
+) {
+    if let Some(p) = config.peers.iter_mut().find(|p| p.node_num == node_num) {
+        if p.features & bits != bits {
+            p.features |= bits;
+            if let Err(e) = config.save(config_dir) {
+                tracing::warn!("Could not save peer features: {e}");
+            }
+        }
+    }
 }
 
 /// A one-tap check-in button: what kind of message it sends and its text.
@@ -149,6 +188,8 @@ mod tests {
             device_name: "Bob".into(),
             node_num: 7,
             protocol: WireProtocol::V2,
+            features: 0,
+            confirmed: false,
         };
         let json = serde_json::to_string(&peer).unwrap();
         assert!(json.contains(r#""protocol":"v2""#), "{json}");

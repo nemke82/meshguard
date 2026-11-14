@@ -139,6 +139,30 @@ pub fn seal(
     }
 }
 
+/// Seal a feature probe/announcement (always v2). Returns frame and id; an
+/// ACK for the id proves the peer understands the newer message types.
+pub fn seal_caps(
+    features: u32,
+    key: &SessionKey,
+    me: &PeerIdentity,
+    peer: &PeerIdentity,
+    now: u32,
+    budget: usize,
+) -> Result<Sealed, SealError> {
+    let env = EnvelopeV2 {
+        message_type: MessageType::Caps,
+        message_id: MessageId::random(),
+        created_at: now,
+        ttl_mins: STATUS_TTL_MINS,
+        body: crate::status::encode_caps(features),
+    };
+    let frame = env.seal(key, &aad_context(me, peer), budget)?;
+    Ok(Sealed {
+        frame,
+        message_id: Some(env.message_id),
+    })
+}
+
 /// Seal an application ACK for `acked`, from `me` to `peer` (always v2).
 pub fn seal_ack(
     acked: MessageId,

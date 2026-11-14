@@ -101,5 +101,14 @@ location = lat_e7 i32 BE | lon_e7 i32 BE | accuracy_m u16 BE (0xFFFF unknown)
 - `text` is the sender's wording (presets are user-editable), so it is not localised by the receiver.
 - Requires an app ACK like `Text`. TTL is 60 minutes, 6 hours for SOS and need help.
 - Text limit: 156 bytes with a location, 171 without.
-- v1 peers receive the plain-text fallback (`text 📍 lat, lon ±acc m`). v2 builds older than this addendum drop the type as unsupported.
+- v1 peers receive the plain-text fallback (`text 📍 lat, lon ±acc m`).
+- v2 builds older than this addendum drop unknown types, which would silently lose an SOS. Senders therefore use **v2 Text with the fallback** until the peer is known to understand `Status`.
+
+### `Caps` message type 0x05
+
+Body: `features u32 BE` (bit 0 = understands `Status`; extra trailing bytes are ignored for future fields). ACKed like `Text`.
+
+- A peer is marked capable when we receive a `Status` or `Caps` from it, or when it ACKs a `Caps` probe we sent (older builds drop the unknown type, so no ACK).
+- Probes go only to v2 peers that are *confirmed* to hold our key (they sent us an authenticated frame, or we accepted their request). Before that, any frame from us would look like a new chat request and replace the pending one.
+- Probes and check-ins share one transmit path: 400 ms spacing and a token-bucket airtime budget (burst 24, then one per 15 s); SOS and need-help are spaced but never refused.
 - Implementation: `meshguard-core::status`.
