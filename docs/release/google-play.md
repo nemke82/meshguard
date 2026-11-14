@@ -30,7 +30,8 @@ keytool -genkeypair -v \
 
 ### GitHub secrets
 
-Repository → Settings → Secrets and variables → Actions → New repository secret:
+Repository → Settings → Environments → **Production** → Environment secrets
+(the *Android APK* release job runs in that environment):
 
 | Secret | Value |
 |---|---|
