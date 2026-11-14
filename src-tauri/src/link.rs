@@ -118,6 +118,8 @@ fn connect_params(
         vault,
         keys_owner: state.keys_owner.clone(),
         my_position: state.my_position.clone(),
+        node_history: state.node_history.clone(),
+        path_tests: state.path_tests.clone(),
     }
 }
 

@@ -709,6 +709,8 @@ pub struct ConnectParams {
     pub keys_owner: Arc<Mutex<Option<u32>>>,
     /// Latest GPS fix of our own radio.
     pub my_position: Arc<Mutex<Option<GeoFix>>>,
+    pub node_history: Arc<Mutex<crate::diagnostics::History>>,
+    pub path_tests: Arc<Mutex<crate::diagnostics::PathTests>>,
 }
 
 /// Everything the background listener needs; cheap to clone.
@@ -726,6 +728,8 @@ struct ListenerCtx {
     link_gen: u64,
     link: Arc<crate::link::LinkManager>,
     my_position: Arc<Mutex<Option<GeoFix>>>,
+    node_history: Arc<Mutex<crate::diagnostics::History>>,
+    path_tests: Arc<Mutex<crate::diagnostics::PathTests>>,
 }
 
 impl ListenerCtx {
@@ -743,6 +747,8 @@ impl ListenerCtx {
             link_gen: p.link_gen,
             link: p.link.clone(),
             my_position: p.my_position.clone(),
+            node_history: p.node_history.clone(),
+            path_tests: p.path_tests.clone(),
         }
     }
 }
@@ -950,6 +956,28 @@ impl MeshRadio {
         Ok(Self::from_configured(configured_api, node_num))
     }
 
+    /// Send a Meshtastic traceroute request to `destination_node`; the reply
+    /// arrives as a TRACEROUTE_APP packet from that node.
+    pub async fn send_traceroute(&mut self, destination_node: u32) -> Result<(), MeshGuardError> {
+        use meshtastic::Message as _;
+        let body = protobufs::RouteDiscovery::default().encode_to_vec();
+        self.api
+            .send_mesh_packet(
+                &mut self.router,
+                EncodedMeshPacketData::new(body),
+                protobufs::PortNum::TracerouteApp,
+                PacketDestination::Node(destination_node.into()),
+                MeshChannel::new(0).unwrap(),
+                false,
+                true,
+                false,
+                None,
+                None,
+            )
+            .await
+            .map_err(|e| MeshGuardError::MeshRadio(format!("Path test failed: {e}")))
+    }
+
     pub async fn send_private_app(
         &mut self,
         data: Vec<u8>,
@@ -1139,6 +1167,13 @@ async fn observe_mesh_packet(packet: &protobufs::MeshPacket, ctx: &ListenerCtx) 
         Some(protobufs::mesh_packet::PayloadVariant::Decoded(d)) => Some(d.portnum),
         _ => None,
     };
+    // Path test (traceroute) reply addressed to us.
+    if portnum == Some(protobufs::PortNum::TracerouteApp as i32) && packet.to == ctx.my_node_num {
+        if let Some(protobufs::mesh_packet::PayloadVariant::Decoded(d)) = &packet.payload_variant {
+            handle_path_test_reply(ctx, packet.from, &d.payload).await;
+        }
+    }
+
     let now = chrono::Utc::now().timestamp();
     let mut nodes = ctx.mesh_nodes.lock().await;
     // Add unknown nodes only when they announce a name or talk to MeshGuard,
@@ -1174,7 +1209,16 @@ async fn observe_mesh_packet(packet: &protobufs::MeshPacket, ctx: &ListenerCtx) 
     }
     // Signal values describe the last hop, so they only describe the link to
     // this node when this very packet was received directly.
-    if hops == Some(0) && !packet.via_mqtt {
+    let direct = hops == Some(0) && !packet.via_mqtt;
+    let mut sample = crate::diagnostics::SignalSample {
+        t: heard_at,
+        rssi: (direct && packet.rx_rssi != 0).then_some(packet.rx_rssi),
+        snr: (direct && packet.rx_snr != 0.0).then_some(packet.rx_snr),
+        hops,
+        battery: None,
+        voltage: None,
+    };
+    if direct {
         if packet.rx_snr != 0.0 {
             node.snr = packet.rx_snr;
         }
@@ -1200,6 +1244,8 @@ async fn observe_mesh_packet(packet: &protobufs::MeshPacket, ctx: &ListenerCtx) 
         } else if d.portnum == protobufs::PortNum::TelemetryApp as i32 {
             if let Ok(t) = protobufs::Telemetry::decode(d.payload.as_slice()) {
                 if let Some(protobufs::telemetry::Variant::DeviceMetrics(m)) = t.variant {
+                    sample.battery = m.battery_level;
+                    sample.voltage = m.voltage;
                     node.battery_level = m.battery_level.or(node.battery_level);
                     node.voltage = m.voltage.or(node.voltage);
                     node.channel_utilization = m.channel_utilization.or(node.channel_utilization);
@@ -1209,7 +1255,41 @@ async fn observe_mesh_packet(packet: &protobufs::MeshPacket, ctx: &ListenerCtx) 
         }
     }
     drop(nodes);
+    if sample.rssi.is_some()
+        || sample.snr.is_some()
+        || sample.hops.is_some()
+        || sample.battery.is_some()
+    {
+        ctx.node_history.lock().await.record(packet.from, sample);
+    }
     let _ = ctx.app_handle.emit("mesh-nodes-updated", ());
+}
+
+/// A traceroute reply: report the route if we have a test outstanding.
+async fn handle_path_test_reply(ctx: &ListenerCtx, from: u32, payload: &[u8]) {
+    use meshtastic::Message as _;
+    let Ok(rd) = protobufs::RouteDiscovery::decode(payload) else {
+        return;
+    };
+    let Some(rtt) = ctx.path_tests.lock().await.finish(from) else {
+        return; // not ours, late, or already reported
+    };
+    let result = crate::diagnostics::path_result(
+        ctx.my_node_num,
+        from,
+        &rd.route,
+        &rd.snr_towards,
+        &rd.route_back,
+        &rd.snr_back,
+        rtt,
+    );
+    tracing::info!(
+        "Path test to {from}: {} hop(s) out, {} back, {} ms",
+        result.towards.len(),
+        result.back.len(),
+        result.rtt_ms
+    );
+    let _ = ctx.app_handle.emit("path-test-result", result);
 }
 
 fn spawn_listener(mut listener: meshtastic::packet::PacketReceiver, ctx: ListenerCtx) {

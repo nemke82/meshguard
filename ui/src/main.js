@@ -489,11 +489,16 @@ function renderMeshNodes() {
         ${signal ? `<div class="node-signal">${signal}</div>` : ""}
       </div>
       <div class="node-actions">
+        <button type="button" class="btn-node-info" title="Diagnostics" aria-label="Diagnostics">i</button>
         ${online ? '<span class="online-dot" title="Heard in the last 2 hours"></span>' : '<span class="offline-dot"></span>'}
         ${isPeer ? '<span class="peer-badge">Paired</span>' : ""}
       </div>
     `;
     card.addEventListener("click", () => onNodeTap(node));
+    card.querySelector(".btn-node-info").addEventListener("click", (e) => {
+      e.stopPropagation();
+      openDiagnostics(node.node_num);
+    });
     meshNodesList.appendChild(card);
   }
 }
@@ -911,6 +916,13 @@ async function setupEventListeners() {
     }
   });
 
+  await listen("path-test-result", (event) => {
+    const r = event.payload;
+    if (diag.node !== r.node) return;
+    clearTimeout(diag.timer);
+    renderPathResult(r);
+  });
+
   await listen("message-delivered", (event) => {
     const { peer_node, message_id } = event.payload;
     const msg = (state.messages[peer_node] || []).find(
@@ -1253,6 +1265,158 @@ $("#presets-save").addEventListener("click", async () => {
   } catch (err) {
     alert(String(err));
   }
+});
+
+// ============================================================
+// Mesh diagnostics
+// ============================================================
+const diagOverlay = $("#diag-overlay");
+const diag = { node: null, timer: null };
+
+function fmtNum(v, digits, unit) {
+  return typeof v === "number" ? `${v.toFixed(digits)}${unit}` : "\u2014";
+}
+
+function diagStat(k, v) {
+  return `<div class="diag-stat"><div class="k">${k}</div><div class="v">${escapeHtml(String(v))}</div></div>`;
+}
+
+async function openDiagnostics(nodeNum) {
+  diag.node = nodeNum;
+  clearTimeout(diag.timer);
+  const node = state.meshNodes.find((n) => n.node_num === nodeNum) || { node_num: nodeNum };
+  $("#diag-title").textContent = nodeDisplayName(node);
+  $("#diag-sub").textContent = [
+    "!" + (nodeNum >>> 0).toString(16).padStart(8, "0"),
+    node.short_name,
+    node.hw_model && node.hw_model !== "Unset" ? node.hw_model : "",
+  ]
+    .filter(Boolean)
+    .join(" \u00B7 ");
+  const battery =
+    typeof node.battery_level === "number"
+      ? node.battery_level > 100
+        ? "Powered"
+        : `${node.battery_level}%`
+      : "\u2014";
+  $("#diag-stats").innerHTML = [
+    diagStat("Last heard", formatLastHeard(node.last_heard)),
+    diagStat("Hops away", node.hops_away === 0 ? "Direct" : node.hops_away ?? "\u2014"),
+    diagStat("RSSI", node.rssi ? `${node.rssi} dBm` : "\u2014"),
+    diagStat("SNR", node.snr ? `${Number(node.snr).toFixed(1)} dB` : "\u2014"),
+    diagStat("Battery", battery),
+    diagStat("Voltage", fmtNum(node.voltage, 2, " V")),
+    diagStat("Channel use", fmtNum(node.channel_utilization, 1, "%")),
+    diagStat("Airtime (TX)", fmtNum(node.air_util_tx, 1, "%")),
+  ].join("");
+  $("#diag-path").textContent = "Sends a Meshtastic traceroute and shows each hop with its SNR.";
+  $("#diag-run-path").disabled = false;
+  diagOverlay.style.display = "flex";
+  try {
+    renderSignalChart(await invoke("get_node_history", { nodeNum }));
+  } catch (err) {
+    $("#diag-chart").textContent = "No history: " + err;
+  }
+}
+
+// Two lines (RSSI dBm, SNR dB), each scaled to its own range. Values are
+// numbers, so the SVG is built from numbers only.
+function renderSignalChart(samples) {
+  const pts = (samples || []).filter((s) => s.rssi != null || s.snr != null);
+  const box = $("#diag-chart");
+  if (pts.length < 2) {
+    box.textContent =
+      pts.length === 1
+        ? "One direct packet so far — the chart appears after the next one."
+        : "No direct packets heard yet (relayed packets do not show this node's signal).";
+    return;
+  }
+  const W = 300, H = 90, P = 4;
+  const t0 = pts[0].t, t1 = pts[pts.length - 1].t || t0 + 1;
+  const x = (t) => P + ((t - t0) / Math.max(1, t1 - t0)) * (W - 2 * P);
+  const line = (key, color) => {
+    const vals = pts.filter((s) => s[key] != null);
+    if (vals.length < 2) return "";
+    const lo = Math.min(...vals.map((s) => s[key]));
+    const hi = Math.max(...vals.map((s) => s[key]));
+    const y = (v) => H - P - ((v - lo) / Math.max(1e-6, hi - lo)) * (H - 2 * P);
+    const d = vals.map((s, i) => `${i ? "L" : "M"}${x(s.t).toFixed(1)},${y(s[key]).toFixed(1)}`).join(" ");
+    return `<path d="${d}" fill="none" stroke="${color}" stroke-width="1.8" stroke-linejoin="round"/>`;
+  };
+  const last = (key) => {
+    for (let i = pts.length - 1; i >= 0; i--) if (pts[i][key] != null) return pts[i][key];
+    return null;
+  };
+  const range = (key, digits) => {
+    const v = pts.filter((s) => s[key] != null).map((s) => s[key]);
+    return v.length ? `${Math.min(...v).toFixed(digits)} \u2026 ${Math.max(...v).toFixed(digits)}` : "\u2014";
+  };
+  box.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Signal history">
+      <rect x="0" y="0" width="${W}" height="${H}" rx="8" fill="var(--bg-input)"/>
+      ${line("rssi", "var(--accent)")}
+      ${line("snr", "#4da3ff")}
+    </svg>
+    <div class="diag-legend">
+      <span class="rssi">\u25CF RSSI ${last("rssi") ?? "\u2014"} dBm</span>
+      <span class="snr">\u25CF SNR ${last("snr") != null ? last("snr").toFixed(1) : "\u2014"} dB</span>
+    </div>
+    <div>Range: RSSI ${range("rssi", 0)} dBm \u00B7 SNR ${range("snr", 1)} dB</div>
+    <div>${pts.length} samples since ${formatTime(t0 * 1000)}</div>`;
+}
+
+function hopLabel(nodeNum) {
+  const node = state.meshNodes.find((n) => n.node_num === nodeNum);
+  if (node) return nodeDisplayName(node);
+  return "!" + (nodeNum >>> 0).toString(16).padStart(8, "0");
+}
+
+// `endsWithMe`: the last hop of the way back is our own radio.
+function renderPath(hops, startLabel, endsWithMe) {
+  const parts = [`<span class="hop">${escapeHtml(startLabel)}</span>`];
+  hops.forEach((h, i) => {
+    const snr = typeof h.snr === "number" ? `${h.snr.toFixed(1)} dB` : "? dB";
+    const label = endsWithMe && i === hops.length - 1 ? "You" : hopLabel(h.node);
+    parts.push(` \u2192 <small>${snr}</small> \u2192 <span class="hop">${escapeHtml(label)}</span>`);
+  });
+  return parts.join("");
+}
+
+function renderPathResult(r) {
+  const relays = Math.max(0, r.towards.length - 1);
+  let html = `<div><strong>Reply in ${(r.rtt_ms / 1000).toFixed(1)} s</strong> \u00B7 ${
+    relays === 0 ? "direct" : relays + (relays === 1 ? " relay" : " relays")
+  }</div>`;
+  html += `<div>Out: ${renderPath(r.towards, "You", false)}</div>`;
+  if (r.back.length) html += `<div>Back: ${renderPath(r.back, hopLabel(r.node), true)}</div>`;
+  $("#diag-path").innerHTML = html;
+  $("#diag-run-path").disabled = false;
+}
+
+$("#diag-run-path").addEventListener("click", async () => {
+  const nodeNum = diag.node;
+  const btn = $("#diag-run-path");
+  btn.disabled = true;
+  $("#diag-path").textContent = "Waiting for the reply (up to 90 s)…";
+  try {
+    await invoke("run_path_test", { nodeNum });
+    clearTimeout(diag.timer);
+    diag.timer = setTimeout(() => {
+      if (diag.node !== nodeNum) return;
+      $("#diag-path").textContent =
+        "No reply within 90 s. The node may be out of range, asleep, or its firmware may not answer path tests.";
+      btn.disabled = false;
+    }, 90_000);
+  } catch (err) {
+    $("#diag-path").textContent = String(err);
+    btn.disabled = false;
+  }
+});
+
+$("#diag-close").addEventListener("click", () => {
+  diagOverlay.style.display = "none";
+  diag.node = null;
+  clearTimeout(diag.timer);
 });
 
 // ============================================================

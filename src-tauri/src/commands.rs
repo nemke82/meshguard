@@ -814,3 +814,59 @@ pub async fn send_status(
     }
     Ok(StatusSendReport { location, results })
 }
+
+// ── Diagnostics ───────────────────────────────────────────────
+
+/// Signal history of a node (RSSI/SNR of direct packets, hops, battery).
+#[tauri::command]
+pub async fn get_node_history(
+    node_num: u32,
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::diagnostics::SignalSample>, MeshGuardError> {
+    Ok(state.node_history.lock().await.get(node_num))
+}
+
+/// Start a path test (Meshtastic traceroute) to `node_num`. The result
+/// arrives as a `path-test-result` event; no event means no reply within
+/// the timeout (the UI shows that).
+#[tauri::command]
+pub async fn run_path_test(
+    node_num: u32,
+    state: State<'_, AppState>,
+) -> Result<(), MeshGuardError> {
+    let my_num = (*state.my_node_num.lock().await).ok_or(MeshGuardError::NotConnected)?;
+    if node_num == my_num {
+        return Err(MeshGuardError::Protocol("That is your own radio".into()));
+    }
+    if let Err(wait) = state.path_tests.lock().await.try_start(node_num) {
+        return Err(MeshGuardError::Protocol(format!(
+            "Please wait {} s before testing this node again",
+            wait.as_secs().max(1)
+        )));
+    }
+    // Shares the check-in transmit path: spacing and airtime budget.
+    let mut tx = state.status_tx.lock().await;
+    if !tx.admit(false).await {
+        state.path_tests.lock().await.forget(node_num);
+        return Err(MeshGuardError::Protocol(
+            "Airtime budget reached — wait a minute and try again".into(),
+        ));
+    }
+    let sent = {
+        let mut radio = state.radio.lock().await;
+        match radio.as_mut() {
+            Some(r) => r.send_traceroute(node_num).await,
+            None => Err(MeshGuardError::NotConnected),
+        }
+    };
+    match sent {
+        Ok(()) => {
+            tx.mark_sent();
+            Ok(())
+        }
+        Err(e) => {
+            state.path_tests.lock().await.forget(node_num);
+            Err(e)
+        }
+    }
+}
