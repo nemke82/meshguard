@@ -18,6 +18,8 @@ jobs:
   build-android:
     name: Android APK
     runs-on: ubuntu-latest
+    # The signing keystore secrets live in the Production environment.
+    environment: Production
     env:
       NDK_VERSION: "28.2.13676358"
       # Step `if:` cannot read secrets directly.
