@@ -30,6 +30,7 @@ graph LR
 - **Delivery confirmations** — ✓ means queued for transmission, ✓✓ means the peer's app received and decrypted it (2.0 mode)
 - **Duplicate and replay protection** (2.0 mode) — relayed copies are shown once, and a captured message cannot be replayed, even after a restart
 - **Backward compatible** — turn off *MeshGuard 2.0 mode* to chat with peers on an older version
+- **QR pairing** — meet in person, scan a code, done: a random 128-bit key, no passphrase to type
 - **Family check-in** — one tap sends "I'm OK", "On my way" or "I need help"; the wording is yours to change
 - **SOS with location** — sends your radio's GPS position (coordinates, accuracy, fix time) to all paired contacts, encrypted; receivers get a full-screen alert
 - **Remembers your chats and radio** — reconnects to the last radio on start and whenever it comes back (battery, range, reboot); on Android, paired chats open without re-entering the passphrase

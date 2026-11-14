@@ -19,9 +19,14 @@ use tauri::Manager;
 pub fn run() {
     tracing_subscriber::fmt::init();
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .plugin(ble_plugin::init())
+        .plugin(ble_plugin::init());
+    // Camera QR scanning for offline pairing (Android/iOS only).
+    #[cfg(mobile)]
+    let builder = builder.plugin(tauri_plugin_barcode_scanner::init());
+
+    builder
         .setup(|app| {
             let config_dir = app
                 .path()
@@ -58,6 +63,9 @@ pub fn run() {
             commands::reset_status_presets,
             commands::get_my_position,
             commands::send_status,
+            commands::create_pair_offer,
+            commands::cancel_pair_offer,
+            commands::pair_with_code,
             commands::get_node_history,
             commands::run_path_test,
         ])

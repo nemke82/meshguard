@@ -124,6 +124,9 @@ pub struct AppState {
     /// budget across concurrent requests.
     pub status_tx: Mutex<crate::status_tx::StatusTx>,
 
+    /// The QR pairing offer this device is showing, if any.
+    pub pair_offer: Mutex<Option<crate::commands::PairOffer>>,
+
     /// Signal history per node (diagnostics), in memory only.
     pub node_history: Arc<Mutex<crate::diagnostics::History>>,
     /// Outstanding path tests (traceroute).
@@ -163,6 +166,7 @@ impl AppState {
             link: Arc::new(crate::link::LinkManager::default()),
             keys_owner: Arc::new(Mutex::new(None)),
             my_position: Arc::new(Mutex::new(None)),
+            pair_offer: Mutex::new(None),
             node_history: Arc::new(Mutex::new(crate::diagnostics::History::default())),
             path_tests: Arc::new(Mutex::new(crate::diagnostics::PathTests::default())),
             status_tx: Mutex::new(crate::status_tx::StatusTx::default()),

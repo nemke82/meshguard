@@ -1689,6 +1689,10 @@ async fn handle_incoming_packet(packet: &protobufs::MeshPacket, ctx: &ListenerCt
             tracing::info!(
                 "Cannot decrypt frame from {from_node} ({reason}) — treating as pair request"
             );
+            // A device showing a QR code accepts requests sealed with it.
+            if crate::commands::try_accept_qr(&ctx.app_handle, from_node, payload).await {
+                return;
+            }
             handle_possible_pair_request(ctx, from_node, payload.clone(), now).await;
         }
     }

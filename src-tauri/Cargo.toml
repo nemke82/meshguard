@@ -28,6 +28,11 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 meshguard-core = { path = "../crates/meshguard-core" }
 zeroize = "1"
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 bluer = { version = "0.17", features = ["bluetoothd"] }
+
+[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
+# Camera QR scanning for offline pairing (mobile only).
+tauri-plugin-barcode-scanner = "2"

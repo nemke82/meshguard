@@ -13,6 +13,7 @@ rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
 thiserror = "2"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
 zeroize = { version = "1", features = ["derive"] }
 
 [dev-dependencies]

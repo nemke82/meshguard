@@ -154,6 +154,16 @@
             <button type="button" id="btn-accept-pair" class="btn btn-primary btn-sm">Accept</button>
           </div>
 
+          <!-- Offline QR pairing -->
+          <div class="pair-qr-card">
+            <div class="pair-qr-title">Add a family member</div>
+            <div class="pair-qr-hint">Meet in person: one phone shows a code, the other scans it. No passphrase needed.</div>
+            <div class="btn-group">
+              <button type="button" id="btn-show-qr" class="btn btn-secondary">Show my code</button>
+              <button type="button" id="btn-scan-qr" class="btn btn-primary">Scan code</button>
+            </div>
+          </div>
+
           <div id="mesh-nodes-list" class="mesh-nodes-list"></div>
 
           <!-- Active chats -->
@@ -325,6 +335,36 @@
             <button type="button" id="presets-save" class="btn btn-primary">Save</button>
           </div>
           <button type="button" id="presets-close" class="btn btn-link btn-full">Cancel</button>
+        </div>
+      </div>
+
+      <!-- ═══════════════════════════════════════════════
+           QR pairing: show code / enter code
+           ═══════════════════════════════════════════════ -->
+      <div id="qr-overlay" class="modal-overlay" style="display:none;">
+        <div class="modal-card qr-card">
+          <h2 class="section-title">Scan to pair</h2>
+          <div class="field-hint">Open MeshGuard on the other phone, tap <strong>Scan code</strong> and point it here. Several family members can scan the same code.</div>
+          <div id="qr-image" class="qr-image"></div>
+          <div class="field-hint">Or type this code on the other device:</div>
+          <code id="qr-text" class="qr-text"></code>
+          <div class="qr-expiry" id="qr-expiry"></div>
+          <div id="qr-paired" class="qr-paired"></div>
+          <button type="button" id="qr-done" class="btn btn-primary btn-full">Done</button>
+        </div>
+      </div>
+
+      <div id="code-overlay" class="modal-overlay" style="display:none;">
+        <div class="modal-card">
+          <h2 class="section-title">Enter pairing code</h2>
+          <div class="field-hint" id="code-hint">Type the code shown under the QR on the other device.</div>
+          <label class="field">
+            <input type="text" id="code-input" placeholder="meshguard:pair?v=1&amp;n=…&amp;k=…" autocomplete="off" autocapitalize="off" spellcheck="false" />
+          </label>
+          <div class="btn-group">
+            <button type="button" id="code-cancel" class="btn btn-secondary">Cancel</button>
+            <button type="button" id="code-pair" class="btn btn-primary">Pair</button>
+          </div>
         </div>
       </div>
 

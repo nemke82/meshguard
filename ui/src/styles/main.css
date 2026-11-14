@@ -1528,3 +1528,66 @@ input[type="range"]::-moz-range-thumb {
   margin: 2px 0;
   color: var(--text-primary);
 }
+
+/* ── QR pairing ──────────────────────────────────────── */
+.pair-qr-card {
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  border-radius: 14px;
+  padding: 14px;
+  margin-bottom: 16px;
+}
+
+.pair-qr-title {
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.pair-qr-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+}
+
+.qr-card {
+  text-align: center;
+}
+
+.qr-image {
+  margin: 12px auto;
+  width: min(260px, 70vw);
+  background: #fff;
+  border-radius: 12px;
+  padding: 8px;
+}
+
+.qr-image svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.qr-text {
+  display: block;
+  font-size: 11px;
+  word-break: break-all;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  margin: 6px 0;
+  user-select: all;
+  -webkit-user-select: all;
+}
+
+.qr-expiry {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
+.qr-paired {
+  color: var(--accent);
+  font-weight: 600;
+  margin-bottom: 8px;
+}
