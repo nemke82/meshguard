@@ -1,11 +1,17 @@
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use meshguard_core::codec::{decode_frame, DecodedFrame};
+use meshguard_core::dedup::Seen;
+use meshguard_core::envelope::{aad_context, MessageType, SealError, DEFAULT_FRAME_BUDGET};
+use meshguard_core::outbound::{self, OutPayload};
+use meshguard_core::v1::V1Payload;
+use meshguard_core::PeerIdentity;
+
 use crate::crypto;
-use crate::device_config::PeerConfig;
+use crate::device_config::{PeerConfig, WireProtocol};
 use crate::error::MeshGuardError;
 use crate::mesh_radio::{ConnectParams, MeshRadio, ScannedBleDevice, SerialPortInfo};
-use crate::protocol::MeshMessage;
 use crate::state::{AppState, MeshNodeInfo};
 
 // ── BLE Scanning ──────────────────────────────────────────────
@@ -85,6 +91,10 @@ fn make_connect_params(app_handle: tauri::AppHandle, state: &AppState) -> Connec
         my_device_name: state.my_device_name.clone(),
         session_keys: state.session_keys.clone(),
         pending_pair_requests: state.pending_pair_requests.clone(),
+        radio: state.radio.clone(),
+        config: state.config.clone(),
+        config_dir: state.config_dir.clone(),
+        inbound: state.inbound.clone(),
     }
 }
 
@@ -183,20 +193,65 @@ pub async fn get_my_device_info(
 
 // ── Chat / Pairing ────────────────────────────────────────────
 
-/// Start a chat with a mesh node. Derives key from passphrase,
-/// sends an encrypted PairRequest, and stores the session key.
-#[tauri::command]
-pub async fn start_chat(
-    peer_node_num: u32,
-    passphrase: String,
-    state: State<'_, AppState>,
-) -> Result<PeerConfig, MeshGuardError> {
-    let my_name = state
+fn unix_now() -> u32 {
+    chrono::Utc::now().timestamp().clamp(0, i64::from(u32::MAX)) as u32
+}
+
+fn seal_err(e: SealError) -> MeshGuardError {
+    match e {
+        SealError::TooLarge { len, max } => MeshGuardError::Protocol(format!(
+            "Message too long: {len} bytes on the wire, limit is {max}"
+        )),
+        SealError::InvalidBody => MeshGuardError::Protocol("invalid message body".into()),
+        SealError::Crypto => MeshGuardError::Encryption("sealing failed".into()),
+    }
+}
+
+async fn my_identity(state: &AppState) -> Result<(u32, String), MeshGuardError> {
+    let num = (*state.my_node_num.lock().await).ok_or(MeshGuardError::NotConnected)?;
+    let name = state
         .my_device_name
         .lock()
         .await
         .clone()
         .ok_or(MeshGuardError::NotConnected)?;
+    Ok((num, name))
+}
+
+/// Persist (or replace) a peer. Re-pairing resets the protocol pin.
+async fn save_peer(
+    state: &AppState,
+    peer_node_num: u32,
+    peer_name: String,
+    protocol: WireProtocol,
+) -> Result<PeerConfig, MeshGuardError> {
+    let peer = PeerConfig {
+        id: uuid::Uuid::new_v4().to_string(),
+        device_name: peer_name,
+        node_num: peer_node_num,
+        protocol,
+    };
+    let mut config = state.config.lock().await;
+    config.peers.retain(|p| p.node_num != peer_node_num);
+    config.peers.push(peer.clone());
+    config.save(&state.config_dir)?;
+    Ok(peer)
+}
+
+/// Start a chat with a mesh node. Derives key from passphrase,
+/// sends an encrypted PairRequest, and stores the session key.
+///
+/// `protocol` = `"v2"` pairs in MeshGuard 2.0 mode (both peers must run 2.0);
+/// omitted or `"v1"` keeps compatibility with older builds (ADR-003 §3).
+#[tauri::command]
+pub async fn start_chat(
+    peer_node_num: u32,
+    passphrase: String,
+    protocol: Option<WireProtocol>,
+    state: State<'_, AppState>,
+) -> Result<PeerConfig, MeshGuardError> {
+    let protocol = protocol.unwrap_or_default();
+    let (my_num, my_name) = my_identity(&state).await?;
 
     let peer_name = {
         let nodes = state.mesh_nodes.lock().await;
@@ -208,56 +263,44 @@ pub async fn start_chat(
 
     let session_key = crypto::derive_p2p_key(&my_name, &peer_name, &passphrase)?;
 
-    // Build and encrypt a PairRequest
-    let pair_request = MeshMessage::new_pair_request(&my_name);
-    let encrypted = pair_request.encrypt_envelope(&session_key)?;
+    let sealed = outbound::seal(
+        protocol.into(),
+        OutPayload::PairRequest(&my_name),
+        &session_key,
+        &PeerIdentity::meshtastic_node(my_num),
+        &PeerIdentity::meshtastic_node(peer_node_num),
+        unix_now(),
+        DEFAULT_FRAME_BUDGET,
+    )
+    .map_err(seal_err)?;
 
-    // Send it via the mesh
     {
         let mut radio_guard = state.radio.lock().await;
-        let radio = radio_guard
-            .as_mut()
-            .ok_or(MeshGuardError::NotConnected)?;
-        radio.send_private_app(encrypted, peer_node_num).await?;
+        let radio = radio_guard.as_mut().ok_or(MeshGuardError::NotConnected)?;
+        radio.send_private_app(sealed.frame, peer_node_num).await?;
     }
 
-    // Store session key
     state
         .session_keys
         .lock()
         .await
         .insert(peer_node_num, session_key);
 
-    // Persist peer config
-    let peer_id = uuid::Uuid::new_v4().to_string();
-    let peer = PeerConfig {
-        id: peer_id,
-        device_name: peer_name,
-        node_num: peer_node_num,
-    };
-    let mut config = state.config.lock().await;
-    config.peers.retain(|p| p.node_num != peer_node_num);
-    config.peers.push(peer.clone());
-    config.save(&state.config_dir)?;
-
-    tracing::info!("Chat initiated with node {peer_node_num}");
+    let peer = save_peer(&state, peer_node_num, peer_name, protocol).await?;
+    tracing::info!("Chat initiated with node {peer_node_num} ({protocol:?})");
     Ok(peer)
 }
 
-/// Accept a pending pair request. Tries to decrypt the stored payload
-/// with the derived key; if decryption succeeds, the passphrase matches.
+/// Accept a pending pair request. The stored payload must be a PairRequest
+/// that authenticates with the derived key (v1, or a fresh v2); its version
+/// decides the reply and the pin.
 #[tauri::command]
 pub async fn accept_chat(
     peer_node_num: u32,
     passphrase: String,
     state: State<'_, AppState>,
 ) -> Result<PeerConfig, MeshGuardError> {
-    let my_name = state
-        .my_device_name
-        .lock()
-        .await
-        .clone()
-        .ok_or(MeshGuardError::NotConnected)?;
+    let (my_num, my_name) = my_identity(&state).await?;
 
     let peer_name = {
         let nodes = state.mesh_nodes.lock().await;
@@ -268,55 +311,156 @@ pub async fn accept_chat(
     };
 
     let session_key = crypto::derive_p2p_key(&my_name, &peer_name, &passphrase)?;
+    let me = PeerIdentity::meshtastic_node(my_num);
+    let peer_id = PeerIdentity::meshtastic_node(peer_node_num);
 
-    // Try to decrypt the pending pair request to verify passphrase
-    let pending = state
+    // Keep the request until the accept is actually transmitted, so a failed
+    // attempt can be retried without falling back to another version.
+    let payload = state
+        .pending_pair_requests
+        .lock()
+        .await
+        .get(&peer_node_num)
+        .cloned()
+        .ok_or_else(|| {
+            MeshGuardError::Protocol("No pending chat request from this node".into())
+        })?;
+
+    let policy = state.inbound.policy;
+    let now = u64::from(unix_now());
+    let mut accepted_v2_request = None;
+    let protocol = match decode_frame(&payload, Some(&session_key), &aad_context(&peer_id, &me)) {
+        Ok(DecodedFrame::V1(V1Payload::PairRequest(_))) => WireProtocol::V1,
+        Ok(DecodedFrame::V2(env)) if env.message_type == MessageType::PairRequest => {
+            accepted_v2_request = Some(env.message_id);
+            if env
+                .check_freshness(now, policy.max_skew_secs, policy.max_ttl_mins)
+                .is_err()
+            {
+                state
+                    .pending_pair_requests
+                    .lock()
+                    .await
+                    .remove(&peer_node_num);
+                return Err(MeshGuardError::Protocol(
+                    "Chat request expired — ask your peer to send it again".into(),
+                ));
+            }
+            WireProtocol::V2
+        }
+        Ok(_) => {
+            return Err(MeshGuardError::Protocol(
+                "The pending message is not a chat request — open the chat and unlock it \
+                 with the passphrase instead"
+                    .into(),
+            ))
+        }
+        Err(_) => return Err(MeshGuardError::PassphraseMismatch),
+    };
+
+    // Anti-downgrade (ADR-003 §3): a v2 pin is only lowered by removing the
+    // peer first, never implicitly by a v1 request.
+    let current_pin = state
+        .config
+        .lock()
+        .await
+        .peers
+        .iter()
+        .find(|p| p.node_num == peer_node_num)
+        .map(|p| p.protocol);
+    if current_pin == Some(WireProtocol::V2) && protocol == WireProtocol::V1 {
+        return Err(MeshGuardError::Protocol(
+            "This peer was paired in MeshGuard 2.0 mode. Remove the peer first to accept \
+             a request from an older version"
+                .into(),
+        ));
+    }
+
+    let sealed = outbound::seal(
+        protocol.into(),
+        OutPayload::PairAccept(&my_name),
+        &session_key,
+        &me,
+        &peer_id,
+        unix_now(),
+        DEFAULT_FRAME_BUDGET,
+    )
+    .map_err(seal_err)?;
+
+    // Durably record an accepted v2 request *before* transmitting (and after
+    // sealing, which can fail), so a replay
+    // of it (also after a restart) can never trigger another acceptance.
+    if let Some(id) = accepted_v2_request {
+        let mut dedup = state.inbound.dedup.lock().await;
+        match dedup.observe(&peer_id, id, now) {
+            Seen::New => {}
+            Seen::Duplicate { .. } => {
+                drop(dedup);
+                state
+                    .pending_pair_requests
+                    .lock()
+                    .await
+                    .remove(&peer_node_num);
+                return Err(MeshGuardError::Protocol(
+                    "This chat request was already accepted".into(),
+                ));
+            }
+            Seen::Refused => {
+                return Err(MeshGuardError::Protocol(
+                    "Replay protection is full — try again later".into(),
+                ))
+            }
+        }
+        if let Err(e) = crate::dedup_store::save(&state.config_dir, &dedup) {
+            dedup.forget(&peer_id, &id);
+            return Err(e);
+        }
+    }
+
+    let sent = {
+        let mut radio_guard = state.radio.lock().await;
+        match radio_guard.as_mut() {
+            Some(radio) => radio.send_private_app(sealed.frame, peer_node_num).await,
+            None => Err(MeshGuardError::NotConnected),
+        }
+    };
+    if let Err(e) = sent {
+        // Not accepted after all: let the user retry the same request.
+        if let Some(id) = accepted_v2_request {
+            let mut dedup = state.inbound.dedup.lock().await;
+            dedup.forget(&peer_id, &id);
+            let _ = crate::dedup_store::save(&state.config_dir, &dedup);
+        }
+        return Err(e);
+    }
+
+    state
         .pending_pair_requests
         .lock()
         .await
         .remove(&peer_node_num);
-
-    if let Some(payload) = pending {
-        MeshMessage::decrypt_envelope(&payload, &session_key)
-            .map_err(|_| MeshGuardError::PassphraseMismatch)?;
-    }
-
-    // Send PairAccept back
-    let pair_accept = MeshMessage::new_pair_accept(&my_name);
-    let encrypted = pair_accept.encrypt_envelope(&session_key)?;
-
-    {
-        let mut radio_guard = state.radio.lock().await;
-        let radio = radio_guard
-            .as_mut()
-            .ok_or(MeshGuardError::NotConnected)?;
-        radio.send_private_app(encrypted, peer_node_num).await?;
-    }
-
-    // Store session key
     state
         .session_keys
         .lock()
         .await
         .insert(peer_node_num, session_key);
 
-    // Persist peer config
-    let peer_id = uuid::Uuid::new_v4().to_string();
-    let peer = PeerConfig {
-        id: peer_id,
-        device_name: peer_name,
-        node_num: peer_node_num,
-    };
-    let mut config = state.config.lock().await;
-    config.peers.retain(|p| p.node_num != peer_node_num);
-    config.peers.push(peer.clone());
-    config.save(&state.config_dir)?;
-
-    tracing::info!("Chat accepted with node {peer_node_num}");
+    let peer = save_peer(&state, peer_node_num, peer_name, protocol).await?;
+    tracing::info!("Chat accepted with node {peer_node_num} ({protocol:?})");
     Ok(peer)
 }
 
 // ── Messaging ─────────────────────────────────────────────────
+
+/// Result of handing a message to the local radio. This is a *submission*,
+/// not delivery: for v2 peers a later `message-delivered` event with the
+/// same `message_id` confirms receipt by the peer app.
+#[derive(Serialize)]
+pub struct SendReceipt {
+    /// Stable id (v2 only); `None` for v1 peers, which cannot confirm.
+    pub message_id: Option<String>,
+    pub protocol: WireProtocol,
+}
 
 /// Send an encrypted text message to a peer.
 #[tauri::command]
@@ -324,23 +468,41 @@ pub async fn send_message(
     peer_node_num: u32,
     text: String,
     state: State<'_, AppState>,
-) -> Result<(), MeshGuardError> {
-    let keys = state.session_keys.lock().await;
-    let session_key = keys
-        .get(&peer_node_num)
-        .ok_or(MeshGuardError::NoSession)?;
+) -> Result<SendReceipt, MeshGuardError> {
+    let my_num = (*state.my_node_num.lock().await).ok_or(MeshGuardError::NotConnected)?;
+    let protocol = state
+        .config
+        .lock()
+        .await
+        .peers
+        .iter()
+        .find(|p| p.node_num == peer_node_num)
+        .map(|p| p.protocol)
+        .unwrap_or_default();
 
-    let msg = MeshMessage::new_text(&text);
-    let encrypted = msg.encrypt_envelope(session_key)?;
-    drop(keys);
+    let sealed = {
+        let keys = state.session_keys.lock().await;
+        let session_key = keys.get(&peer_node_num).ok_or(MeshGuardError::NoSession)?;
+        outbound::seal(
+            protocol.into(),
+            OutPayload::Text(&text),
+            session_key,
+            &PeerIdentity::meshtastic_node(my_num),
+            &PeerIdentity::meshtastic_node(peer_node_num),
+            unix_now(),
+            DEFAULT_FRAME_BUDGET,
+        )
+        .map_err(seal_err)?
+    };
 
     let mut radio_guard = state.radio.lock().await;
-    let radio = radio_guard
-        .as_mut()
-        .ok_or(MeshGuardError::NotConnected)?;
+    let radio = radio_guard.as_mut().ok_or(MeshGuardError::NotConnected)?;
+    radio.send_private_app(sealed.frame, peer_node_num).await?;
 
-    radio.send_private_app(encrypted, peer_node_num).await?;
-    Ok(())
+    Ok(SendReceipt {
+        message_id: sealed.message_id.map(|id| id.to_hex()),
+        protocol,
+    })
 }
 
 /// Check if we have a session key for a peer.

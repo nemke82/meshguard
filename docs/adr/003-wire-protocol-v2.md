@@ -1,6 +1,6 @@
 # ADR-003: Wire protocol v2 — stable message id, direction-bound AEAD, dual-read
 
-**Status:** Accepted (2026-11-14). The owner approved the format and the rollout in §3. The codec is implemented in `crates/meshguard-core`; the live-path rollout follows in a separate PR.
+**Status:** Accepted (2026-11-14). The owner approved the format and the rollout in §3. The codec is in `crates/meshguard-core`. Rollout steps 1–3 are implemented in the live path: dual-read, a per-peer `protocol` pin, auto-upgrade on an authenticated v2 frame, "MeshGuard 2.0 mode" pairing, ACKs within an airtime budget, and rate-limited chat-request notifications.
 **Date:** 2026-11-14
 **Related:** RFC §4, ADR-001, `docs/audit/p0-baseline.md`
 

@@ -208,6 +208,27 @@ const passphraseTitle = $("#passphrase-title");
 const passphraseSubtitle = $("#passphrase-subtitle");
 const btnBackMesh = $("#btn-back-mesh");
 const btnSubmitPassphrase = $("#btn-submit-passphrase");
+const v2PairingField = $("#v2-pairing-field");
+const v2PairingHint = $("#v2-pairing-hint");
+const v2Pairing = $("#v2-pairing");
+
+// Largest text that fits one LoRa frame, in UTF-8 bytes (v2 envelope with
+// the default 228-byte budget; v1 allows 199, so this is safe for both).
+const MAX_TEXT_BYTES = 173;
+const utf8 = new TextEncoder();
+const byteLength = (s) => utf8.encode(s).length;
+
+// Peer ACKs whose message has not been matched yet. An ACK can arrive before
+// invoke("send_message") resolves with the wire id, so it is kept here and
+// reconciled when the receipt comes back.
+const unmatchedDelivered = new Set();
+
+/** The v2 toggle only applies when we initiate pairing. */
+function setPairingModeUi(initiating) {
+  const display = initiating ? "" : "none";
+  v2PairingField.style.display = display;
+  v2PairingHint.style.display = display;
+}
 
 const btnBackMeshChat = $("#btn-back-mesh-chat");
 const btnSend = $("#btn-send");
@@ -518,6 +539,7 @@ async function onNodeTap(node) {
   passphraseTitle.textContent = "Start Secure Chat";
   passphraseSubtitle.textContent = `with ${node.long_name || node.user_name || "Node " + node.node_num}`;
   btnSubmitPassphrase.textContent = "Start Chat";
+  setPairingModeUi(true);
   passphraseInput.value = "";
   showScreen(screenPassphrase);
 }
@@ -534,6 +556,8 @@ async function openExistingChat(peer) {
   passphraseTitle.textContent = "Unlock Chat";
   passphraseSubtitle.textContent = `Enter passphrase for ${peer.device_name}`;
   btnSubmitPassphrase.textContent = "Unlock";
+  setPairingModeUi(true);
+  v2Pairing.checked = peer.protocol !== "v1";
   passphraseInput.value = "";
   showScreen(screenPassphrase);
 }
@@ -575,10 +599,12 @@ formPassphrase.addEventListener("submit", async (e) => {
       peer = await invokeWithTimeout("start_chat", {
         peerNodeNum: nodeNum,
         passphrase,
+        protocol: v2Pairing.checked ? "v2" : "v1",
       });
     }
 
     passphraseInput.value = "";
+    state.peers = state.peers.filter((p) => p.node_num !== peer.node_num);
     state.peers.push(peer);
     enterChat(nodeNum, peer.device_name);
   } catch (err) {
@@ -606,6 +632,7 @@ btnAcceptPair.addEventListener("click", () => {
   passphraseTitle.textContent = "Accept Chat Request";
   passphraseSubtitle.textContent = `from ${req.from_name || "Node " + req.from_node}`;
   btnSubmitPassphrase.textContent = "Accept Chat";
+  setPairingModeUi(false);
   passphraseInput.value = "";
   pairRequestBanner.style.display = "none";
   showScreen(screenPassphrase);
@@ -634,9 +661,9 @@ function loadChatMessages(nodeNum) {
 }
 
 messageInput.addEventListener("input", () => {
-  const len = messageInput.value.length;
-  charCount.textContent = 160 - len;
-  btnSend.disabled = len === 0 || len > 160;
+  const len = byteLength(messageInput.value);
+  charCount.textContent = MAX_TEXT_BYTES - len;
+  btnSend.disabled = messageInput.value.trim().length === 0 || len > MAX_TEXT_BYTES;
   messageInput.style.height = "auto";
   messageInput.style.height = Math.min(messageInput.scrollHeight, 100) + "px";
 });
@@ -644,12 +671,12 @@ messageInput.addEventListener("input", () => {
 messageInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
-    if (messageInput.value.trim()) sendMessage();
+    if (!btnSend.disabled) sendMessage();
   }
 });
 
 btnSend.addEventListener("click", () => {
-  if (messageInput.value.trim()) sendMessage();
+  if (!btnSend.disabled) sendMessage();
 });
 
 async function sendMessage() {
@@ -670,16 +697,25 @@ async function sendMessage() {
   renderMessage(msg);
   messageInput.value = "";
   messageInput.style.height = "auto";
-  charCount.textContent = "160";
+  charCount.textContent = String(MAX_TEXT_BYTES);
   btnSend.disabled = true;
 
   try {
-    await invoke("send_message", { peerNodeNum: nodeNum, text });
-    msg.status = "sent";
-    updateMessageStatus(msg.id, "sent");
+    // "sent" = handed to the local radio. Only an authenticated peer ACK
+    // (v2 peers) turns it into "delivered", via the message-delivered event.
+    const receipt = await invoke("send_message", { peerNodeNum: nodeNum, text });
+    msg.wireId = receipt && receipt.message_id;
+    if (msg.wireId && unmatchedDelivered.delete(msg.wireId)) {
+      msg.status = "delivered";
+      updateMessageStatus(msg.id, "delivered");
+    } else if (msg.status === "sending") {
+      msg.status = "sent";
+      updateMessageStatus(msg.id, "sent");
+    }
   } catch (err) {
     msg.status = "failed";
     updateMessageStatus(msg.id, "failed");
+    addSystemMessage(`Not sent: ${err}`);
     console.error("Send failed:", err);
   }
 }
@@ -788,6 +824,25 @@ async function setupEventListeners() {
         }
       },
     });
+  });
+
+  await listen("message-delivered", (event) => {
+    const { peer_node, message_id } = event.payload;
+    const msg = (state.messages[peer_node] || []).find(
+      (m) => m.mine && m.wireId === message_id
+    );
+    if (msg) {
+      msg.status = "delivered";
+      updateMessageStatus(msg.id, "delivered");
+    } else if (unmatchedDelivered.size < 256) {
+      unmatchedDelivered.add(message_id);
+    }
+  });
+
+  await listen("peer-protocol", (event) => {
+    const { node_num, protocol } = event.payload;
+    const peer = state.peers.find((p) => p.node_num === node_num);
+    if (peer) peer.protocol = protocol;
   });
 
   await listen("pair-request", (event) => {
