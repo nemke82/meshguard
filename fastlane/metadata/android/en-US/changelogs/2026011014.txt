@@ -1,0 +1,9 @@
+MeshGuard 2.0:
+• New message format: unique ID, timestamp and lifetime per message
+• Delivery confirmations: ✓ queued, ✓✓ received by peer
+• Duplicate and replay protection that survives restarts (2.0 mode)
+• "MeshGuard 2.0 mode" toggle; turn off to chat with older versions
+• No silent downgrade of 2.0 chats
+• Message length counted in bytes
+• Rate-limited ACKs and chat-request notifications
+• Message contents are no longer logged

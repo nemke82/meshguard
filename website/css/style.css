@@ -720,6 +720,40 @@ code {
   border-bottom-right-radius: 2px;
 }
 
+.chat-status {
+  margin-left: 4px;
+  font-size: 0.65rem;
+  opacity: 0.75;
+}
+
+.screen-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+}
+
+.screen-switch {
+  position: relative;
+  width: 26px;
+  height: 14px;
+  border-radius: 7px;
+  background: rgba(0, 255, 136, 0.35);
+}
+
+.screen-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--green-300);
+}
+
 .how-note {
   display: flex;
   align-items: flex-start;

@@ -18,7 +18,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&family=DM+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
 
-  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="css/style.css?v=2026.11.14">
 </head>
 <body>
 
@@ -54,7 +54,7 @@
     <canvas id="matrix-rain" class="hero-canvas"></canvas>
     <div class="hero-scanline"></div>
     <div class="hero-content">
-      <div class="hero-badge"><span class="blink">_</span> Open Source &middot; MIT License</div>
+      <div class="hero-badge"><span class="blink">_</span> MeshGuard 2.0 &middot; Open Source &middot; MIT License</div>
       <h1><span class="mono-accent">&gt;</span> Private messaging,<br><span class="gradient-text">off the grid.</span></h1>
       <p class="hero-sub">Encrypted peer-to-peer chat over Meshtastic LoRa mesh radios.<br>No internet. No servers. No accounts. Up to 15+ km range.</p>
       <div class="hero-actions">
@@ -134,6 +134,30 @@
           <h3>Open Source</h3>
           <p>Fully open source under the MIT license. Audit the code, build it yourself, contribute improvements. Trust through transparency.</p>
         </div>
+
+        <div class="feature-card reveal">
+          <div class="feature-icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2 12 7 17 17 7"/><polyline points="9 15 11 17 22 6"/></svg>
+          </div>
+          <h3>Delivery Confirmations</h3>
+          <p>&#10003; means it is queued for transmission. &#10003;&#10003; means your peer&#8217;s app received and decrypted it &mdash; confirmed by an encrypted acknowledgement, not guessed.</p>
+        </div>
+
+        <div class="feature-card reveal">
+          <div class="feature-icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>
+          </div>
+          <h3>Replay Protection</h3>
+          <p>In MeshGuard 2.0 mode, every message has a unique ID, a timestamp and a lifetime. Relayed copies are shown once, and a recorded message can&#8217;t be played back later &mdash; even after a restart.</p>
+        </div>
+
+        <div class="feature-card reveal">
+          <div class="feature-icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+          </div>
+          <h3>Works With Older Versions</h3>
+          <p>MeshGuard 2.0 still reads the original message format. Turn off 2.0 mode to chat with a friend who hasn&#8217;t updated yet &mdash; a 2.0 chat is never silently downgraded.</p>
+        </div>
       </div>
     </div>
   </section>
@@ -185,7 +209,7 @@
           <div class="step-number">2</div>
           <div class="step-content">
             <h3>Enter Shared Passphrase</h3>
-            <p>On the mesh network screen, tap the peer you want to chat with. Enter a <strong>passphrase</strong> you both agreed on beforehand — in person, via a phone call, or any secure channel. MeshGuard derives an identical AES-256 encryption key on both sides. No keys are ever exchanged over the air.</p>
+            <p>On the mesh network screen, tap the peer you want to chat with. Enter a <strong>passphrase</strong> you both agreed on beforehand — in person, via a phone call, or any secure channel. MeshGuard derives an identical AES-256 encryption key on both sides. No keys are ever exchanged over the air. Keep <strong>MeshGuard 2.0 mode</strong> on if your peer runs 2.0 too.</p>
           </div>
           <div class="step-visual">
             <div class="step-screen">
@@ -202,6 +226,7 @@
                     <span>&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;</span>
                   </div>
                 </div>
+                <div class="screen-toggle"><span>MeshGuard 2.0 mode</span><span class="screen-switch"></span></div>
                 <div class="screen-btn">Start Secure Chat</div>
               </div>
             </div>
@@ -216,7 +241,7 @@
           <div class="step-number">3</div>
           <div class="step-content">
             <h3>Chat Securely</h3>
-            <p>You're connected. Messages are encrypted with AES-256-GCM before leaving your device, then encrypted <em>again</em> by the Meshtastic radio's channel PSK. Double encryption, zero trust in the network. You'll hear a notification sound and see a popup for every incoming message.</p>
+            <p>You're connected. Messages are encrypted with AES-256-GCM before leaving your device, then encrypted <em>again</em> by the Meshtastic radio's channel PSK. Double encryption, zero trust in the network. When your peer&#8217;s app confirms receipt, your message turns from &#10003; to &#10003;&#10003;. You'll hear a notification sound and see a popup for every incoming message.</p>
           </div>
           <div class="step-visual">
             <div class="step-screen">
@@ -228,7 +253,7 @@
               <div class="screen-body screen-body--chat">
                 <div class="screen-title">Node 4a8f &middot; Encrypted</div>
                 <div class="chat-bubble chat-bubble--in">Hey, are you at the trailhead?</div>
-                <div class="chat-bubble chat-bubble--out">Yes! Just arrived. Signal is great here.</div>
+                <div class="chat-bubble chat-bubble--out">Yes! Just arrived. Signal is great here. <span class="chat-status">&#10003;&#10003;</span></div>
                 <div class="chat-bubble chat-bubble--in">Perfect. Heading your way. ETA 20 min.</div>
               </div>
             </div>
