@@ -817,6 +817,13 @@ async function setupEventListeners() {
     linkStatus.title = `Attempt ${attempt}, next retry in ${retry_in_secs}s`;
   });
 
+  await listen("reconnect-stopped", (event) => {
+    hideLinkStatus();
+    showScreen(screenConnect);
+    setScanStatusType("error");
+    scanStatus.textContent = String(event.payload);
+  });
+
   await listen("reconnected", async () => {
     hideLinkStatus();
     await loadMeshData();
@@ -1002,10 +1009,14 @@ async function init() {
   // Come back to the last radio on our own; retries until it is reachable.
   try {
     const target = await invoke("get_last_link");
-    if (target && (await invoke("auto_connect"))) {
+    if (target) {
+      // Show the bar before starting the loop: its events (including a
+      // terminal "reconnect-stopped") then always win over this.
       showLinkStatus(`Connecting to ${target.name || target.address || target.port}…`);
+      if (!(await invoke("auto_connect"))) hideLinkStatus();
     }
   } catch (err) {
+    hideLinkStatus();
     console.error("Auto-connect failed to start:", err);
   }
 }

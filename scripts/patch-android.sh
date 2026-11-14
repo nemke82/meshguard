@@ -531,10 +531,18 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
         session += 1
         closeGatt()
 
+        // Automatic reconnects pass allowBond=false: they must never pop up
+        // the system pairing dialog in a loop.
+        val allowBond = invoke.getArgs().optBoolean("allowBond", true)
+
         val btManager = activity.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
         val adapter = btManager?.adapter
         if (adapter == null) {
             invoke.reject("No Bluetooth adapter")
+            return
+        }
+        if (!adapter.isEnabled) {
+            invoke.reject("Bluetooth is turned off")
             return
         }
 
@@ -547,6 +555,10 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
         }
 
         // Bond if not already bonded (system pairing dialog will appear)
+        if (device.bondState != BluetoothDevice.BOND_BONDED && !allowBond) {
+            invoke.reject("NOT_BONDED: the phone is no longer paired with this radio")
+            return
+        }
         if (device.bondState != BluetoothDevice.BOND_BONDED) {
             Log.d(TAG, "Initiating bonding with $address...")
             val bondLatch = CountDownLatch(1)
