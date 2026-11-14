@@ -194,9 +194,21 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
         return s == -1L || s == session
     }
 
+    // GATT objects of closed connections. Their late callbacks are ignored so
+    // they cannot clear linkUp or feed the new connection's queues. (Matching
+    // against bluetoothGatt instead would drop a callback that arrives before
+    // connectGatt() has returned.)
+    private val retiredGatts: MutableSet<BluetoothGatt> =
+        java.util.Collections.synchronizedSet(
+            java.util.Collections.newSetFromMap(java.util.WeakHashMap<BluetoothGatt, Boolean>())
+        )
+
+    private fun isRetired(gatt: BluetoothGatt): Boolean = retiredGatts.contains(gatt)
+
     @SuppressLint("MissingPermission")
     private fun closeGatt() {
         bluetoothGatt?.let {
+            retiredGatts.add(it)
             try { it.disconnect() } catch (_: Exception) {}
             try { it.close() } catch (_: Exception) {}
         }
@@ -213,6 +225,7 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
 
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            if (isRetired(gatt)) return
             Log.d(TAG, "GATT state: $newState (status=$status)")
             if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 linkUp = false
@@ -221,6 +234,7 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+            if (isRetired(gatt)) return
             Log.d(TAG, "Services discovered: status=$status")
             servicesQueue.offer(status)
         }
@@ -231,6 +245,7 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
             value: ByteArray,
             status: Int
         ) {
+            if (isRetired(gatt)) return
             readQueue.offer(if (status == BluetoothGatt.GATT_SUCCESS) value else ByteArray(0))
         }
 
@@ -240,6 +255,7 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
             characteristic: BluetoothGattCharacteristic,
             status: Int
         ) {
+            if (isRetired(gatt)) return
             @Suppress("DEPRECATION")
             readQueue.offer(
                 if (status == BluetoothGatt.GATT_SUCCESS) characteristic.value ?: ByteArray(0)
@@ -252,6 +268,7 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
             characteristic: BluetoothGattCharacteristic,
             status: Int
         ) {
+            if (isRetired(gatt)) return
             writeQueue.offer(status)
         }
     }

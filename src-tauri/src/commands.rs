@@ -458,7 +458,18 @@ pub async fn accept_chat(
         }
     }
 
-    let previous = install_key(&state, my_num, peer_node_num, key_copy(&session_key)).await?;
+    let previous = match install_key(&state, my_num, peer_node_num, key_copy(&session_key)).await {
+        Ok(p) => p,
+        Err(e) => {
+            // Not accepted after all: un-record the request so it can be retried.
+            if let Some(id) = accepted_v2_request {
+                let mut dedup = state.inbound.dedup.lock().await;
+                dedup.forget(&peer_id, &id);
+                let _ = crate::dedup_store::save(&state.config_dir, &dedup);
+            }
+            return Err(e);
+        }
+    };
     let sent = send_as(&state, my_num, peer_node_num, sealed.frame).await;
     if let Err(e) = sent {
         rollback_key(&state, my_num, peer_node_num, previous).await;
