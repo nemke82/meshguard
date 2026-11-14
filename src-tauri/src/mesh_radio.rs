@@ -514,8 +514,14 @@ async fn build_android_ble_stream(
     .await
     .map_err(|e| MeshGuardError::Ble(format!("BLE connect task panicked: {e}")))?;
 
-    connect_result?;
-    tracing::info!("Android BLE connected — GATT ready for {addr_for_log}");
+    // The plugin is a singleton; every GATT connection gets a session id so
+    // this link's I/O thread can never read from, write to or close a newer
+    // connection.
+    let session = connect_result?
+        .get("session")
+        .and_then(|s| s.as_i64())
+        .unwrap_or(-1);
+    tracing::info!("Android BLE connected — GATT ready for {addr_for_log} (session {session})");
 
     let (client, server) = tokio::io::duplex(4096);
 
@@ -532,26 +538,31 @@ async fn build_android_ble_stream(
         let state = app_for_thread.state::<crate::ble_plugin::BlePluginState<tauri::Wry>>();
         let plugin = &state.0;
 
-        loop {
+        'io: loop {
             // Write any pending data to toradio
-            while let Ok(data) = proto_rx.try_recv() {
-                let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-                match plugin.run_mobile_plugin::<serde_json::Value>(
-                    "writeToRadio",
-                    serde_json::json!({ "data": b64 }),
-                ) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        tracing::error!("Android BLE write failed: {e}");
-                        return;
+            loop {
+                match proto_rx.try_recv() {
+                    Ok(data) => {
+                        let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+                        if let Err(e) = plugin.run_mobile_plugin::<serde_json::Value>(
+                            "writeToRadio",
+                            serde_json::json!({ "data": b64, "session": session }),
+                        ) {
+                            tracing::error!("Android BLE write failed: {e}");
+                            break 'io;
+                        }
                     }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    // The transport was shut down (reconnect/disconnect).
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => break 'io,
                 }
             }
 
             // Read from fromradio
-            match plugin
-                .run_mobile_plugin::<serde_json::Value>("readFromRadio", serde_json::json!({}))
-            {
+            match plugin.run_mobile_plugin::<serde_json::Value>(
+                "readFromRadio",
+                serde_json::json!({ "session": session }),
+            ) {
                 Ok(response) => {
                     if let Some(data_str) = response.get("data").and_then(|d| d.as_str()) {
                         if !data_str.is_empty() {
@@ -559,7 +570,7 @@ async fn build_android_ble_stream(
                                 base64::engine::general_purpose::STANDARD.decode(data_str)
                             {
                                 if !data.is_empty() && ble_tx.send(data).is_err() {
-                                    break;
+                                    break 'io;
                                 }
                                 continue;
                             }
@@ -569,14 +580,17 @@ async fn build_android_ble_stream(
                 }
                 Err(e) => {
                     tracing::error!("Android BLE read failed: {e}");
-                    break;
+                    break 'io;
                 }
             }
         }
 
-        tracing::warn!("Android BLE I/O thread ended");
-        let _ = plugin
-            .run_mobile_plugin::<serde_json::Value>("disconnectBleDevice", serde_json::json!({}));
+        tracing::warn!("Android BLE I/O thread ended (session {session})");
+        // Only closes the GATT connection if it is still this session's.
+        let _ = plugin.run_mobile_plugin::<serde_json::Value>(
+            "disconnectBleDevice",
+            serde_json::json!({ "session": session }),
+        );
     });
 
     // Bridge task: channels ↔ duplex stream
@@ -1455,6 +1469,11 @@ async fn send_ack(ctx: &ListenerCtx, to_node: u32, frame: Vec<u8>, now: u64) {
         return;
     }
     let mut radio = ctx.radio.lock().await;
+    // Re-check under the radio lock: the link may have been replaced while
+    // we waited, and an ACK must only leave through the radio it is for.
+    if !ctx.link.is_current(ctx.link_gen) {
+        return;
+    }
     match radio.as_mut() {
         Some(r) => {
             if let Err(e) = r.send_private_app(frame, to_node).await {

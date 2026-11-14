@@ -173,8 +173,11 @@ pub async fn connect(
     app: &tauri::AppHandle,
     state: &AppState,
 ) -> Result<(), MeshGuardError> {
+    // Cancel before waiting (stops a running loop at its next check) and
+    // again under the lock (a loop started meanwhile by link-loss handling).
     state.link.reconnect_gen.fetch_add(1, Ordering::SeqCst);
     let _guard = state.link.connect_lock.lock().await;
+    state.link.reconnect_gen.fetch_add(1, Ordering::SeqCst);
     connect_locked(&target, pin.unwrap_or(DEFAULT_BLE_PIN), app, state).await
 }
 
@@ -182,6 +185,7 @@ pub async fn connect(
 pub async fn disconnect(state: &AppState) {
     state.link.reconnect_gen.fetch_add(1, Ordering::SeqCst);
     let _guard = state.link.connect_lock.lock().await;
+    state.link.reconnect_gen.fetch_add(1, Ordering::SeqCst);
     state.link.link_gen.fetch_add(1, Ordering::SeqCst);
     shutdown_radio(state).await;
     *state.my_node_num.lock().await = None;

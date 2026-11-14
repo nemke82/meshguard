@@ -185,6 +185,26 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
     // False once the GATT link drops, so readFromRadio reports the loss
     // instead of returning empty data forever.
     @Volatile private var linkUp = false
+    // Incremented for every GATT connection. Callers pass it back so the I/O
+    // loop of an old connection cannot touch a newer one.
+    @Volatile private var session = 0L
+
+    private fun sessionMatches(invoke: Invoke): Boolean {
+        val s = invoke.getArgs().optLong("session", -1L)
+        return s == -1L || s == session
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun closeGatt() {
+        bluetoothGatt?.let {
+            try { it.disconnect() } catch (_: Exception) {}
+            try { it.close() } catch (_: Exception) {}
+        }
+        bluetoothGatt = null
+        fromRadioChar = null
+        toRadioChar = null
+        linkUp = false
+    }
 
     private val connectQueue = LinkedBlockingQueue<Int>(1)
     private val servicesQueue = LinkedBlockingQueue<Int>(1)
@@ -490,6 +510,9 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
             invoke.reject("No address provided")
             return
         }
+        // A new connection replaces any previous one (and its session).
+        session += 1
+        closeGatt()
 
         val btManager = activity.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
         val adapter = btManager?.adapter
@@ -604,6 +627,7 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
         linkUp = true
         val result = JSObject()
         result.put("success", true)
+        result.put("session", session)
         invoke.resolve(result)
     }
 
@@ -614,7 +638,7 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
     fun readFromRadio(invoke: Invoke) {
         val gatt = bluetoothGatt
         val char = fromRadioChar
-        if (gatt == null || char == null || !linkUp) {
+        if (gatt == null || char == null || !linkUp || !sessionMatches(invoke)) {
             invoke.reject("Disconnected")
             return
         }
@@ -647,7 +671,7 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
 
         val gatt = bluetoothGatt
         val char = toRadioChar
-        if (gatt == null || char == null) {
+        if (gatt == null || char == null || !linkUp || !sessionMatches(invoke)) {
             invoke.reject("Not connected")
             return
         }
@@ -678,14 +702,12 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
     @SuppressLint("MissingPermission")
     @Command
     fun disconnectBleDevice(invoke: Invoke) {
-        bluetoothGatt?.let {
-            try { it.disconnect() } catch (_: Exception) {}
-            try { it.close() } catch (_: Exception) {}
+        if (!sessionMatches(invoke)) {
+            // An old link's cleanup: the current connection is not its own.
+            invoke.resolve(JSObject().put("success", true))
+            return
         }
-        bluetoothGatt = null
-        fromRadioChar = null
-        toRadioChar = null
-        linkUp = false
+        closeGatt()
         Log.d(TAG, "BLE device disconnected")
         invoke.resolve(JSObject().put("success", true))
     }

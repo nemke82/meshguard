@@ -219,20 +219,34 @@ fn key_copy(key: &crate::crypto::SessionKey) -> crate::crypto::SessionKey {
 }
 
 /// Install a chat key before transmitting, so the peer's immediate reply can
-/// be decrypted. Returns the key it replaced, for rollback.
+/// be decrypted. Returns the key it replaced, for rollback. Refuses if the
+/// in-memory keys now belong to another radio than `my_num`.
 async fn install_key(
     state: &AppState,
+    my_num: u32,
     peer_node_num: u32,
     key: crate::crypto::SessionKey,
-) -> Option<crate::crypto::SessionKey> {
-    state.session_keys.lock().await.insert(peer_node_num, key)
+) -> Result<Option<crate::crypto::SessionKey>, MeshGuardError> {
+    let owner = state.keys_owner.lock().await;
+    if *owner != Some(my_num) {
+        return Err(MeshGuardError::Protocol(
+            "The radio changed — please try again".into(),
+        ));
+    }
+    Ok(state.session_keys.lock().await.insert(peer_node_num, key))
 }
 
+/// Undo [`install_key`], unless the keys meanwhile belong to another radio.
 async fn rollback_key(
     state: &AppState,
+    my_num: u32,
     peer_node_num: u32,
     previous: Option<crate::crypto::SessionKey>,
 ) {
+    let owner = state.keys_owner.lock().await;
+    if *owner != Some(my_num) {
+        return;
+    }
     let mut keys = state.session_keys.lock().await;
     match previous {
         Some(k) => {
@@ -313,9 +327,9 @@ pub async fn start_chat(
     )
     .map_err(seal_err)?;
 
-    let previous = install_key(&state, peer_node_num, key_copy(&session_key)).await;
+    let previous = install_key(&state, my_num, peer_node_num, key_copy(&session_key)).await?;
     if let Err(e) = send_as(&state, my_num, peer_node_num, sealed.frame).await {
-        rollback_key(&state, peer_node_num, previous).await;
+        rollback_key(&state, my_num, peer_node_num, previous).await;
         return Err(e);
     }
 
@@ -444,10 +458,10 @@ pub async fn accept_chat(
         }
     }
 
-    let previous = install_key(&state, peer_node_num, key_copy(&session_key)).await;
+    let previous = install_key(&state, my_num, peer_node_num, key_copy(&session_key)).await?;
     let sent = send_as(&state, my_num, peer_node_num, sealed.frame).await;
     if let Err(e) = sent {
-        rollback_key(&state, peer_node_num, previous).await;
+        rollback_key(&state, my_num, peer_node_num, previous).await;
         // Not accepted after all: let the user retry the same request.
         if let Some(id) = accepted_v2_request {
             let mut dedup = state.inbound.dedup.lock().await;
