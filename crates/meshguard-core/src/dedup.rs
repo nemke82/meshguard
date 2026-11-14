@@ -112,6 +112,15 @@ impl DedupCache {
         Seen::New
     }
 
+    /// Undo the observation of `id` (e.g. it could not be persisted, so the
+    /// frame is dropped unACKed and the sender's retry must be seen as new).
+    pub fn forget(&mut self, sender: &PeerIdentity, id: &MessageId) {
+        let key = (sender.clone(), *id);
+        if self.seen.remove(&key).is_some() {
+            self.order.retain(|(k, _)| k != &key);
+        }
+    }
+
     pub fn contains(&self, sender: &PeerIdentity, id: &MessageId) -> bool {
         self.seen.contains_key(&(sender.clone(), *id))
     }
@@ -262,6 +271,16 @@ mod tests {
             Seen::Duplicate { copies: 2 }
         );
         assert_eq!(r.observe(&peer(1), id(1), 120), Seen::New);
+    }
+
+    #[test]
+    fn forget_makes_the_id_new_again() {
+        let mut c = DedupCache::new(10, 100);
+        c.observe(&peer(1), id(1), 0);
+        c.forget(&peer(1), &id(1));
+        assert!(c.is_empty());
+        assert_eq!(c.entries().count(), 0);
+        assert_eq!(c.observe(&peer(1), id(1), 1), Seen::New);
     }
 
     #[test]

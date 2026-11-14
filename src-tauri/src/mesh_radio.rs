@@ -1108,6 +1108,18 @@ async fn handle_incoming_packet(packet: &protobufs::MeshPacket, ctx: &ListenerCt
     if let Some(cache) = snapshot {
         if let Err(e) = crate::dedup_store::save(&ctx.config_dir, &cache) {
             tracing::warn!("Could not persist dedup cache: {e}");
+            // Fail closed for new v2 texts: without a durable record, a replay
+            // after restart would be shown again. Forget the id and drop the
+            // frame unACKed; the sender's bounded retry delivers it later.
+            if let Inbound::Text {
+                message_id: Some(id),
+                ..
+            } = &outcome
+            {
+                ctx.inbound.dedup.lock().await.forget(&sender, id);
+                tracing::warn!("Dropped text from {from_node} until it can be recorded");
+                return;
+            }
         }
     }
 

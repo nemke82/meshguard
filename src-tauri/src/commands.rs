@@ -327,9 +327,21 @@ pub async fn accept_chat(
 
     let policy = state.inbound.policy;
     let now = u64::from(unix_now());
+    let mut accepted_v2_request = None;
     let protocol = match decode_frame(&payload, Some(&session_key), &aad_context(&peer_id, &me)) {
         Ok(DecodedFrame::V1(V1Payload::PairRequest(_))) => WireProtocol::V1,
         Ok(DecodedFrame::V2(env)) if env.message_type == MessageType::PairRequest => {
+            if state.inbound.dedup.lock().await.contains(&peer_id, &env.message_id) {
+                state
+                    .pending_pair_requests
+                    .lock()
+                    .await
+                    .remove(&peer_node_num);
+                return Err(MeshGuardError::Protocol(
+                    "This chat request was already accepted".into(),
+                ));
+            }
+            accepted_v2_request = Some(env.message_id);
             if env
                 .check_freshness(now, policy.max_skew_secs, policy.max_ttl_mins)
                 .is_err()
@@ -395,6 +407,18 @@ pub async fn accept_chat(
         .lock()
         .await
         .remove(&peer_node_num);
+    // Record the accepted request durably so a replay of it (also after a
+    // restart) cannot trigger another acceptance within its TTL.
+    if let Some(id) = accepted_v2_request {
+        let snapshot = {
+            let mut dedup = state.inbound.dedup.lock().await;
+            dedup.observe(&peer_id, id, now);
+            dedup.clone()
+        };
+        if let Err(e) = crate::dedup_store::save(&state.config_dir, &snapshot) {
+            tracing::warn!("Could not persist accepted pair request id: {e}");
+        }
+    }
     state
         .session_keys
         .lock()
