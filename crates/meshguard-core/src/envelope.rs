@@ -127,6 +127,11 @@ pub enum FreshnessError {
     Expired,
     #[error("message timestamp is too far in the future")]
     FromFuture,
+    /// TTL longer than the receiver accepts. Receivers must cap TTL at or
+    /// below their dedup retention, or an old frame could be replayed after
+    /// its id was forgotten.
+    #[error("message TTL exceeds the accepted maximum")]
+    TtlTooLong,
 }
 
 /// Build the AAD context binding a frame to `sender -> recipient`.
@@ -206,8 +211,17 @@ impl EnvelopeV2 {
         u64::from(self.created_at) + u64::from(self.ttl_mins) * 60
     }
 
-    /// Reject expired messages and implausibly future-dated ones.
-    pub fn check_freshness(&self, now: u64, max_skew_secs: u64) -> Result<(), FreshnessError> {
+    /// Reject over-long TTLs, expired messages and implausibly
+    /// future-dated ones.
+    pub fn check_freshness(
+        &self,
+        now: u64,
+        max_skew_secs: u64,
+        max_ttl_mins: u16,
+    ) -> Result<(), FreshnessError> {
+        if self.ttl_mins > max_ttl_mins {
+            return Err(FreshnessError::TtlTooLong);
+        }
         if u64::from(self.created_at) > now.saturating_add(max_skew_secs) {
             return Err(FreshnessError::FromFuture);
         }
@@ -518,14 +532,22 @@ mod tests {
     fn freshness_window() {
         let env = EnvelopeV2::text("t", 1000, 2); // expires at 1120
         assert_eq!(env.expires_at(), 1120);
-        assert_eq!(env.check_freshness(1000, 30), Ok(()));
-        assert_eq!(env.check_freshness(1150, 30), Ok(()));
-        assert_eq!(env.check_freshness(1151, 30), Err(FreshnessError::Expired));
+        assert_eq!(env.check_freshness(1000, 30, 60), Ok(()));
+        assert_eq!(env.check_freshness(1150, 30, 60), Ok(()));
         assert_eq!(
-            env.check_freshness(969, 30),
+            env.check_freshness(1151, 30, 60),
+            Err(FreshnessError::Expired)
+        );
+        assert_eq!(
+            env.check_freshness(969, 30, 60),
             Err(FreshnessError::FromFuture)
         );
-        assert_eq!(env.check_freshness(970, 30), Ok(()));
+        assert_eq!(env.check_freshness(970, 30, 60), Ok(()));
+        assert_eq!(env.check_freshness(1000, 30, 2), Ok(()));
+        assert_eq!(
+            env.check_freshness(1000, 30, 1),
+            Err(FreshnessError::TtlTooLong)
+        );
     }
 
     /// Known-answer vector, cross-checked by an independent Python

@@ -2,14 +2,22 @@
 //!
 //! Meshtastic relays can deliver the same packet more than once, and future
 //! transports may deliver the same logical message twice. A message is shown
-//! (and notified) only the first time it is observed; later copies are
-//! reported as [`Seen::Duplicate`] so the caller can still re-send a safe ACK.
+//! (and notified) only the first time it is observed. Later copies are
+//! reported as [`Seen::Duplicate`] with a copy count, so the caller can re-send
+//! a safe ACK a *bounded* number of times (see [`Seen::should_ack`]).
 //!
-//! For replay protection the retention window must be at least the largest
-//! accepted TTL plus clock skew: anything older is already rejected by
-//! [`crate::envelope::EnvelopeV2::check_freshness`]. The cache is pure
-//! in-memory state; callers persist it via [`DedupCache::entries`] and
-//! [`DedupCache::restore`] so it survives restarts.
+//! Replay safety rules:
+//! * The retention window must cover the largest accepted TTL plus clock
+//!   skew; older frames are rejected by
+//!   [`crate::envelope::EnvelopeV2::check_freshness`].
+//! * An entry is **never evicted before its retention expires**. When the
+//!   cache is full of unexpired entries, a new id is [`Seen::Refused`]: the
+//!   caller drops the frame without showing or ACKing it, and the sender's
+//!   bounded retry delivers it later. Forgetting an id early would let a
+//!   replay of it be shown again.
+//!
+//! The cache is pure in-memory state. Callers persist it via
+//! [`DedupCache::entries`] and [`DedupCache::restore`] so it survives restarts.
 
 use std::collections::{HashMap, VecDeque};
 
@@ -17,17 +25,42 @@ use crate::ids::{MessageId, PeerIdentity};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Seen {
+    /// First observation: show, notify and ACK.
     New,
-    Duplicate,
+    /// Already seen; `copies` counts observations including this one (>= 2).
+    Duplicate { copies: u32 },
+    /// Cache is full of unexpired entries; drop without showing or ACKing.
+    Refused,
+}
+
+impl Seen {
+    /// Whether to (re-)send an application ACK for this observation.
+    ///
+    /// ACKing a duplicate lets a sender recover from a lost ACK, but every ACK
+    /// costs shared LoRa airtime, so replays of one frame may trigger at most
+    /// `max_acks_per_message` ACKs in total.
+    pub fn should_ack(self, max_acks_per_message: u32) -> bool {
+        match self {
+            Self::New => max_acks_per_message > 0,
+            Self::Duplicate { copies } => copies <= max_acks_per_message,
+            Self::Refused => false,
+        }
+    }
 }
 
 type Key = (PeerIdentity, MessageId);
+
+#[derive(Debug, Clone, Copy)]
+struct Entry {
+    seen_at: u64,
+    copies: u32,
+}
 
 #[derive(Debug, Clone)]
 pub struct DedupCache {
     capacity: usize,
     retention_secs: u64,
-    seen: HashMap<Key, u64>,
+    seen: HashMap<Key, Entry>,
     /// Insertion order, oldest first.
     order: VecDeque<(Key, u64)>,
 }
@@ -46,6 +79,9 @@ impl DedupCache {
     }
 
     /// Rebuild from persisted `(sender, id, seen_at)` entries, oldest first.
+    ///
+    /// Unexpired entries are all kept, even beyond `capacity`; new ids are then
+    /// refused until enough of them expire.
     pub fn restore(
         capacity: usize,
         retention_secs: u64,
@@ -60,12 +96,16 @@ impl DedupCache {
         cache
     }
 
-    /// Record an observation and report whether it is the first one.
+    /// Record an observation and classify it.
     pub fn observe(&mut self, sender: &PeerIdentity, id: MessageId, now: u64) -> Seen {
         self.prune(now);
         let key = (sender.clone(), id);
-        if self.seen.contains_key(&key) {
-            return Seen::Duplicate;
+        if let Some(e) = self.seen.get_mut(&key) {
+            e.copies = e.copies.saturating_add(1);
+            return Seen::Duplicate { copies: e.copies };
+        }
+        if self.seen.len() >= self.capacity {
+            return Seen::Refused;
         }
         self.insert(key, now);
         Seen::New
@@ -92,25 +132,29 @@ impl DedupCache {
         if self.seen.contains_key(&key) {
             return;
         }
-        while self.seen.len() >= self.capacity {
-            self.pop_oldest();
-        }
-        self.seen.insert(key.clone(), at);
+        self.seen.insert(
+            key.clone(),
+            Entry {
+                seen_at: at,
+                copies: 1,
+            },
+        );
         self.order.push_back((key, at));
     }
 
+    /// Drop entries whose retention has expired. Entries are only ever
+    /// removed here, never for capacity.
     fn prune(&mut self, now: u64) {
-        while let Some((_, at)) = self.order.front() {
+        // `order` is insertion order; with a non-monotonic clock an older
+        // entry may sit behind a newer one, which only delays its removal.
+        while let Some((key, at)) = self.order.front() {
             if at.saturating_add(self.retention_secs) > now {
                 break;
             }
-            self.pop_oldest();
-        }
-    }
-
-    fn pop_oldest(&mut self) {
-        if let Some((key, _)) = self.order.pop_front() {
-            self.seen.remove(&key);
+            if self.seen.get(key).map(|e| e.seen_at) == Some(*at) {
+                self.seen.remove(key);
+            }
+            self.order.pop_front();
         }
     }
 }
@@ -131,8 +175,11 @@ mod tests {
     fn first_is_new_then_duplicate() {
         let mut c = DedupCache::new(10, 100);
         assert_eq!(c.observe(&peer(1), id(1), 0), Seen::New);
-        assert_eq!(c.observe(&peer(1), id(1), 1), Seen::Duplicate);
-        assert_eq!(c.observe(&peer(1), id(1), 99), Seen::Duplicate);
+        assert_eq!(c.observe(&peer(1), id(1), 1), Seen::Duplicate { copies: 2 });
+        assert_eq!(
+            c.observe(&peer(1), id(1), 99),
+            Seen::Duplicate { copies: 3 }
+        );
     }
 
     #[test]
@@ -150,14 +197,38 @@ mod tests {
     }
 
     #[test]
-    fn capacity_evicts_oldest() {
+    fn full_cache_refuses_instead_of_forgetting_unexpired_ids() {
         let mut c = DedupCache::new(2, 1000);
-        c.observe(&peer(1), id(1), 0);
-        c.observe(&peer(1), id(2), 1);
-        c.observe(&peer(1), id(3), 2);
+        assert_eq!(c.observe(&peer(1), id(1), 0), Seen::New);
+        assert_eq!(c.observe(&peer(1), id(2), 1), Seen::New);
+        assert_eq!(c.observe(&peer(1), id(3), 2), Seen::Refused);
+        // The earlier ids are still remembered: replays stay duplicates.
+        assert_eq!(c.observe(&peer(1), id(1), 3), Seen::Duplicate { copies: 2 });
         assert_eq!(c.len(), 2);
+        // Once id(1) expires there is room again.
+        assert_eq!(c.observe(&peer(1), id(3), 1000), Seen::New);
         assert!(!c.contains(&peer(1), &id(1)));
-        assert!(c.contains(&peer(1), &id(3)));
+    }
+
+    #[test]
+    fn ack_budget_per_message() {
+        assert!(Seen::New.should_ack(3));
+        assert!(Seen::Duplicate { copies: 3 }.should_ack(3));
+        assert!(!Seen::Duplicate { copies: 4 }.should_ack(3));
+        assert!(!Seen::Refused.should_ack(3));
+        assert!(!Seen::New.should_ack(0));
+    }
+
+    #[test]
+    fn restore_keeps_unexpired_entries_beyond_capacity() {
+        let saved = (0..4u8).map(|i| (peer(1), id(i), u64::from(i)));
+        let mut c = DedupCache::restore(2, 1000, saved, 10);
+        assert_eq!(c.len(), 4);
+        assert_eq!(
+            c.observe(&peer(1), id(0), 10),
+            Seen::Duplicate { copies: 2 }
+        );
+        assert_eq!(c.observe(&peer(1), id(9), 10), Seen::Refused);
     }
 
     #[test]
@@ -169,7 +240,10 @@ mod tests {
         let mut r = DedupCache::restore(10, 100, saved, 120);
         // id(1) seen at 10 is past retention at 120; id(2) is not.
         assert_eq!(r.len(), 1);
-        assert_eq!(r.observe(&peer(1), id(2), 120), Seen::Duplicate);
+        assert_eq!(
+            r.observe(&peer(1), id(2), 120),
+            Seen::Duplicate { copies: 2 }
+        );
         assert_eq!(r.observe(&peer(1), id(1), 120), Seen::New);
     }
 

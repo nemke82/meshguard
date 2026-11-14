@@ -55,9 +55,10 @@ None of these errors carry plaintext.
 
 ### Receiver rules (engine, next slice)
 
-- Check freshness: reject a message created more than `skew` in the future or expired by more than `skew`.
-- Deduplicate on `(sender_identity, message_id)` with retention ≥ max TTL + 2·skew. Persist the cache across restarts (`DedupCache::entries`/`restore`).
-- Show and notify only on the first observation. ACK **every** authenticated copy of a `Text`, so a lost ACK recovers through the sender's bounded retry.
+- **Freshness:** reject a TTL above the receiver's maximum (`TtlTooLong`), a message created more than `skew` in the future, or one expired by more than `skew`. The maximum TTL must be ≤ the dedup retention − 2·skew, otherwise a long-TTL frame could be replayed after its id has been forgotten.
+- **Dedup** on `(sender_identity, message_id)`, with retention ≥ max TTL + 2·skew. Entries are **never evicted before they expire**. If the cache is full of unexpired ids, new ids are `Refused`: the frame is dropped without being shown or ACKed, and the sender's bounded retry delivers it later. The cache is persisted across restarts (`DedupCache::entries`/`restore`).
+- Show and notify only on the first observation.
+- **ACK budget:** duplicates are re-ACKed so a lost ACK can recover, but at most `max_acks_per_message` times per id (`Seen::should_ack`). A replay flood therefore costs at most that many transmissions per captured frame. The engine slice must also add a **global outbound airtime budget** (token bucket per transport) covering ACKs and retries, so many distinct captured frames cannot exhaust the channel.
 
 ## 3. Rollout and negotiation (needs owner approval)
 
@@ -67,14 +68,16 @@ Proposed rollout:
 
 1. **Release N (next slice):** dual-read in `mesh_radio.rs::handle_incoming_packet`; still send v1. Add a `protocol` field (default `v1`) to `PeerConfig`. Incoming v2 messages carry their stable id to the UI.
 2. **Release N+1:** a peer switches to v2 sending when (a) any v2 frame from it authenticates, or (b) the user pairs with the "MeshGuard 2.0" option, which sends the pairing frames as v2. Both of the owner's phones will run N+1 for the P3 test.
-3. Never downgrade automatically from v2 to v1 (that would invite downgrade attacks). Re-pairing is the only way back.
+3. **Pin both directions.** When a peer switches to v2, persist `min_receive_version = 2` for it, and from then on reject v1 frames from that peer (`Unsupported`, with no pair-request fallback). Otherwise recorded v1 frames, which have no direction binding, no id and no freshness, could still be replayed against an upgraded build.
+4. Never downgrade automatically from v2 to v1 (that would invite downgrade attacks). Re-pairing is the only way back, and it resets both pins.
 
 ## 4. Test evidence (this PR)
 
+- `dedup.rs`: a full cache refuses rather than forgetting unexpired ids, restore keeps unexpired entries, the per-message ACK budget.
 - `envelope.rs`: layout known-answer vector, exact budget boundary, multibyte byte counting, every single-bit flip rejected, every truncation rejected, wrong key or wrong direction rejected, `Unsupported` and `Malformed` after authentication, freshness window.
 - `codec.rs`: v1 and v2 dual-read, v1 frame whose nonce begins with `MG2`, `Locked`, typed errors, garbage input never panics.
 - `tests/fixtures.rs`: v1 and v2 vectors from an **independent Python implementation** (`tests/vectors/gen_vectors.py`) decode in Rust. CI regenerates them and fails on drift.
-- `tests/engine_sim.rs`: two peers on a mock medium with a virtual clock. Covers relayed duplicates shown once, lost ACK leading to a same-id retry, a link down then recovering, bounded attempts leading to `Failed`, TTL leading to `Expired`, no ACK-of-ACK, reflection rejected, a locked receiver, and dedup surviving a restart.
+- `tests/engine_sim.rs`: two peers on a mock medium with a virtual clock. Covers relayed duplicates shown once, a replay flood with bounded ACKs, an over-long TTL rejected, lost ACK leading to a same-id retry, a link down then recovering, bounded attempts leading to `Failed`, TTL leading to `Expired`, no ACK-of-ACK, reflection rejected, a locked receiver, and dedup surviving a restart.
 - `src-tauri/src/protocol.rs`: frames from the shipping v1 send path decode through the core dual-reader.
 
 ## 5. Not decided here

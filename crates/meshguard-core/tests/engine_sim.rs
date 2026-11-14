@@ -20,6 +20,8 @@ use meshguard_core::{MessageId, PeerIdentity};
 const TTL: u16 = 60;
 const TTL_SECS: u64 = TTL as u64 * 60;
 const SKEW: u64 = 300;
+/// ACKs per received message id, across all its copies.
+const MAX_ACKS: u32 = 3;
 
 struct SimPeer {
     me: PeerIdentity,
@@ -129,7 +131,7 @@ impl SimPeer {
                     continue;
                 }
             };
-            if env.check_freshness(now, SKEW).is_err() {
+            if env.check_freshness(now, SKEW, TTL).is_err() {
                 continue;
             }
             let seen = self.dedup.observe(&sender, env.message_id, now);
@@ -145,8 +147,11 @@ impl SimPeer {
                     if seen == Seen::New {
                         self.shown.push(env.text_body().unwrap().to_string());
                     }
-                    // ACK every authenticated copy so a lost ACK can recover,
-                    // but never ACK an ACK.
+                    // ACK duplicates too so a lost ACK can recover, but only
+                    // up to MAX_ACKS per id; and never ACK an ACK.
+                    if !seen.should_ack(MAX_ACKS) {
+                        continue;
+                    }
                     let ack = EnvelopeV2::app_ack(env.message_id, now as u32, 10);
                     let back = aad_context(&self.me, &sender);
                     let frame = ack
@@ -369,4 +374,37 @@ fn dedup_survives_restart() {
         s.b.shown.is_empty(),
         "replay after restart is not shown again"
     );
+}
+
+#[test]
+fn replay_flood_triggers_bounded_acks() {
+    let mut s = Sim::new();
+    s.a.send_text("flood me", s.now);
+    s.a.tick(s.now, 2);
+    let (_, frame) = s.a.transport.sent[0].clone();
+    s.b.receive(s.now);
+    // An attacker replays the captured frame 50 times.
+    for _ in 0..50 {
+        s.a.send_frame(2, &frame);
+    }
+    s.b.receive(s.now + 1);
+    assert_eq!(s.b.shown, vec!["flood me"]);
+    assert_eq!(s.b.acks_sent, MAX_ACKS as usize, "ACK airtime is bounded");
+}
+
+#[test]
+fn over_long_ttl_is_rejected() {
+    let mut s = Sim::new();
+    let env = EnvelopeV2::text("forever", s.now as u32, TTL + 1);
+    let ctx = aad_context(
+        &PeerIdentity::meshtastic_node(1),
+        &PeerIdentity::meshtastic_node(2),
+    );
+    let frame = env
+        .seal(s.a.key.as_ref().unwrap(), &ctx, DEFAULT_FRAME_BUDGET)
+        .unwrap();
+    s.a.send_frame(2, &frame);
+    s.b.receive(s.now);
+    assert!(s.b.shown.is_empty());
+    assert_eq!(s.b.acks_sent, 0);
 }
