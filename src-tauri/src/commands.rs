@@ -218,6 +218,25 @@ async fn my_identity(state: &AppState) -> Result<(u32, String), MeshGuardError> 
     Ok((num, name))
 }
 
+/// The peer's Meshtastic long name, which is part of the v1/v2 key
+/// derivation. Refuses when it is not known yet: deriving with a placeholder
+/// would silently produce the wrong key and look like a passphrase mismatch.
+async fn peer_long_name(state: &AppState, peer_node_num: u32) -> Result<String, MeshGuardError> {
+    let nodes = state.mesh_nodes.lock().await;
+    let node = nodes
+        .get(&peer_node_num)
+        .ok_or(MeshGuardError::NodeNotFound(peer_node_num))?;
+    if node.long_name.trim().is_empty() {
+        return Err(MeshGuardError::Protocol(
+            "This node has not announced its name yet, and the name is part of the \
+             encryption key. Wait until it shows up with a name in the node list \
+             (nodes announce themselves every few minutes), then try again."
+                .into(),
+        ));
+    }
+    Ok(node.long_name.clone())
+}
+
 /// Persist (or replace) a peer. Re-pairing resets the protocol pin.
 async fn save_peer(
     state: &AppState,
@@ -253,13 +272,7 @@ pub async fn start_chat(
     let protocol = protocol.unwrap_or_default();
     let (my_num, my_name) = my_identity(&state).await?;
 
-    let peer_name = {
-        let nodes = state.mesh_nodes.lock().await;
-        nodes
-            .get(&peer_node_num)
-            .map(|n| n.long_name.clone())
-            .ok_or(MeshGuardError::NodeNotFound(peer_node_num))?
-    };
+    let peer_name = peer_long_name(&state, peer_node_num).await?;
 
     let session_key = crypto::derive_p2p_key(&my_name, &peer_name, &passphrase)?;
 
@@ -302,13 +315,7 @@ pub async fn accept_chat(
 ) -> Result<PeerConfig, MeshGuardError> {
     let (my_num, my_name) = my_identity(&state).await?;
 
-    let peer_name = {
-        let nodes = state.mesh_nodes.lock().await;
-        nodes
-            .get(&peer_node_num)
-            .map(|n| n.long_name.clone())
-            .unwrap_or_else(|| format!("Node-{peer_node_num}"))
-    };
+    let peer_name = peer_long_name(&state, peer_node_num).await?;
 
     let session_key = crypto::derive_p2p_key(&my_name, &peer_name, &passphrase)?;
     let me = PeerIdentity::meshtastic_node(my_num);
@@ -322,9 +329,7 @@ pub async fn accept_chat(
         .await
         .get(&peer_node_num)
         .cloned()
-        .ok_or_else(|| {
-            MeshGuardError::Protocol("No pending chat request from this node".into())
-        })?;
+        .ok_or_else(|| MeshGuardError::Protocol("No pending chat request from this node".into()))?;
 
     let policy = state.inbound.policy;
     let now = u64::from(unix_now());
@@ -517,9 +522,7 @@ pub async fn has_session(
 
 /// List saved peers from config.
 #[tauri::command]
-pub async fn list_peers(
-    state: State<'_, AppState>,
-) -> Result<Vec<PeerConfig>, MeshGuardError> {
+pub async fn list_peers(state: State<'_, AppState>) -> Result<Vec<PeerConfig>, MeshGuardError> {
     let config = state.config.lock().await;
     Ok(config.peers.clone())
 }

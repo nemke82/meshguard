@@ -3,7 +3,9 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
-use btleplug::api::{Central, Characteristic, Manager as _, Peripheral as _, ScanFilter, WriteType};
+use btleplug::api::{
+    Central, Characteristic, Manager as _, Peripheral as _, ScanFilter, WriteType,
+};
 use btleplug::platform::Manager;
 use meshtastic::api::state::Configured;
 use meshtastic::api::{ConnectedStreamApi, StreamApi, StreamHandle};
@@ -27,23 +29,34 @@ use crate::error::MeshGuardError;
 use crate::state::{InboundState, MeshNodeInfo};
 
 /// The BLE service UUID that all Meshtastic firmware advertises.
-const MESHTASTIC_SERVICE_UUID: uuid::Uuid =
-    uuid::Uuid::from_bytes([0x6b, 0xa1, 0xb2, 0x18, 0x15, 0xa8, 0x46, 0x1f,
-                            0x9f, 0xa8, 0x5d, 0xca, 0xe2, 0x73, 0xea, 0xfd]);
+const MESHTASTIC_SERVICE_UUID: uuid::Uuid = uuid::Uuid::from_bytes([
+    0x6b, 0xa1, 0xb2, 0x18, 0x15, 0xa8, 0x46, 0x1f, 0x9f, 0xa8, 0x5d, 0xca, 0xe2, 0x73, 0xea, 0xfd,
+]);
 
-const FROMRADIO_UUID: uuid::Uuid =
-    uuid::Uuid::from_bytes([0x2c, 0x55, 0xe6, 0x9e, 0x49, 0x93, 0x11, 0xed,
-                            0xb8, 0x78, 0x02, 0x42, 0xac, 0x12, 0x00, 0x02]);
+const FROMRADIO_UUID: uuid::Uuid = uuid::Uuid::from_bytes([
+    0x2c, 0x55, 0xe6, 0x9e, 0x49, 0x93, 0x11, 0xed, 0xb8, 0x78, 0x02, 0x42, 0xac, 0x12, 0x00, 0x02,
+]);
 
-const TORADIO_UUID: uuid::Uuid =
-    uuid::Uuid::from_bytes([0xf7, 0x5c, 0x76, 0xd2, 0x12, 0x9e, 0x4d, 0xad,
-                            0xa1, 0xdd, 0x78, 0x66, 0x12, 0x44, 0x01, 0xe7]);
+const TORADIO_UUID: uuid::Uuid = uuid::Uuid::from_bytes([
+    0xf7, 0x5c, 0x76, 0xd2, 0x12, 0x9e, 0x4d, 0xad, 0xa1, 0xdd, 0x78, 0x66, 0x12, 0x44, 0x01, 0xe7,
+]);
 
 /// Known name prefixes for Meshtastic-firmware devices.
 const MESHTASTIC_NAME_HINTS: &[&str] = &[
-    "meshtastic", "sensecap", "t1000", "rak", "heltec",
-    "tbeam", "t-beam", "tlora", "t-lora", "station-g",
-    "nano-g", "wio-tracker", "trackerd", "meshcore",
+    "meshtastic",
+    "sensecap",
+    "t1000",
+    "rak",
+    "heltec",
+    "tbeam",
+    "t-beam",
+    "tlora",
+    "t-lora",
+    "station-g",
+    "nano-g",
+    "wio-tracker",
+    "trackerd",
+    "meshcore",
 ];
 
 /// Meshtastic packet header: magic bytes + 2-byte length (big-endian).
@@ -86,7 +99,9 @@ fn is_meshtastic_device(name: &str, services: &[uuid::Uuid]) -> bool {
         return true;
     }
     let lower = name.to_lowercase();
-    MESHTASTIC_NAME_HINTS.iter().any(|hint| lower.contains(hint))
+    MESHTASTIC_NAME_HINTS
+        .iter()
+        .any(|hint| lower.contains(hint))
 }
 
 /// Pair with a BLE device via BlueZ D-Bus, providing the PIN/passkey.
@@ -137,9 +152,10 @@ async fn pair_ble_device(mac_address: &str, pin: u32) -> Result<(), MeshGuardErr
             Ok(_) => {}
             Err(_) => {
                 tracing::info!("Device not in cache after bond removal — re-scanning...");
-                let disc = adapter.discover_devices().await.map_err(|e| {
-                    MeshGuardError::Ble(format!("Re-scan failed: {e}"))
-                })?;
+                let disc = adapter
+                    .discover_devices()
+                    .await
+                    .map_err(|e| MeshGuardError::Ble(format!("Re-scan failed: {e}")))?;
                 // Keep discovery running briefly so BlueZ rediscovers the device
                 tokio::time::sleep(Duration::from_secs(3)).await;
                 drop(disc);
@@ -255,8 +271,12 @@ pub fn list_serial_ports() -> Result<Vec<SerialPortInfo>, MeshGuardError> {
 // causing the connection to hang. This implementation polls the
 // fromradio characteristic directly.
 
-fn find_char(chars: &std::collections::BTreeSet<Characteristic>, uuid: uuid::Uuid) -> Result<Characteristic, MeshGuardError> {
-    chars.iter()
+fn find_char(
+    chars: &std::collections::BTreeSet<Characteristic>,
+    uuid: uuid::Uuid,
+) -> Result<Characteristic, MeshGuardError> {
+    chars
+        .iter()
         .find(|c| c.uuid == uuid)
         .cloned()
         .ok_or_else(|| MeshGuardError::Ble(format!("Characteristic {uuid} not found")))
@@ -313,8 +333,9 @@ async fn build_polling_ble_stream(
         }
     }
 
-    let radio = target
-        .ok_or_else(|| MeshGuardError::Ble(format!("Device '{device_name}' not found during BLE scan")))?;
+    let radio = target.ok_or_else(|| {
+        MeshGuardError::Ble(format!("Device '{device_name}' not found during BLE scan"))
+    })?;
 
     let mac_address = radio.address().to_string();
 
@@ -324,11 +345,15 @@ async fn build_polling_ble_stream(
     pair_ble_device(&mac_address, pin).await?;
 
     tracing::info!("Connecting to BLE device: {device_name} ({mac_address})");
-    radio.connect().await
+    radio
+        .connect()
+        .await
         .map_err(|e| MeshGuardError::Ble(format!("BLE connect failed: {e}")))?;
 
     tracing::info!("Discovering GATT services...");
-    radio.discover_services().await
+    radio
+        .discover_services()
+        .await
         .map_err(|e| MeshGuardError::Ble(format!("GATT discovery failed: {e}")))?;
 
     let chars = radio.characteristics();
@@ -345,9 +370,13 @@ async fn build_polling_ble_stream(
             tracing::warn!("GATT read failed ({e}) — reconnecting to apply bond encryption...");
             let _ = radio.disconnect().await;
             tokio::time::sleep(Duration::from_secs(2)).await;
-            radio.connect().await
+            radio
+                .connect()
+                .await
                 .map_err(|e| MeshGuardError::Ble(format!("BLE reconnect failed: {e}")))?;
-            radio.discover_services().await
+            radio
+                .discover_services()
+                .await
                 .map_err(|e| MeshGuardError::Ble(format!("GATT re-discovery failed: {e}")))?;
             // Re-find characteristics after re-discovery
             let chars = radio.characteristics();
@@ -377,7 +406,8 @@ async fn build_polling_ble_stream(
         let mut write_buf = [0u8; 512];
 
         loop {
-            match tokio::time::timeout(Duration::from_millis(50), server.read(&mut write_buf)).await {
+            match tokio::time::timeout(Duration::from_millis(50), server.read(&mut write_buf)).await
+            {
                 Ok(Ok(0)) => {
                     tracing::debug!("BLE client stream closed");
                     break;
@@ -390,8 +420,14 @@ async fn build_polling_ble_stream(
                     };
                     let mut ok = false;
                     for retry in 0..3 {
-                        match radio.write(&toradio_char, payload, WriteType::WithResponse).await {
-                            Ok(()) => { ok = true; break; }
+                        match radio
+                            .write(&toradio_char, payload, WriteType::WithResponse)
+                            .await
+                        {
+                            Ok(()) => {
+                                ok = true;
+                                break;
+                            }
                             Err(e) => {
                                 tracing::warn!("BLE write retry {retry}: {e}");
                                 tokio::time::sleep(Duration::from_millis(500)).await;
@@ -513,10 +549,9 @@ async fn build_android_ble_stream(
             }
 
             // Read from fromradio
-            match plugin.run_mobile_plugin::<serde_json::Value>(
-                "readFromRadio",
-                serde_json::json!({}),
-            ) {
+            match plugin
+                .run_mobile_plugin::<serde_json::Value>("readFromRadio", serde_json::json!({}))
+            {
                 Ok(response) => {
                     if let Some(data_str) = response.get("data").and_then(|d| d.as_str()) {
                         if !data_str.is_empty() {
@@ -540,10 +575,8 @@ async fn build_android_ble_stream(
         }
 
         tracing::warn!("Android BLE I/O thread ended");
-        let _ = plugin.run_mobile_plugin::<serde_json::Value>(
-            "disconnectBleDevice",
-            serde_json::json!({}),
-        );
+        let _ = plugin
+            .run_mobile_plugin::<serde_json::Value>("disconnectBleDevice", serde_json::json!({}));
     });
 
     // Bridge task: channels ↔ duplex stream
@@ -624,10 +657,7 @@ impl PacketRouter<(), RouterError> for MeshGuardRouter {
         Ok(())
     }
 
-    fn handle_mesh_packet(
-        &mut self,
-        _packet: protobufs::MeshPacket,
-    ) -> Result<(), RouterError> {
+    fn handle_mesh_packet(&mut self, _packet: protobufs::MeshPacket) -> Result<(), RouterError> {
         Ok(())
     }
 
@@ -702,11 +732,7 @@ async fn run_config_and_listen(
     loop {
         let timeout_secs = if packet_count == 0 { 30 } else { 10 };
 
-        match tokio::time::timeout(
-            Duration::from_secs(timeout_secs),
-            decoded_listener.recv(),
-        )
-        .await
+        match tokio::time::timeout(Duration::from_secs(timeout_secs), decoded_listener.recv()).await
         {
             Ok(Some(from_radio)) => {
                 packet_count += 1;
@@ -728,7 +754,9 @@ async fn run_config_and_listen(
                             nodes.insert(node.node_num, node);
                         }
                         PayloadVariant::ConfigCompleteId(id) => {
-                            tracing::info!("Config complete (id={id}), received {packet_count} packets");
+                            tracing::info!(
+                                "Config complete (id={id}), received {packet_count} packets"
+                            );
                             break;
                         }
                         _ => {}
@@ -740,7 +768,9 @@ async fn run_config_and_listen(
                 break;
             }
             Err(_) => {
-                tracing::warn!("Config timeout after {timeout_secs}s ({packet_count} packets received)");
+                tracing::warn!(
+                    "Config timeout after {timeout_secs}s ({packet_count} packets received)"
+                );
                 break;
             }
         }
@@ -818,10 +848,9 @@ impl MeshRadio {
         emit_connection_state(&p.app_handle, "connecting");
 
         let stream_api = StreamApi::new();
-        let tcp_stream =
-            utils::stream::build_tcp_stream(address.to_string())
-                .await
-                .map_err(|e| MeshGuardError::Ble(format!("TCP connect failed: {e}")))?;
+        let tcp_stream = utils::stream::build_tcp_stream(address.to_string())
+            .await
+            .map_err(|e| MeshGuardError::Ble(format!("TCP connect failed: {e}")))?;
 
         let (mut decoded_listener, connected_api) = stream_api.connect(tcp_stream).await;
 
@@ -922,11 +951,16 @@ fn node_info_to_mesh_node(ni: &protobufs::NodeInfo) -> MeshNodeInfo {
                 u.long_name.clone(),
                 u.long_name.clone(),
                 u.short_name.clone(),
-                format!("{:?}", protobufs::HardwareModel::try_from(u.hw_model).unwrap_or(protobufs::HardwareModel::Unset)),
+                format!(
+                    "{:?}",
+                    protobufs::HardwareModel::try_from(u.hw_model)
+                        .unwrap_or(protobufs::HardwareModel::Unset)
+                ),
             )
         })
         .unwrap_or_default();
 
+    let metrics = ni.device_metrics.as_ref();
     MeshNodeInfo {
         node_num: ni.num,
         user_name,
@@ -937,8 +971,126 @@ fn node_info_to_mesh_node(ni: &protobufs::NodeInfo) -> MeshNodeInfo {
         rssi: 0,
         last_heard: ni.last_heard as i64,
         is_online: ni.last_heard > 0
-            && (chrono::Utc::now().timestamp() - ni.last_heard as i64) < 7200,
+            && (chrono::Utc::now().timestamp() - ni.last_heard as i64)
+                < crate::state::ONLINE_WINDOW_SECS,
+        hops_away: ni.hops_away,
+        battery_level: metrics.and_then(|m| m.battery_level),
+        voltage: metrics.and_then(|m| m.voltage),
+        channel_utilization: metrics.and_then(|m| m.channel_utilization),
+        air_util_tx: metrics.and_then(|m| m.air_util_tx),
+        via_mqtt: ni.via_mqtt,
     }
+}
+
+/// Radio timestamps before this (2020-09-13) mean the clock was never set.
+const MIN_VALID_UNIX_TIME: u32 = 1_600_000_000;
+
+/// A node we have only heard packets from, before any NodeInfo arrived.
+fn unnamed_node(node_num: u32) -> MeshNodeInfo {
+    MeshNodeInfo {
+        node_num,
+        user_name: String::new(),
+        long_name: String::new(),
+        short_name: String::new(),
+        hw_model: String::new(),
+        snr: 0.0,
+        rssi: 0,
+        last_heard: 0,
+        is_online: false,
+        hops_away: None,
+        battery_level: None,
+        voltage: None,
+        channel_utilization: None,
+        air_util_tx: None,
+        via_mqtt: false,
+    }
+}
+
+/// Refresh presence, signal and metadata of the sending node from any packet
+/// we hear. The radio only pushes NodeInfo at connect time, so without this
+/// a peer that is actively messaging us would still look offline, and a
+/// chat request could arrive from a node whose name we do not know yet.
+async fn observe_mesh_packet(packet: &protobufs::MeshPacket, ctx: &ListenerCtx) {
+    use meshtastic::Message as _;
+
+    if packet.from == 0 || packet.from == ctx.my_node_num {
+        return;
+    }
+    let portnum = match &packet.payload_variant {
+        Some(protobufs::mesh_packet::PayloadVariant::Decoded(d)) => Some(d.portnum),
+        _ => None,
+    };
+    let now = chrono::Utc::now().timestamp();
+    let mut nodes = ctx.mesh_nodes.lock().await;
+    // Add unknown nodes only when they announce a name or talk to MeshGuard,
+    // so background traffic (telemetry, positions) does not flood the list.
+    let adds_node = portnum == Some(protobufs::PortNum::NodeinfoApp as i32)
+        || portnum == Some(protobufs::PortNum::PrivateApp as i32);
+    if !nodes.contains_key(&packet.from) && !adds_node {
+        return;
+    }
+    let node = nodes
+        .entry(packet.from)
+        .or_insert_with(|| unnamed_node(packet.from));
+
+    // Prefer the radio's receive time: packets buffered while we were
+    // disconnected must not look current. Fall back to our clock only when
+    // the radio has no valid time (e.g. no GPS fix yet), and never move
+    // last_heard backwards.
+    let heard_at = if packet.rx_time > MIN_VALID_UNIX_TIME && i64::from(packet.rx_time) <= now + 60
+    {
+        i64::from(packet.rx_time)
+    } else {
+        now
+    };
+    node.last_heard = node.last_heard.max(heard_at);
+    node.is_online = now - node.last_heard < crate::state::ONLINE_WINDOW_SECS;
+    node.via_mqtt = packet.via_mqtt;
+
+    // Hop metadata is only trustworthy when hop_start is set (firmware 2.3+).
+    let hops = (packet.hop_start > 0 && packet.hop_start >= packet.hop_limit)
+        .then(|| packet.hop_start - packet.hop_limit);
+    if let Some(h) = hops {
+        node.hops_away = Some(h);
+    }
+    // Signal values describe the last hop, so they only describe the link to
+    // this node when this very packet was received directly.
+    if hops == Some(0) && !packet.via_mqtt {
+        if packet.rx_snr != 0.0 {
+            node.snr = packet.rx_snr;
+        }
+        if packet.rx_rssi != 0 {
+            node.rssi = packet.rx_rssi;
+        }
+    }
+
+    if let Some(protobufs::mesh_packet::PayloadVariant::Decoded(d)) = &packet.payload_variant {
+        if d.portnum == protobufs::PortNum::NodeinfoApp as i32 {
+            if let Ok(user) = protobufs::User::decode(d.payload.as_slice()) {
+                if !user.long_name.is_empty() {
+                    node.user_name = user.long_name.clone();
+                    node.long_name = user.long_name;
+                }
+                if !user.short_name.is_empty() {
+                    node.short_name = user.short_name;
+                }
+                if let Ok(hw) = protobufs::HardwareModel::try_from(user.hw_model) {
+                    node.hw_model = format!("{hw:?}");
+                }
+            }
+        } else if d.portnum == protobufs::PortNum::TelemetryApp as i32 {
+            if let Ok(t) = protobufs::Telemetry::decode(d.payload.as_slice()) {
+                if let Some(protobufs::telemetry::Variant::DeviceMetrics(m)) = t.variant {
+                    node.battery_level = m.battery_level.or(node.battery_level);
+                    node.voltage = m.voltage.or(node.voltage);
+                    node.channel_utilization = m.channel_utilization.or(node.channel_utilization);
+                    node.air_util_tx = m.air_util_tx.or(node.air_util_tx);
+                }
+            }
+        }
+    }
+    drop(nodes);
+    let _ = ctx.app_handle.emit("mesh-nodes-updated", ());
 }
 
 fn spawn_listener(mut listener: meshtastic::packet::PacketReceiver, ctx: ListenerCtx) {
@@ -981,6 +1133,7 @@ fn spawn_listener(mut listener: meshtastic::packet::PacketReceiver, ctx: Listene
                             mesh_packet.to,
                             mesh_packet.channel
                         );
+                        observe_mesh_packet(mesh_packet, &ctx).await;
                         handle_incoming_packet(mesh_packet, &ctx).await;
                     }
                     _ => {}
@@ -1022,7 +1175,12 @@ pub struct PairRequestEvent {
 }
 
 #[cfg(target_os = "android")]
-fn show_android_notification(app_handle: &tauri::AppHandle, title: &str, body: &str, node_num: u32) {
+fn show_android_notification(
+    app_handle: &tauri::AppHandle,
+    title: &str,
+    body: &str,
+    node_num: u32,
+) {
     use tauri::Manager;
     if let Some(state) = app_handle.try_state::<crate::ble_plugin::BlePluginState<tauri::Wry>>() {
         let payload = serde_json::json!({
@@ -1030,7 +1188,10 @@ fn show_android_notification(app_handle: &tauri::AppHandle, title: &str, body: &
             "body": body,
             "nodeNum": node_num,
         });
-        match state.0.run_mobile_plugin::<serde_json::Value>("showNotification", payload) {
+        match state
+            .0
+            .run_mobile_plugin::<serde_json::Value>("showNotification", payload)
+        {
             Ok(_) => tracing::debug!("Android notification shown"),
             Err(e) => tracing::warn!("Failed to show Android notification: {e}"),
         }
@@ -1122,9 +1283,7 @@ async fn handle_incoming_packet(packet: &protobufs::MeshPacket, ctx: &ListenerCt
     };
 
     // ADR-003 §3 rule (a): an authenticated v2 frame upgrades a v1 peer.
-    if outcome.authenticated_version() == Some(WireVersion::V2)
-        && pinned == Some(WireVersion::V1)
-    {
+    if outcome.authenticated_version() == Some(WireVersion::V2) && pinned == Some(WireVersion::V1) {
         upgrade_peer_to_v2(ctx, from_node).await;
     }
 
@@ -1190,9 +1349,7 @@ async fn handle_incoming_packet(packet: &protobufs::MeshPacket, ctx: &ListenerCt
             );
         }
         Inbound::PairRequest { version, .. } => {
-            tracing::info!(
-                "Pair request ({version:?}) from node {from_node} — already have key"
-            );
+            tracing::info!("Pair request ({version:?}) from node {from_node} — already have key");
         }
         Inbound::Dropped(reason) => {
             tracing::info!("Dropped frame from {from_node}: {reason:?}");
@@ -1232,19 +1389,30 @@ async fn handle_possible_pair_request(
         return;
     }
 
+    let from_name = ctx
+        .mesh_nodes
+        .lock()
+        .await
+        .get(&from_node)
+        .map(|n| n.long_name.clone())
+        .unwrap_or_default();
+
     #[cfg(target_os = "android")]
     show_android_notification(
         &ctx.app_handle,
         "Chat Request",
-        &format!("Node {from_node} wants to start a secure chat"),
+        &if from_name.is_empty() {
+            format!("Node {from_node} wants to start a secure chat")
+        } else {
+            format!("{from_name} wants to start a secure chat")
+        },
         from_node,
     );
-
     let _ = ctx.app_handle.emit(
         "pair-request",
         PairRequestEvent {
             from_node,
-            from_name: String::new(),
+            from_name,
             timestamp: now as i64,
         },
     );

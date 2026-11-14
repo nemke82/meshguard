@@ -248,6 +248,7 @@ const state = {
   passphraseMode: null, // "initiate" or "accept"
   passphraseTargetNode: null,
   pendingPairRequests: [],
+  bannerPairRequest: null,
 };
 
 // ============================================================
@@ -468,20 +469,23 @@ function renderMeshNodes() {
 
   for (const node of sorted) {
     const isPeer = state.peers.some((p) => p.node_num === node.node_num);
+    const online = isOnline(node);
+    const signal = formatSignal(node);
     const card = document.createElement("div");
-    card.className = "mesh-node-card" + (node.is_online ? " online" : "");
+    card.className = "mesh-node-card" + (online ? " online" : "");
     card.innerHTML = `
-      <div class="node-avatar">${(node.short_name || "?")[0].toUpperCase()}</div>
+      <div class="node-avatar">${escapeHtml((node.short_name || "?")[0].toUpperCase())}</div>
       <div class="node-info">
-        <div class="node-name">${escapeHtml(node.long_name || node.user_name || "Unknown")}</div>
+        <div class="node-name">${escapeHtml(nodeDisplayName(node))}</div>
         <div class="node-meta">
           ${node.short_name ? `<span class="node-short">${escapeHtml(node.short_name)}</span>` : ""}
           ${node.hw_model && node.hw_model !== "Unset" ? `<span class="node-hw">${escapeHtml(node.hw_model)}</span>` : ""}
           <span class="node-heard">${formatLastHeard(node.last_heard)}</span>
         </div>
+        ${signal ? `<div class="node-signal">${signal}</div>` : ""}
       </div>
       <div class="node-actions">
-        ${node.is_online ? '<span class="online-dot"></span>' : '<span class="offline-dot"></span>'}
+        ${online ? '<span class="online-dot" title="Heard in the last 2 hours"></span>' : '<span class="offline-dot"></span>'}
         ${isPeer ? '<span class="peer-badge">Paired</span>' : ""}
       </div>
     `;
@@ -577,7 +581,22 @@ btnRefreshNodes.addEventListener("click", async () => {
 // ============================================================
 // Passphrase Screen
 // ============================================================
-btnBackMesh.addEventListener("click", () => showScreen(screenMesh));
+btnBackMesh.addEventListener("click", () => {
+  showScreen(screenMesh);
+  showPendingPairBanner();
+});
+
+function showPendingPairBanner() {
+  if (state.pendingPairRequests.length === 0) {
+    state.bannerPairRequest = null;
+    pairRequestBanner.style.display = "none";
+    return;
+  }
+  const req = state.pendingPairRequests[state.pendingPairRequests.length - 1];
+  state.bannerPairRequest = req;
+  pairRequestText.textContent = `Chat request from ${req.from_name || lookupNodeName(req.from_node)}`;
+  pairRequestBanner.style.display = "flex";
+}
 
 formPassphrase.addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -604,6 +623,11 @@ formPassphrase.addEventListener("submit", async (e) => {
     }
 
     passphraseInput.value = "";
+    if (mode === "accept") {
+      state.pendingPairRequests = state.pendingPairRequests.filter(
+        (r) => r.from_node !== nodeNum
+      );
+    }
     state.peers = state.peers.filter((p) => p.node_num !== peer.node_num);
     state.peers.push(peer);
     enterChat(nodeNum, peer.device_name);
@@ -625,8 +649,9 @@ formPassphrase.addEventListener("submit", async (e) => {
 // Pair Request Handling
 // ============================================================
 btnAcceptPair.addEventListener("click", () => {
-  if (state.pendingPairRequests.length === 0) return;
-  const req = state.pendingPairRequests[0];
+  // Accept exactly the request the banner shows.
+  const req = state.bannerPairRequest;
+  if (!req) return;
   state.passphraseMode = "accept";
   state.passphraseTargetNode = req.from_node;
   passphraseTitle.textContent = "Accept Chat Request";
@@ -847,11 +872,13 @@ async function setupEventListeners() {
 
   await listen("pair-request", (event) => {
     const data = event.payload;
+    state.pendingPairRequests = state.pendingPairRequests.filter(
+      (r) => r.from_node !== data.from_node
+    );
     state.pendingPairRequests.push(data);
 
     const name = data.from_name || lookupNodeName(data.from_node);
-    pairRequestText.textContent = `Chat request from ${name}`;
-    pairRequestBanner.style.display = "flex";
+    showPendingPairBanner();
 
     NotificationSound.play();
     Toast.show({ sender: "MeshGuard", text: `Chat request from ${name}` });
@@ -931,7 +958,7 @@ notifTestBtn.addEventListener("click", () => {
 // ============================================================
 function lookupNodeName(nodeNum) {
   const node = state.meshNodes.find((n) => n.node_num === nodeNum);
-  if (node) return node.long_name || node.user_name || "Node " + nodeNum;
+  if (node && (node.long_name || node.user_name)) return node.long_name || node.user_name;
   const peer = state.peers.find((p) => p.node_num === nodeNum);
   if (peer) return peer.device_name;
   return "Node " + nodeNum;
@@ -980,6 +1007,42 @@ function formatTime(ts) {
   });
 }
 
+// A node is online when heard within the last 2 hours (as in the Meshtastic
+// apps). Computed here so the badge ages without a backend event.
+const ONLINE_WINDOW_SECS = 2 * 60 * 60;
+
+function isOnline(node) {
+  if (!node.last_heard) return false;
+  return Math.floor(Date.now() / 1000) - node.last_heard < ONLINE_WINDOW_SECS;
+}
+
+function nodeDisplayName(node) {
+  return (
+    node.long_name ||
+    node.user_name ||
+    "!" + (node.node_num >>> 0).toString(16).padStart(8, "0")
+  );
+}
+
+// Signal, hops and battery, like the Meshtastic node list. Values are
+// numbers from the backend, so no escaping is needed.
+function formatSignal(node) {
+  const parts = [];
+  if (node.hops_away === 0) parts.push("direct");
+  else if (typeof node.hops_away === "number") {
+    parts.push(node.hops_away + (node.hops_away === 1 ? " hop" : " hops"));
+  }
+  if (node.hops_away === 0 || node.hops_away == null) {
+    if (node.rssi) parts.push(Math.round(node.rssi) + " dBm");
+    if (node.snr) parts.push("SNR " + Number(node.snr).toFixed(1) + " dB");
+  }
+  if (typeof node.battery_level === "number") {
+    parts.push(node.battery_level > 100 ? "\u26A1 powered" : "\uD83D\uDD0B " + node.battery_level + "%");
+  }
+  if (node.via_mqtt) parts.push("MQTT");
+  return parts.map((p) => `<span>${p}</span>`).join("");
+}
+
 function formatLastHeard(epochSecs) {
   if (!epochSecs || epochSecs === 0) return "never";
   const diff = Math.floor(Date.now() / 1000) - epochSecs;
@@ -990,6 +1053,11 @@ function formatLastHeard(epochSecs) {
 }
 
 init();
+
+// Re-render once a minute so "last heard" and online dots stay current.
+setInterval(() => {
+  if (state.meshNodes.length) renderMeshNodes();
+}, 60_000);
 
 // Open the privacy policy in the system browser (the webview must not
 // navigate away from the app).
