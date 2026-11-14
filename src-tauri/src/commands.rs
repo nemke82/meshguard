@@ -838,36 +838,48 @@ pub async fn run_path_test(
     if node_num == my_num {
         return Err(MeshGuardError::Protocol("That is your own radio".into()));
     }
-    if let Err(wait) = state.path_tests.lock().await.try_start(node_num) {
-        return Err(MeshGuardError::Protocol(format!(
+    let cooldown = |wait: std::time::Duration| {
+        MeshGuardError::Protocol(format!(
             "Please wait {} s before testing this node again",
             wait.as_secs().max(1)
-        )));
-    }
+        ))
+    };
+    state
+        .path_tests
+        .lock()
+        .await
+        .check(node_num)
+        .map_err(cooldown)?;
+    // The link this request was made on; a reconnect while queued voids it.
+    let link_gen = state.link.current();
+
     // Shares the check-in transmit path: spacing and airtime budget.
     let mut tx = state.status_tx.lock().await;
     if !tx.admit(false).await {
-        state.path_tests.lock().await.forget(node_num);
         return Err(MeshGuardError::Protocol(
             "Airtime budget reached — wait a minute and try again".into(),
         ));
     }
+
+    // Register and transmit under the path-test lock: the listener takes it
+    // to match a reply, so even an instant reply finds the request id.
+    // The timeout starts here, at actual submission.
+    let mut tests = state.path_tests.lock().await;
+    tests.check(node_num).map_err(cooldown)?;
     let sent = {
         let mut radio = state.radio.lock().await;
+        if !state.link.is_current(link_gen) {
+            return Err(MeshGuardError::Protocol(
+                "The radio reconnected — please run the test again".into(),
+            ));
+        }
         match radio.as_mut() {
             Some(r) => r.send_traceroute(node_num).await,
             None => Err(MeshGuardError::NotConnected),
         }
     };
-    match sent {
-        Ok(request_id) => {
-            tx.mark_sent();
-            state.path_tests.lock().await.sent(node_num, request_id);
-            Ok(())
-        }
-        Err(e) => {
-            state.path_tests.lock().await.forget(node_num);
-            Err(e)
-        }
-    }
+    let request_id = sent?;
+    tx.mark_sent();
+    tests.begin(node_num, request_id);
+    Ok(())
 }

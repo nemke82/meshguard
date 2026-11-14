@@ -1408,18 +1408,20 @@ $("#diag-run-path").addEventListener("click", async () => {
   btn.disabled = true;
   $("#diag-path").textContent = "Waiting for the reply (up to 90 s)…";
   // Pending before the request: a fast reply may arrive before invoke()
-  // resolves, and the timeout only fires if this run is still pending.
+  // resolves. The timeout starts once the request was actually sent (the
+  // command may wait for airtime) and only fires if this run is pending.
   diag.pending = true;
   clearTimeout(diag.timer);
-  diag.timer = setTimeout(() => {
-    if (panel !== diag.panel || run !== diag.run || !diag.pending) return;
-    diag.pending = false;
-    $("#diag-path").textContent =
-      "No reply within 90 s. The node may be out of range, asleep, or its firmware may not answer path tests.";
-    btn.disabled = false;
-  }, 90_000);
   try {
     await invoke("run_path_test", { nodeNum });
+    if (panel !== diag.panel || run !== diag.run || !diag.pending) return;
+    diag.timer = setTimeout(() => {
+      if (panel !== diag.panel || run !== diag.run || !diag.pending) return;
+      diag.pending = false;
+      $("#diag-path").textContent =
+        "No reply within 90 s. The node may be out of range, asleep, or its firmware may not answer path tests.";
+      btn.disabled = false;
+    }, 90_000);
   } catch (err) {
     if (panel !== diag.panel || run !== diag.run) return;
     diag.pending = false;

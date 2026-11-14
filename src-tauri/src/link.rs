@@ -70,6 +70,11 @@ impl LinkManager {
     pub fn is_current(&self, link_gen: u64) -> bool {
         self.link_gen.load(Ordering::SeqCst) == link_gen
     }
+
+    /// The current link generation.
+    pub fn current(&self) -> u64 {
+        self.link_gen.load(Ordering::SeqCst)
+    }
 }
 
 /// How long to wait for the old transport's workers to stop.
