@@ -8,6 +8,12 @@
   </head>
   <body>
     <div id="app">
+      <!-- Shown while the app is (re)connecting to the saved radio. -->
+      <div id="link-status" class="link-status" style="display:none;">
+        <span class="spinner"></span>
+        <span id="link-status-text">Reconnecting…</span>
+        <button type="button" id="btn-link-stop" class="link-status-stop">Stop</button>
+      </div>
 
       <!-- ═══════════════════════════════════════════════
            Screen 1: Connect to Meshtastic device

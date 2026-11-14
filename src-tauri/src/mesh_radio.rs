@@ -588,7 +588,9 @@ async fn build_android_ble_stream(
 
         loop {
             tokio::select! {
-                Some(data) = ble_rx.recv() => {
+                msg = ble_rx.recv() => {
+                    // None: the BLE I/O thread ended (link lost).
+                    let Some(data) = msg else { break };
                     let framed = format_packet(&data);
                     if server.write_all(&framed).await.is_err() {
                         break;
@@ -680,6 +682,8 @@ pub struct ConnectParams {
     pub config: Arc<Mutex<AppConfig>>,
     pub config_dir: PathBuf,
     pub inbound: Arc<InboundState>,
+    /// Generation of this link (see `link.rs`).
+    pub link_gen: u64,
 }
 
 /// Everything the background listener needs; cheap to clone.
@@ -694,6 +698,7 @@ struct ListenerCtx {
     config: Arc<Mutex<AppConfig>>,
     config_dir: PathBuf,
     inbound: Arc<InboundState>,
+    link_gen: u64,
 }
 
 impl ListenerCtx {
@@ -708,6 +713,7 @@ impl ListenerCtx {
             config: p.config.clone(),
             config_dir: p.config_dir.clone(),
             inbound: p.inbound.clone(),
+            link_gen: p.link_gen,
         }
     }
 }
@@ -1141,7 +1147,7 @@ fn spawn_listener(mut listener: meshtastic::packet::PacketReceiver, ctx: Listene
             }
         }
         tracing::warn!("Mesh radio listener ended — radio disconnected");
-        emit_connection_state(&ctx.app_handle, "disconnected");
+        crate::link::on_link_lost(ctx.app_handle.clone(), ctx.link_gen);
     });
 }
 
