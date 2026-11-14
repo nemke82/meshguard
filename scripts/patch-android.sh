@@ -40,6 +40,24 @@ if ! grep -q 'android:allowBackup' "$MANIFEST"; then
   echo "  -> Auto Backup disabled"
 fi
 
+# Use the bundled ML Kit barcode model instead of the Play Services one
+# that the barcode-scanner plugin pulls in: the latter downloads its model
+# on first use (fails offline) and needs Google Play Services, which many
+# privacy-focused phones do not have. Same API, larger APK.
+APP_GRADLE="$ANDROID_DIR/app/build.gradle.kts"
+if [ -f "$APP_GRADLE" ] && ! grep -q "barcode-scanning:17" "$APP_GRADLE"; then
+  cat >> "$APP_GRADLE" << 'GRADLE'
+
+configurations.all {
+    resolutionStrategy.dependencySubstitution {
+        substitute(module("com.google.android.gms:play-services-mlkit-barcode-scanning"))
+            .using(module("com.google.mlkit:barcode-scanning:17.3.0"))
+    }
+}
+GRADLE
+  echo "  -> Bundled ML Kit barcode model"
+fi
+
 # ── 2. MainActivity — runtime permission request ─────────────────
 MAIN_ACTIVITY=$(find "$ANDROID_DIR" -name "MainActivity.kt" -type f | head -1)
 

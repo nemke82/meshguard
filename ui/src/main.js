@@ -911,6 +911,17 @@ async function setupEventListeners() {
     }
   });
 
+  await listen("qr-pair-refused", (event) => {
+    Toast.show({
+      sender: "MeshGuard",
+      text: `${lookupNodeName(event.payload)} is already a contact. Remove it first to pair it again with a code.`,
+    });
+  });
+
+  await listen("qr-pair-failed", (event) => {
+    Toast.show({ sender: "MeshGuard", text: `Pairing failed: ${event.payload}` });
+  });
+
   await listen("peer-paired", async (event) => {
     const { name } = event.payload;
     if (qrOverlay.style.display !== "none") {

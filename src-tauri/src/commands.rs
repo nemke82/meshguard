@@ -815,16 +815,21 @@ pub async fn send_status(
     Ok(StatusSendReport { location, results })
 }
 
-// ── Offline QR pairing ────────────────────────────────────────
+// ── Offline QR pairing (ADR-004) ──────────────────────────────
 
 /// A QR pairing offer is valid this long (and can be scanned by several
-/// family members meanwhile).
+/// family members meanwhile; each gets an independent key).
 const PAIR_OFFER_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+/// How often one device may (re)pair under a single offer, e.g. after a
+/// lost accept it scans again.
+const MAX_QR_ACCEPTS_PER_NODE: u8 = 3;
 
 /// The offer this device is currently showing.
 pub struct PairOffer {
-    code: meshguard_core::qrpair::PairCode,
+    offer: meshguard_core::qrpair::PairOffer,
     created: std::time::Instant,
+    /// Nodes paired under this offer, with how many times.
+    accepted: std::collections::HashMap<u32, u8>,
 }
 
 #[derive(Serialize)]
@@ -836,15 +841,15 @@ pub struct PairOfferView {
     pub expires_in_secs: u64,
 }
 
-/// Show a pairing QR code. Anyone who scans it within 10 minutes and sends
-/// the resulting pair request is accepted automatically.
+/// Show a pairing QR code. Devices that scan it within 10 minutes and send
+/// the resulting pair request are accepted automatically.
 #[tauri::command]
 pub async fn create_pair_offer(
     state: State<'_, AppState>,
 ) -> Result<PairOfferView, MeshGuardError> {
     let my_num = (*state.my_node_num.lock().await).ok_or(MeshGuardError::NotConnected)?;
-    let code = meshguard_core::qrpair::PairCode::generate(my_num);
-    let uri = code.to_uri();
+    let offer = meshguard_core::qrpair::PairOffer::generate(my_num);
+    let uri = offer.code().to_uri();
     let svg = qrcode::QrCode::with_error_correction_level(uri.as_bytes(), qrcode::EcLevel::M)
         .map_err(|e| MeshGuardError::Protocol(format!("QR code: {e}")))?
         .render::<qrcode::render::svg::Color>()
@@ -854,8 +859,9 @@ pub async fn create_pair_offer(
         .light_color(qrcode::render::svg::Color("#ffffff"))
         .build();
     *state.pair_offer.lock().await = Some(PairOffer {
-        code,
+        offer,
         created: std::time::Instant::now(),
+        accepted: std::collections::HashMap::new(),
     });
     tracing::info!("Showing a QR pairing offer");
     Ok(PairOfferView {
@@ -865,15 +871,15 @@ pub async fn create_pair_offer(
     })
 }
 
-/// Stop accepting the current QR code.
+/// Stop accepting the current QR code. Waits for an acceptance in progress.
 #[tauri::command]
 pub async fn cancel_pair_offer(state: State<'_, AppState>) -> Result<(), MeshGuardError> {
     *state.pair_offer.lock().await = None;
     Ok(())
 }
 
-/// Pair using a scanned (or typed) code from another device: derive the key
-/// from it and send a v2 pair request. The other device accepts it
+/// Pair using a scanned (or typed) code from another device: run our half
+/// of the handshake and send the pair request. The other device accepts it
 /// automatically while it shows the code.
 #[tauri::command]
 pub async fn pair_with_code(
@@ -889,18 +895,19 @@ pub async fn pair_with_code(
         ));
     }
     let peer = code.node;
-    let session_key = code.derive_key(my_num)?;
+    let hs = meshguard_core::qrpair::scan(&code, my_num, &my_name)?;
     let sealed = outbound::seal(
         WireProtocol::V2.into(),
-        OutPayload::PairRequest(&my_name),
-        &session_key,
+        OutPayload::PairRequest(&hs.request_body),
+        &hs.request_key,
         &PeerIdentity::meshtastic_node(my_num),
         &PeerIdentity::meshtastic_node(peer),
         unix_now(),
         DEFAULT_FRAME_BUDGET,
     )
     .map_err(seal_err)?;
-    let previous = install_key(&state, my_num, peer, key_copy(&session_key)).await?;
+    // The accept is sealed with the chat key: install it before sending.
+    let previous = install_key(&state, my_num, peer, key_copy(&hs.chat_key)).await?;
     if let Err(e) = send_as(&state, my_num, peer, sealed.frame).await {
         rollback_key(&state, my_num, peer, previous).await;
         return Err(e);
@@ -913,10 +920,23 @@ pub async fn pair_with_code(
         .map(|n| n.long_name.clone())
         .filter(|n| !n.trim().is_empty())
         .unwrap_or_else(|| format!("!{peer:08x}"));
-    let saved = save_peer(&state, peer, name, WireProtocol::V2, false).await?;
-    remember_key(&app_handle, &state, my_num, peer, &session_key).await;
+    let saved = match save_peer(&state, peer, name, WireProtocol::V2, false).await {
+        Ok(p) => p,
+        Err(e) => {
+            rollback_key(&state, my_num, peer, None).await;
+            return Err(e);
+        }
+    };
+    remember_key(&app_handle, &state, my_num, peer, &hs.chat_key).await;
     tracing::info!("QR pair request sent to {peer}");
     Ok(saved)
+}
+
+/// Undo a durable replay record for a request that was not accepted after all.
+async fn forget_dedup(state: &AppState, peer: &PeerIdentity, id: &meshguard_core::MessageId) {
+    let mut dedup = state.inbound.dedup.lock().await;
+    dedup.forget(peer, id);
+    let _ = crate::dedup_store::save(&state.config_dir, &dedup);
 }
 
 #[derive(Clone, Serialize)]
@@ -926,35 +946,36 @@ pub struct PeerPairedEvent {
 }
 
 /// Called by the listener for an undecryptable frame: if we are showing a
-/// QR code and the frame is a fresh v2 pair request sealed with the key
-/// derived from it, accept automatically. Returns true when handled.
+/// QR code and the frame is a fresh v2 pair request sealed with its request
+/// key, finish the handshake and accept automatically. Returns true when
+/// the frame belonged to the offer (handled or deliberately ignored).
+///
+/// Holds the offer lock throughout, so *Done* (cancel) cannot interleave
+/// with an acceptance.
 pub(crate) async fn try_accept_qr(app: &tauri::AppHandle, from_node: u32, frame: &[u8]) -> bool {
     use tauri::{Emitter, Manager};
     let state = app.state::<AppState>();
-    let code = {
-        let mut offer = state.pair_offer.lock().await;
-        match offer.as_ref() {
-            Some(o) if o.created.elapsed() < PAIR_OFFER_TTL => o.code.clone(),
-            Some(_) => {
-                *offer = None;
-                return false;
-            }
-            None => return false,
-        }
+    let mut slot = state.pair_offer.lock().await;
+    let Some(offer) = slot.as_mut() else {
+        return false;
     };
+    if offer.created.elapsed() >= PAIR_OFFER_TTL {
+        *slot = None;
+        return false;
+    }
     let Ok((my_num, my_name)) = my_identity(&state).await else {
         return false;
     };
-    if code.node != my_num || from_node == my_num {
+    if offer.offer.code().node != my_num || from_node == my_num {
         return false; // offer from another radio, or a loop
     }
-    let Ok(session_key) = code.derive_key(from_node) else {
+    let Ok(request_key) = offer.offer.code().request_key(from_node) else {
         return false;
     };
     let me = PeerIdentity::meshtastic_node(my_num);
     let peer_id = PeerIdentity::meshtastic_node(from_node);
     let Ok(DecodedFrame::V2(env)) =
-        decode_frame(frame, Some(&session_key), &aad_context(&peer_id, &me))
+        decode_frame(frame, Some(&request_key), &aad_context(&peer_id, &me))
     else {
         return false;
     };
@@ -970,6 +991,35 @@ pub(crate) async fn try_accept_qr(app: &tauri::AppHandle, from_node: u32, frame:
         tracing::info!("Stale QR pair request from {from_node} ignored");
         return true;
     }
+    let Some(body) = env.text_body() else {
+        return true;
+    };
+    let Ok((chat_key, announced)) = offer.offer.accept(from_node, body) else {
+        tracing::info!("Malformed QR pair request from {from_node}");
+        return true;
+    };
+
+    // Never silently replace an existing contact: anyone who saw the code
+    // could otherwise claim a known node number. Re-pairing a known contact
+    // means removing it first. Nodes paired under this very offer may scan
+    // again (e.g. the accept was lost), a bounded number of times.
+    let accepted_here = offer.accepted.get(&from_node).copied().unwrap_or(0);
+    let known = state
+        .config
+        .lock()
+        .await
+        .peers
+        .iter()
+        .any(|p| p.node_num == from_node);
+    if known && accepted_here == 0 {
+        tracing::warn!("QR pair request from already-paired node {from_node} refused");
+        let _ = app.emit("qr-pair-refused", from_node);
+        return true;
+    }
+    if accepted_here >= MAX_QR_ACCEPTS_PER_NODE {
+        return true;
+    }
+
     // Replay protection: each request is accepted once, durably.
     {
         let mut dedup = state.inbound.dedup.lock().await;
@@ -981,25 +1031,26 @@ pub(crate) async fn try_accept_qr(app: &tauri::AppHandle, from_node: u32, frame:
             return true;
         }
     }
+
     let Ok(sealed) = outbound::seal(
         WireProtocol::V2.into(),
         OutPayload::PairAccept(&my_name),
-        &session_key,
+        &chat_key,
         &me,
         &peer_id,
         unix_now(),
         DEFAULT_FRAME_BUDGET,
     ) else {
+        forget_dedup(&state, &peer_id, &env.message_id).await;
         return true;
     };
-    let Ok(previous) = install_key(&state, my_num, from_node, key_copy(&session_key)).await else {
+    let Ok(previous) = install_key(&state, my_num, from_node, key_copy(&chat_key)).await else {
+        forget_dedup(&state, &peer_id, &env.message_id).await;
         return true;
     };
     if let Err(e) = send_as(&state, my_num, from_node, sealed.frame).await {
         rollback_key(&state, my_num, from_node, previous).await;
-        let mut dedup = state.inbound.dedup.lock().await;
-        dedup.forget(&peer_id, &env.message_id);
-        let _ = crate::dedup_store::save(&state.config_dir, &dedup);
+        forget_dedup(&state, &peer_id, &env.message_id).await;
         tracing::warn!("QR pair accept to {from_node} not sent: {e}");
         return true;
     }
@@ -1010,16 +1061,17 @@ pub(crate) async fn try_accept_qr(app: &tauri::AppHandle, from_node: u32, frame:
         .get(&from_node)
         .map(|n| n.long_name.clone())
         .filter(|n| !n.trim().is_empty())
-        .or_else(|| {
-            env.text_body()
-                .map(str::to_string)
-                .filter(|n| !n.trim().is_empty())
-        })
+        .or_else(|| Some(announced).filter(|n| !n.trim().is_empty()))
         .unwrap_or_else(|| format!("!{from_node:08x}"));
     if let Err(e) = save_peer(&state, from_node, name.clone(), WireProtocol::V2, true).await {
+        // Keep memory and disk consistent: no half-paired contact.
+        rollback_key(&state, my_num, from_node, previous).await;
         tracing::warn!("Could not save QR peer {from_node}: {e}");
+        let _ = app.emit("qr-pair-failed", e.to_string());
+        return true;
     }
-    remember_key(app, &state, my_num, from_node, &session_key).await;
+    remember_key(app, &state, my_num, from_node, &chat_key).await;
+    offer.accepted.insert(from_node, accepted_here + 1);
     tracing::info!("Paired with {from_node} via QR");
     let _ = app.emit(
         "peer-paired",
