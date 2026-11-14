@@ -1544,8 +1544,15 @@ async fn handle_incoming_packet(packet: &protobufs::MeshPacket, ctx: &ListenerCt
         }
         Inbound::PeerAck { acked } => {
             tracing::info!("Peer ACK from {from_node} for {acked}");
-            let probed = ctx.inbound.caps_probes.lock().await.remove(&acked);
-            if probed == Some(from_node) {
+            let probed = {
+                let mut probes = ctx.inbound.caps_probes.lock().await;
+                let hit = probes.get(&from_node).is_some_and(|(id, _)| *id == acked);
+                if hit {
+                    probes.remove(&from_node);
+                }
+                hit
+            };
+            if probed {
                 tracing::info!("Node {from_node} understands check-in/SOS messages");
                 mark_features(ctx, from_node, FEATURE_STATUS).await;
                 return;

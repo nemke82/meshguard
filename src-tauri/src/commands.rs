@@ -613,8 +613,9 @@ pub async fn auto_connect(app_handle: tauri::AppHandle) -> Result<bool, MeshGuar
 
 // ── Check-in, SOS and location ────────────────────────────────
 
-/// At most this many recipients per tap (SOS goes to every paired contact).
-const MAX_STATUS_RECIPIENTS: usize = 64;
+/// Sanity bound on recipients per request; SOS goes to every paired
+/// contact, paced by the transmit budget rather than rejected.
+const MAX_STATUS_RECIPIENTS: usize = 256;
 const MAX_STATUS_PRESETS: usize = 8;
 
 #[derive(Serialize)]
@@ -736,8 +737,6 @@ pub async fn send_status(
         text,
     };
 
-    // Plain-text rendering for peers not (yet) known to understand Status.
-    let fallback = body.fallback_text();
     let urgent = kind.is_urgent();
 
     // One transmit path for all check-ins: spacing + airtime budget across
@@ -758,7 +757,7 @@ pub async fn send_status(
         // build would drop a Status frame, so they get v2 text until they
         // are known to understand it.
         let payload = if protocol == WireProtocol::V2 && !capable {
-            OutPayload::Text(&fallback)
+            OutPayload::StatusAsText(&body)
         } else {
             OutPayload::Status(&body)
         };
@@ -781,7 +780,7 @@ pub async fn send_status(
         };
         let outcome = match sealed {
             Ok(s) => {
-                if tx.admit(urgent, u64::from(unix_now())).await {
+                if tx.admit(urgent).await {
                     let r = send_as(&state, my_num, peer, s.frame)
                         .await
                         .map(|()| s.message_id);

@@ -56,9 +56,10 @@ pub struct InboundState {
     pub pair_notify_per_node: Mutex<Cooldown<u32>>,
     /// And a global cap across all unknown nodes.
     pub pair_notify_global: Mutex<TokenBucket>,
-    /// Outstanding feature probes: probe message id -> peer node. An ACK
-    /// for one proves the peer understands the newer message types.
-    pub caps_probes: Mutex<HashMap<meshguard_core::MessageId, u32>>,
+    /// Outstanding feature probes: peer node -> (probe id, sent at). An ACK
+    /// for the id proves the peer understands the newer message types.
+    /// At most one per peer; expired entries are pruned.
+    pub caps_probes: Mutex<HashMap<u32, (meshguard_core::MessageId, u64)>>,
 }
 
 /// Maximum remembered `(sender, message_id)` pairs.

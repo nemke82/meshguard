@@ -218,6 +218,34 @@ impl StatusBody {
         })
     }
 
+    /// [`Self::fallback_text`] cut to at most `max_bytes` UTF-8 bytes. The
+    /// coordinates are kept whole; the user's text is shortened (with "…")
+    /// on a character boundary.
+    pub fn fallback_text_within(&self, max_bytes: usize) -> String {
+        let full = self.fallback_text();
+        if full.len() <= max_bytes {
+            return full;
+        }
+        let suffix = full[self.text.len()..].to_string(); // " 📍 …" or ""
+        const ELLIPSIS: &str = "…";
+        let room = max_bytes.saturating_sub(suffix.len() + ELLIPSIS.len());
+        let mut cut = room.min(self.text.len());
+        while !self.text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        let out = format!("{}{ELLIPSIS}{suffix}", &self.text[..cut]);
+        if out.len() <= max_bytes {
+            out
+        } else {
+            // Not even the coordinates fit: keep as much text as possible.
+            let mut cut = max_bytes.min(self.text.len());
+            while !self.text.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            self.text[..cut].to_string()
+        }
+    }
+
     /// Plain-text rendering for peers that only speak v1.
     pub fn fallback_text(&self) -> String {
         let mut s = self.text.clone();
@@ -308,6 +336,25 @@ mod tests {
             text: String::new(),
         };
         assert!(s.encode().is_err());
+    }
+
+    #[test]
+    fn fallback_is_cut_to_fit() {
+        let s = StatusBody {
+            kind: StatusKind::Sos,
+            location: Some(fix()),
+            text: "č".repeat(80), // 160 bytes
+        };
+        let out = s.fallback_text_within(173);
+        assert!(out.len() <= 173, "{}", out.len());
+        assert!(out.ends_with("±8 m"));
+        assert!(out.contains('…'));
+        let short = StatusBody {
+            text: "OK".into(),
+            ..s.clone()
+        };
+        assert_eq!(short.fallback_text_within(173), short.fallback_text());
+        assert!(s.fallback_text_within(10).len() <= 10);
     }
 
     #[test]

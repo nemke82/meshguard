@@ -110,5 +110,7 @@ Body: `features u32 BE` (bit 0 = understands `Status`; extra trailing bytes are 
 
 - A peer is marked capable when we receive a `Status` or `Caps` from it, or when it ACKs a `Caps` probe we sent (older builds drop the unknown type, so no ACK).
 - Probes go only to v2 peers that are *confirmed* to hold our key (they sent us an authenticated frame, or we accepted their request). Before that, any frame from us would look like a new chat request and replace the pending one.
-- Probes and check-ins share one transmit path: 400 ms spacing and a token-bucket airtime budget (burst 24, then one per 15 s); SOS and need-help are spaced but never refused.
+- Probes and check-ins share one transmit path with 400 ms spacing. Routine traffic has a token bucket (burst 24, then one per 15 s) and is refused when it is empty. SOS and need-help have their own bucket (burst 64, then one per 5 s) and wait for it (up to 3 minutes) instead of being refused, so routine traffic cannot block an SOS and repeated SOS taps cannot flood the channel.
+- One outstanding probe per peer; unanswered probes expire after an hour.
+- The text fallback is cut to fit one frame (coordinates kept whole) and keeps the 6-hour TTL for urgent kinds.
 - Implementation: `meshguard-core::status`.

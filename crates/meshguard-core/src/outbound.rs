@@ -38,6 +38,9 @@ pub enum OutPayload<'a> {
     PairAccept(&'a str),
     /// Sent as type `Status` on v2, as its plain-text fallback on v1.
     Status(&'a StatusBody),
+    /// The plain-text fallback, also on v2 (for peers not yet known to
+    /// understand `Status`). Cut to fit; urgent kinds keep the urgent TTL.
+    StatusAsText(&'a StatusBody),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,7 +86,9 @@ pub fn seal(
                 OutPayload::Text(s) => V1Payload::Text(s.to_string()),
                 OutPayload::PairRequest(s) => V1Payload::PairRequest(s.to_string()),
                 OutPayload::PairAccept(s) => V1Payload::PairAccept(s.to_string()),
-                OutPayload::Status(st) => V1Payload::Text(st.fallback_text()),
+                OutPayload::Status(st) | OutPayload::StatusAsText(st) => V1Payload::Text(
+                    st.fallback_text_within(max_text_bytes(WireVersion::V1, budget)),
+                ),
             };
             let wire = p.to_wire();
             let len = 12 + wire.len() + 16;
@@ -121,6 +126,15 @@ pub fn seal(
                     };
                     let body = st.encode().map_err(|_| SealError::InvalidBody)?;
                     (MessageType::Status, body, ttl)
+                }
+                OutPayload::StatusAsText(st) => {
+                    let ttl = if st.kind.is_urgent() {
+                        URGENT_STATUS_TTL_MINS
+                    } else {
+                        DEFAULT_TEXT_TTL_MINS
+                    };
+                    let text = st.fallback_text_within(max_text_bytes(WireVersion::V2, budget));
+                    (MessageType::Text, text.into_bytes(), ttl)
                 }
             };
             let env = EnvelopeV2 {
@@ -331,6 +345,34 @@ mod status_tests {
             panic!("expected v1 text");
         };
         assert_eq!(t, st.fallback_text());
+    }
+
+    #[test]
+    fn status_as_text_fits_and_keeps_urgent_ttl() {
+        let k = derive_p2p_key("A", "B", "pw").unwrap();
+        let (a, b) = (
+            PeerIdentity::meshtastic_node(1),
+            PeerIdentity::meshtastic_node(2),
+        );
+        let mut st = sos();
+        st.text = "a".repeat(max_status_text_bytes(true, DEFAULT_FRAME_BUDGET));
+        let s = seal(
+            WireVersion::V2,
+            OutPayload::StatusAsText(&st),
+            &k,
+            &a,
+            &b,
+            5,
+            DEFAULT_FRAME_BUDGET,
+        )
+        .unwrap();
+        let Ok(DecodedFrame::V2(env)) = decode_frame(&s.frame, Some(&k), &aad_context(&a, &b))
+        else {
+            panic!("expected v2");
+        };
+        assert_eq!(env.message_type, MessageType::Text);
+        assert_eq!(env.ttl_mins, URGENT_STATUS_TTL_MINS);
+        assert!(env.text_body().unwrap().contains("44.81234"));
     }
 
     #[test]

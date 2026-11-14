@@ -19,10 +19,20 @@ use crate::state::AppState;
 /// Minimum gap between two transmissions from this path.
 pub const SPACING: Duration = Duration::from_millis(400);
 
+/// How long an urgent transmission may wait for its budget.
+const URGENT_MAX_WAIT: Duration = Duration::from_secs(180);
+/// A probe without an ACK is forgotten after this, and the peer may be
+/// probed again (older builds never answer).
+pub const PROBE_EXPIRY_SECS: u64 = 60 * 60;
+
 pub struct StatusTx {
     last_sent: Option<Instant>,
-    /// Burst of 24, then one transmission per 15 s.
+    /// Check-ins and probes: burst of 24, then one per 15 s.
     budget: TokenBucket,
+    /// SOS / need help: enough for one SOS to many contacts, then one per
+    /// 5 s. Separate so routine traffic can never block an SOS, and bounded
+    /// so repeated SOS taps cannot flood the channel either.
+    urgent_budget: TokenBucket,
 }
 
 impl Default for StatusTx {
@@ -30,16 +40,26 @@ impl Default for StatusTx {
         Self {
             last_sent: None,
             budget: TokenBucket::new(24, 15),
+            urgent_budget: TokenBucket::new(64, 5),
         }
     }
 }
 
 impl StatusTx {
-    /// Wait for the spacing, then take budget. Returns false (and takes
-    /// nothing) when the budget is exhausted and `urgent` is false.
-    pub async fn admit(&mut self, urgent: bool, now_unix: u64) -> bool {
-        let took = self.budget.try_take(now_unix);
-        if !took && !urgent {
+    /// Wait for the spacing and take budget. Routine traffic is refused
+    /// (false) when its budget is empty; urgent traffic waits for its own
+    /// budget, up to [`URGENT_MAX_WAIT`].
+    pub async fn admit(&mut self, urgent: bool) -> bool {
+        let now = || chrono::Utc::now().timestamp().max(0) as u64;
+        if urgent {
+            let deadline = Instant::now() + URGENT_MAX_WAIT;
+            while !self.urgent_budget.try_take(now()) {
+                if Instant::now() >= deadline {
+                    return false;
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        } else if !self.budget.try_take(now()) {
             return false;
         }
         if let Some(last) = self.last_sent {
@@ -95,22 +115,33 @@ pub async fn probe_peers(state: &AppState) {
         let Some(id) = sealed.message_id else {
             continue;
         };
-        let mut tx = state.status_tx.lock().await;
-        if !tx
-            .admit(false, u64::from(crate::commands::unix_now()))
-            .await
+        let now = u64::from(crate::commands::unix_now());
         {
+            // One outstanding probe per peer; expired ones may be retried.
+            let mut probes = state.inbound.caps_probes.lock().await;
+            probes.retain(|_, (_, at)| now.saturating_sub(*at) < PROBE_EXPIRY_SECS);
+            if probes.contains_key(&peer) {
+                continue;
+            }
+        }
+        let mut tx = state.status_tx.lock().await;
+        if !tx.admit(false).await {
             tracing::debug!("Feature probes paused: airtime budget");
             return;
         }
-        state.inbound.caps_probes.lock().await.insert(id, peer);
+        state
+            .inbound
+            .caps_probes
+            .lock()
+            .await
+            .insert(peer, (id, now));
         match crate::commands::send_as(state, my_num, peer, sealed.frame).await {
             Ok(()) => {
                 tx.mark_sent();
                 tracing::info!("Probed node {peer} for check-in support");
             }
             Err(e) => {
-                state.inbound.caps_probes.lock().await.remove(&id);
+                state.inbound.caps_probes.lock().await.remove(&peer);
                 tracing::debug!("Probe to {peer} not sent: {e}");
             }
         }
