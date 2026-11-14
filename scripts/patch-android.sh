@@ -45,7 +45,7 @@ fi
 # on first use (fails offline) and needs Google Play Services, which many
 # privacy-focused phones do not have. Same API, larger APK.
 APP_GRADLE="$ANDROID_DIR/app/build.gradle.kts"
-if [ -f "$APP_GRADLE" ] && ! grep -q "barcode-scanning:17" "$APP_GRADLE"; then
+if [ -f "$APP_GRADLE" ] && ! grep -q "module = \"play-services-mlkit-barcode-scanning\"" "$APP_GRADLE"; then
   cat >> "$APP_GRADLE" << 'GRADLE'
 
 // A module substitution keeps the original artifact name and fails to
