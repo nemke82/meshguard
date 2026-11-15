@@ -64,3 +64,10 @@ pub(crate) fn body_aad(conv: &ConversationId, id: &MessageId, dir: Direction) ->
     };
     aad(&[b"messages", b"body", conv.0.as_bytes(), id.as_bytes(), d])
 }
+
+pub(crate) fn key_check_aad() -> Vec<u8> {
+    aad(&[b"meta", b"key_check"])
+}
+
+/// Plaintext of the key check value.
+pub(crate) const KEY_CHECK: &[u8] = b"meshguard-store";

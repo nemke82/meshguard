@@ -14,7 +14,7 @@ use crate::error::MeshGuardError;
 use crate::link::{self, LinkTarget};
 use crate::mesh_radio::{ScannedBleDevice, SerialPortInfo};
 use crate::state::{AppState, MeshNodeInfo};
-use meshguard_core::status::{GeoFix, StatusBody, StatusKind, FEATURE_STATUS};
+use meshguard_core::status::{GeoFix, StatusBody, StatusKind};
 
 // ── BLE Scanning ──────────────────────────────────────────────
 
@@ -206,7 +206,7 @@ pub(crate) fn unix_now() -> u32 {
     chrono::Utc::now().timestamp().clamp(0, i64::from(u32::MAX)) as u32
 }
 
-fn seal_err(e: SealError) -> MeshGuardError {
+pub(crate) fn seal_err(e: SealError) -> MeshGuardError {
     match e {
         SealError::TooLarge { len, max } => MeshGuardError::Protocol(format!(
             "Message too long: {len} bytes on the wire, limit is {max}"
@@ -518,7 +518,7 @@ pub async fn accept_chat(
                 ))
             }
         }
-        if let Err(e) = crate::dedup_store::save(&state.config_dir, &dedup) {
+        if let Err(e) = state.inbound.save_dedup(&state.config_dir, &dedup).await {
             dedup.forget(&peer_id, &id);
             return Err(e);
         }
@@ -531,7 +531,7 @@ pub async fn accept_chat(
             if let Some(id) = accepted_v2_request {
                 let mut dedup = state.inbound.dedup.lock().await;
                 dedup.forget(&peer_id, &id);
-                let _ = crate::dedup_store::save(&state.config_dir, &dedup);
+                let _ = state.inbound.save_dedup(&state.config_dir, &dedup).await;
             }
             return Err(e);
         }
@@ -543,7 +543,7 @@ pub async fn accept_chat(
         if let Some(id) = accepted_v2_request {
             let mut dedup = state.inbound.dedup.lock().await;
             dedup.forget(&peer_id, &id);
-            let _ = crate::dedup_store::save(&state.config_dir, &dedup);
+            let _ = state.inbound.save_dedup(&state.config_dir, &dedup).await;
         }
         return Err(e);
     }
@@ -564,54 +564,39 @@ pub async fn accept_chat(
 
 // ── Messaging ─────────────────────────────────────────────────
 
-/// Result of handing a message to the local radio. This is a *submission*,
-/// not delivery: for v2 peers a later `message-delivered` event with the
-/// same `message_id` confirms receipt by the peer app.
+/// Result of sending a message. Even `submitted` is not delivery: for v2
+/// peers a later `message-state` / `message-delivered` event with the same
+/// `message_id` confirms receipt by the peer app.
 #[derive(Serialize)]
 pub struct SendReceipt {
-    /// Stable id (v2 only); `None` for v1 peers, which cannot confirm.
+    /// Stable id: on the wire for v2 peers, local only for v1 peers.
     pub message_id: Option<String>,
     pub protocol: WireProtocol,
+    /// `queued` (waiting for the radio), `submitted`, `retrying`, ...
+    pub state: String,
+    /// Saved in the history store (and retried from the outbox).
+    pub stored: bool,
 }
 
-/// Send an encrypted text message to a peer.
+/// Send an encrypted text message to a peer. With history on, it is saved
+/// first and waits in the outbox while the radio is away.
 #[tauri::command]
 pub async fn send_message(
     peer_node_num: u32,
     text: String,
-    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
 ) -> Result<SendReceipt, MeshGuardError> {
-    let my_num = (*state.my_node_num.lock().await).ok_or(MeshGuardError::NotConnected)?;
-    let protocol = state
-        .config
-        .lock()
-        .await
-        .peers
-        .iter()
-        .find(|p| p.node_num == peer_node_num)
-        .map(|p| p.protocol)
-        .unwrap_or_default();
-
-    let sealed = {
-        let keys = state.session_keys.lock().await;
-        let session_key = keys.get(&peer_node_num).ok_or(MeshGuardError::NoSession)?;
-        outbound::seal(
-            protocol.into(),
-            OutPayload::Text(&text),
-            session_key,
-            &PeerIdentity::meshtastic_node(my_num),
-            &PeerIdentity::meshtastic_node(peer_node_num),
-            unix_now(),
-            DEFAULT_FRAME_BUDGET,
-        )
-        .map_err(seal_err)?
-    };
-
-    send_as(&state, my_num, peer_node_num, sealed.frame).await?;
-
+    let r = crate::history::send(
+        &app_handle,
+        peer_node_num,
+        crate::history::Content::Text(text),
+    )
+    .await?;
     Ok(SendReceipt {
-        message_id: sealed.message_id.map(|id| id.to_hex()),
-        protocol,
+        message_id: Some(r.message_id.to_hex()),
+        protocol: r.protocol,
+        state: r.state.to_string(),
+        stored: r.stored,
     })
 }
 
@@ -681,6 +666,8 @@ pub struct StatusSendResult {
     /// Stable id for v2 peers (matches their delivery ACK).
     pub message_id: Option<String>,
     pub protocol: WireProtocol,
+    /// Delivery state when sent or queued (see `SendReceipt::state`).
+    pub state: Option<String>,
     pub error: Option<String>,
 }
 
@@ -759,6 +746,7 @@ pub async fn send_status(
     kind: StatusKind,
     text: String,
     include_location: bool,
+    app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<StatusSendReport, MeshGuardError> {
     let mut peers = peer_node_nums;
@@ -772,7 +760,8 @@ pub async fn send_status(
         return Err(MeshGuardError::Protocol("The message is empty".into()));
     }
 
-    let my_num = (*state.my_node_num.lock().await).ok_or(MeshGuardError::NotConnected)?;
+    // No radio check here: with history on, a check-in or SOS waits in the
+    // outbox until the radio is back (history::send decides).
     let location = if include_location || kind == StatusKind::Sos {
         *state.my_position.lock().await
     } else {
@@ -796,78 +785,51 @@ pub async fn send_status(
     let mut tx = state.status_tx.lock().await;
     let mut results = Vec::with_capacity(peers.len());
     for peer in peers {
-        let (protocol, capable) = state
+        let protocol = state
             .config
             .lock()
             .await
             .peers
             .iter()
             .find(|p| p.node_num == peer)
-            .map(|p| (p.protocol, p.features & FEATURE_STATUS != 0))
+            .map(|p| p.protocol)
             .unwrap_or_default();
-        // v1 peers get the fallback inside `seal`; v2 peers on an older
-        // build would drop a Status frame, so they get v2 text until they
-        // are known to understand it.
-        let payload = if protocol == WireProtocol::V2 && !capable {
-            OutPayload::StatusAsText(&body)
-        } else {
-            OutPayload::Status(&body)
-        };
-        let sealed = {
-            let keys = state.session_keys.lock().await;
-            keys.get(&peer)
-                .ok_or(MeshGuardError::NoSession)
-                .and_then(|key| {
-                    outbound::seal(
-                        protocol.into(),
-                        payload,
-                        key,
-                        &PeerIdentity::meshtastic_node(my_num),
-                        &PeerIdentity::meshtastic_node(peer),
-                        unix_now(),
-                        DEFAULT_FRAME_BUDGET,
-                    )
-                    .map_err(seal_err)
-                })
-        };
-        let outcome = match sealed {
-            Ok(s) => {
-                if tx.admit(urgent).await {
-                    let r = send_as(&state, my_num, peer, s.frame)
-                        .await
-                        .map(|()| s.message_id);
-                    if r.is_ok() {
-                        tx.mark_sent();
-                    }
-                    r
-                } else {
-                    Err(MeshGuardError::Protocol(
-                        "Airtime budget reached — wait a minute and try again".into(),
-                    ))
-                }
+        let outcome = if tx.admit(urgent).await {
+            let r = crate::history::send(
+                &app_handle,
+                peer,
+                crate::history::Content::Status(body.clone()),
+            )
+            .await;
+            if r.as_ref().is_ok_and(|o| o.state == "submitted") {
+                tx.mark_sent();
             }
-            Err(e) => Err(e),
+            r
+        } else {
+            Err(MeshGuardError::Protocol(
+                "Airtime budget reached — wait a minute and try again".into(),
+            ))
         };
         tracing::info!(
-            "Status {kind:?} to {peer} ({}): {}",
-            if matches!(payload, OutPayload::Status(_)) {
-                "status"
-            } else {
-                "text fallback"
-            },
-            if outcome.is_ok() { "sent" } else { "failed" }
+            "Status {kind:?} to {peer}: {}",
+            match &outcome {
+                Ok(o) => o.state,
+                Err(_) => "failed",
+            }
         );
         results.push(match outcome {
-            Ok(id) => StatusSendResult {
+            Ok(o) => StatusSendResult {
                 peer_node: peer,
-                message_id: id.map(|id| id.to_hex()),
-                protocol,
+                message_id: Some(o.message_id.to_hex()),
+                protocol: o.protocol,
+                state: Some(o.state.to_string()),
                 error: None,
             },
             Err(e) => StatusSendResult {
                 peer_node: peer,
                 message_id: None,
                 protocol,
+                state: None,
                 error: Some(e.to_string()),
             },
         });
@@ -1009,7 +971,7 @@ pub async fn pair_with_code(
 async fn forget_dedup(state: &AppState, peer: &PeerIdentity, id: &meshguard_core::MessageId) {
     let mut dedup = state.inbound.dedup.lock().await;
     dedup.forget(peer, id);
-    let _ = crate::dedup_store::save(&state.config_dir, &dedup);
+    let _ = state.inbound.save_dedup(&state.config_dir, &dedup).await;
 }
 
 #[derive(Clone, Serialize)]
@@ -1096,7 +1058,12 @@ pub(crate) async fn try_accept_qr(app: &tauri::AppHandle, from_node: u32, frame:
         if dedup.observe(&peer_id, env.message_id, now) != Seen::New {
             return true;
         }
-        if crate::dedup_store::save(&state.config_dir, &dedup).is_err() {
+        if state
+            .inbound
+            .save_dedup(&state.config_dir, &dedup)
+            .await
+            .is_err()
+        {
             dedup.forget(&peer_id, &env.message_id);
             return true;
         }

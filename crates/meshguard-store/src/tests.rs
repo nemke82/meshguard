@@ -1,4 +1,5 @@
 use super::*;
+use crate::cipher::StoreCipher;
 use meshguard_core::delivery::{DueAction, RetryPolicy};
 
 const ME: u32 = 0xa1b2_c3d4;
@@ -91,6 +92,7 @@ fn outbox_follows_the_delivery_state_machine() {
     let due = s.due_outbound(1000).unwrap();
     assert_eq!(due.len(), 1);
     assert_eq!(due[0].body, b"are you ok?");
+    assert_eq!(due[0].created_at, 1000);
     assert_eq!(due[0].outbound.due_action(1000), Some(DueAction::Send));
 
     // Submitted: not due until the ACK deadline.
@@ -221,10 +223,10 @@ fn survives_reopen_and_needs_the_same_vault() {
     let c = conversation_id(ME, BOB);
     assert_eq!(s.messages(&c, None, 10).unwrap()[0].body, b"kept");
 
-    let other = Store::open(&path, &SessionKey::from_bytes([8u8; 32])).unwrap();
+    // A different vault key is refused on open, not on every read.
     assert!(matches!(
-        other.messages(&c, None, 10),
-        Err(StoreError::Decrypt)
+        Store::open(&path, &SessionKey::from_bytes([8u8; 32])),
+        Err(StoreError::WrongKey)
     ));
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
@@ -300,4 +302,97 @@ fn safety_pragmas_are_on() {
         .pragma_query_value(None, "secure_delete", |r| r.get(0))
         .unwrap();
     assert_eq!((fk, sd), (1, 1));
+}
+
+#[test]
+fn a_schema_1_store_is_claimed_only_by_its_own_key() {
+    let path = tmp_db("v1-claim");
+    {
+        let mut conn = Connection::open(&path).unwrap();
+        schema::migrate_to(&mut conn, 1).unwrap();
+    }
+    // Rows written by schema-1 code with the right key.
+    {
+        let cipher = StoreCipher::new(&vault());
+        let conn = Connection::open(&path).unwrap();
+        let c = conversation_id(ME, BOB);
+        conn.execute(
+            "INSERT INTO conversations (conversation_id, my_node, peer_node) VALUES (?1, ?2, ?3)",
+            params![c.0, ME, BOB],
+        )
+        .unwrap();
+        let enc = cipher
+            .seal(b"old", &cipher::body_aad(&c, &id(1), Direction::In))
+            .unwrap();
+        conn.execute(
+            "INSERT INTO messages VALUES (?1, ?2, 0, 1, ?3, 1, 1, 'received')",
+            params![c.0, id(1).as_bytes().as_slice(), enc],
+        )
+        .unwrap();
+    }
+    assert!(matches!(
+        Store::open(&path, &SessionKey::from_bytes([9u8; 32])),
+        Err(StoreError::WrongKey)
+    ));
+    let s = Store::open(&path, &vault()).unwrap();
+    assert_eq!(
+        s.messages(&conversation_id(ME, BOB), None, 5).unwrap()[0].body,
+        b"old"
+    );
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[test]
+fn unconfirmed_sends_leave_the_outbox_once_submitted() {
+    let mut s = store();
+    let c = s.upsert_conversation(ME, BOB, None).unwrap();
+    let mut out = OutboundMessage::queued(id(5), 0, 3600);
+    s.insert_outgoing(&c, MessageKind::Text, b"v1", 0, &out)
+        .unwrap();
+    out.record_submitted(1, TransportId::new("ble"), &RetryPolicy::default())
+        .unwrap();
+    s.settle_unconfirmed(&c, &out).unwrap();
+    assert!(s.outbound(&c, &id(5)).unwrap().is_none());
+    assert!(s.due_outbound(u64::MAX / 2).unwrap().is_empty());
+    assert_eq!(s.messages(&c, None, 5).unwrap()[0].state, "submitted");
+}
+
+#[test]
+fn conversation_ids_round_trip() {
+    let c = conversation_id(ME, BOB);
+    assert_eq!(c.0, "c:a1b2c3d4:00000b0b");
+    assert_eq!(parse_conversation_id(&c), Some((ME, BOB)));
+    for bad in [
+        "",
+        "c:",
+        "c:a1b2c3d4",
+        "x:a1b2c3d4:00000b0b",
+        "c:zz:00000b0b",
+    ] {
+        assert_eq!(
+            parse_conversation_id(&ConversationId(bad.into())),
+            None,
+            "{bad}"
+        );
+    }
+}
+
+#[test]
+fn a_late_ack_can_still_confirm_a_failed_message() {
+    let mut s = store();
+    let c = s.upsert_conversation(ME, BOB, None).unwrap();
+    let mut out = OutboundMessage::queued(id(6), 0, 10);
+    s.insert_outgoing(&c, MessageKind::Text, b"late", 0, &out)
+        .unwrap();
+    out.expire().unwrap();
+    s.update_outbound(&c, &out).unwrap();
+    assert!(s.outbound(&c, &id(6)).unwrap().is_none());
+
+    let mut found = s.outgoing(&c, &id(6)).unwrap().unwrap();
+    assert_eq!(found.state, DeliveryState::Expired);
+    found.record_peer_ack().unwrap();
+    s.update_outbound(&c, &found).unwrap();
+    assert_eq!(s.messages(&c, None, 5).unwrap()[0].state, "peer_ack");
+    assert!(s.outbound(&c, &id(6)).unwrap().is_none());
+    assert!(s.outgoing(&c, &id(99)).unwrap().is_none());
 }

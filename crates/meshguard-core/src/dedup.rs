@@ -121,6 +121,14 @@ impl DedupCache {
         }
     }
 
+    /// Take back the last counted copy of `id`: a duplicate whose ACK was
+    /// withheld must not use up the per-message ACK allowance.
+    pub fn uncount(&mut self, sender: &PeerIdentity, id: &MessageId) {
+        if let Some(e) = self.seen.get_mut(&(sender.clone(), *id)) {
+            e.copies = e.copies.saturating_sub(1).max(1);
+        }
+    }
+
     pub fn contains(&self, sender: &PeerIdentity, id: &MessageId) -> bool {
         self.seen.contains_key(&(sender.clone(), *id))
     }
@@ -180,6 +188,25 @@ impl DedupCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uncount_gives_back_a_withheld_copy() {
+        let mut c = DedupCache::new(8, 600);
+        let a = PeerIdentity::meshtastic_node(1);
+        let id = MessageId::from_bytes([1; 16]);
+        assert_eq!(c.observe(&a, id, 0), Seen::New);
+        assert_eq!(c.observe(&a, id, 1), Seen::Duplicate { copies: 2 });
+        c.uncount(&a, &id);
+        assert_eq!(c.observe(&a, id, 2), Seen::Duplicate { copies: 2 });
+        c.uncount(&a, &id);
+        c.uncount(&a, &id);
+        assert_eq!(
+            c.observe(&a, id, 3),
+            Seen::Duplicate { copies: 2 },
+            "never below the first copy"
+        );
+        c.uncount(&a, &MessageId::from_bytes([9; 16])); // unknown id: no-op
+    }
 
     fn peer(n: u32) -> PeerIdentity {
         PeerIdentity::meshtastic_node(n)

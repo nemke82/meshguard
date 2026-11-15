@@ -6,6 +6,7 @@ pub mod device_config;
 pub mod diagnostics;
 pub mod discovery;
 pub mod error;
+pub mod history;
 pub mod key_store;
 pub mod link;
 pub mod mesh_radio;
@@ -36,6 +37,7 @@ pub fn run() {
 
             let state = AppState::new(config_dir);
             app.manage(state);
+            history::spawn_outbox_loop(app.handle().clone());
 
             tracing::info!("MeshGuard started — scan for a device to begin");
             Ok(())
@@ -73,6 +75,11 @@ pub fn run() {
             commands::pair_with_code,
             commands::get_node_history,
             commands::run_path_test,
+            history::get_history_info,
+            history::list_conversations,
+            history::get_messages,
+            history::mark_conversation_read,
+            history::delete_conversation,
         ])
         .run(tauri::generate_context!())
         .expect("error while running MeshGuard");

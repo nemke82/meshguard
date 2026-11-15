@@ -897,8 +897,9 @@ async function sendMessage() {
       msg.status = "delivered";
       updateMessageStatus(msg.id, "delivered");
     } else if (msg.status === "sending") {
-      msg.status = "sent";
-      updateMessageStatus(msg.id, "sent");
+      // Saved and waiting in the outbox (radio away) stays "sending".
+      msg.status = uiStatus(receipt && receipt.state) || "sent";
+      updateMessageStatus(msg.id, msg.status);
     }
   } catch (err) {
     msg.status = "failed";
@@ -936,6 +937,26 @@ function addSystemMessage(text) {
 function updateMessageStatus(id, status) {
   const el = document.getElementById(`status-${id}`);
   if (el) el.textContent = statusIcon(status);
+}
+
+/** Backend delivery state (history outbox) -> the bubble's status. */
+function uiStatus(state) {
+  switch (state) {
+    case "queued":
+    case "retrying":
+      return "sending";
+    case "submitted":
+    case "mesh_ack":
+      return "sent";
+    case "peer_ack":
+    case "read":
+      return "delivered";
+    case "failed":
+    case "expired":
+      return "failed";
+    default:
+      return null;
+  }
 }
 
 function statusIcon(status) {
@@ -1098,6 +1119,24 @@ async function setupEventListeners() {
     diag.pending = false;
     clearTimeout(diag.timer);
     renderPathResult(r);
+  });
+
+  // Outbox progress: resent, timed out, expired, or confirmed.
+  await listen("message-state", (event) => {
+    const { message_id, state: st } = event.payload;
+    const status = uiStatus(st);
+    if (!status) return;
+    for (const list of Object.values(state.messages)) {
+      const msg = list.find((m) => m.mine && m.wireId === message_id);
+      if (msg) {
+        // Never step back from "delivered".
+        if (msg.status !== "delivered") {
+          msg.status = status;
+          updateMessageStatus(msg.id, status);
+        }
+        return;
+      }
+    }
   });
 
   await listen("message-delivered", (event) => {
@@ -1333,7 +1372,7 @@ async function sendCheckin(nodeNums, kind, text, withLocation) {
         checkin: st,
         timestamp: Date.now(),
         mine: true,
-        status: r.message_id && unmatchedDelivered.delete(r.message_id) ? "delivered" : "sent",
+        status: r.message_id && unmatchedDelivered.delete(r.message_id) ? "delivered" : uiStatus(r.state) || "sent",
       };
       if (!state.messages[r.peer_node]) state.messages[r.peer_node] = [];
       state.messages[r.peer_node].push(msg);

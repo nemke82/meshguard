@@ -41,6 +41,11 @@ const MIGRATIONS: &[&str] = &[
          REFERENCES messages (conversation_id, message_id, direction) ON DELETE CASCADE
      );
      CREATE INDEX outbox_by_deadline ON outbox (next_deadline);",
+    // 2: key check, so a different vault key is noticed on open.
+    "CREATE TABLE meta (
+       name  TEXT PRIMARY KEY,
+       value BLOB NOT NULL
+     );",
 ];
 
 /// The schema version this build writes.

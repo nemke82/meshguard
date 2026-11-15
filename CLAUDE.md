@@ -46,6 +46,7 @@ meshguard/
 │   │   ├── commands.rs        # Tauri IPC commands (scan, connect, chat, pair)
 │   │   ├── device_config.rs   # Saved radios, peers and settings
 │   │   ├── discovery.rs       # Wi-Fi radio discovery (mDNS _meshtastic._tcp)
+│   │   ├── history.rs         # Message history + outbox loop on meshguard-store (ADR-005)
 │   │   ├── state.rs           # Shared app state (nodes, keys, radio)
 │   │   └── error.rs           # Error types
 │   ├── Cargo.toml

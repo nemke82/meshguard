@@ -1,6 +1,6 @@
 # ADR-005: Message store: conversation history, inbox and outbox
 
-**Status:** Accepted (2026-11-15). The owner chose per-field encryption, the OS keyring on desktop, and keep-until-deleted retention.
+**Status:** Accepted (2026-11-15). The owner chose per-field encryption, the OS keyring on desktop, and keep-until-deleted retention. Implemented: store crate (PR #30); app integration and outbox (step 1A).
 **Context docs:** RFC §7 (durable outbox), ADR-001 §5 (one Rust-owned SQLite store), ADR-002 (vault key)
 
 ## Context
@@ -95,6 +95,19 @@ CREATE TABLE outbox (                   -- one row per unsettled outgoing messag
 4. The retry loop drives the outbox through `meshguard_core::delivery`.
 
 Moving `dedup.json` into the store (`received_ids`) is a later migration, not part of version 1.
+
+### 8. Implementation notes (2026-11-15)
+
+- **Schema 2 adds a key check** (`meta.key_check`, sealed with the store key). A store sealed with another vault key (keyring entry lost, data restored on another device) is refused on open with `WrongKey`, instead of failing on every read. A schema-1 store is claimed by a key only if its first message decrypts with it.
+- **A store the app cannot read is set aside, never deleted:** it is renamed to `store.db.unreadable-<time>` and a new store is started. A store from a newer build turns history off for the session and is left untouched.
+- **Retries keep the message id and `created_at`** (`outbound::seal_with_id`) with a fresh nonce, and re-check what the peer understands (status vs. text fallback) on every attempt.
+- **v1 peers cannot confirm delivery**, so a v1 message leaves the outbox as soon as the radio accepts it (`settle_unconfirmed`); resending could only duplicate it, because v1 has no dedup.
+- **While the radio is away, nothing is attempted:** a queued message does not use up its attempts; it waits and expires only by its TTL (60 minutes for text, 6 hours for urgent check-ins and SOS). Only a failed write to a connected radio counts as an attempt.
+- **One transmission per outbox tick (5 s)**, through the radio the conversation belongs to, on top of the retry policy's back-off, to protect shared LoRa airtime.
+- **Outbox work is serialised** (send, resend, ACK, expiry, delete conversation): each step re-reads the stored state under one lock, so a late transmission result cannot undo an ACK, a row is never transmitted twice, and a deleted conversation is not sent afterwards.
+- **A late ACK still counts:** it confirms a message even after it was marked failed or expired.
+- **An incoming v2 message that cannot be saved is not ACKed.** Its id is taken out of the dedup cache, so the sender's retry delivers it again; history is never silently missing a message the sender believes was delivered. v1 frames cannot be retried by the sender and are shown anyway.
+- The outbox loop opens the store on its first tick, so messages queued before a restart are sent without any other activity.
 
 ## Consequences
 
