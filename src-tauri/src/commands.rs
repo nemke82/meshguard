@@ -116,7 +116,7 @@ pub async fn scan_wifi_radios(
 pub async fn get_saved_links(
     state: State<'_, AppState>,
 ) -> Result<Vec<crate::device_config::SavedLink>, MeshGuardError> {
-    Ok(state.config.lock().await.saved_links.clone())
+    Ok(state.engine().config.saved_links.clone())
 }
 
 /// Forget a saved radio (and stop auto-connecting to it).
@@ -125,8 +125,9 @@ pub async fn forget_saved_link(
     id: String,
     state: State<'_, AppState>,
 ) -> Result<(), MeshGuardError> {
-    let mut config = state.config.lock().await;
-    if crate::device_config::forget_link(&mut config, &id) {
+    let mut engine = state.engine();
+    let config = &mut engine.config;
+    if crate::device_config::forget_link(config, &id) {
         config.save(&state.config_dir)?;
     }
     Ok(())
@@ -141,9 +142,8 @@ pub async fn connect_saved_link(
     state: State<'_, AppState>,
 ) -> Result<(), MeshGuardError> {
     let (target, node_num) = state
+        .engine()
         .config
-        .lock()
-        .await
         .saved_links
         .iter()
         .find(|l| l.id == id)
@@ -174,7 +174,8 @@ pub async fn is_connected(state: State<'_, AppState>) -> Result<bool, MeshGuardE
 pub async fn get_mesh_nodes(
     state: State<'_, AppState>,
 ) -> Result<Vec<MeshNodeInfo>, MeshGuardError> {
-    let nodes = state.mesh_nodes.lock().await;
+    let engine = state.engine();
+    let nodes = &engine.nodes;
     Ok(nodes.values().cloned().collect())
 }
 
@@ -189,8 +190,8 @@ pub struct MyDeviceInfo {
 pub async fn get_my_device_info(
     state: State<'_, AppState>,
 ) -> Result<Option<MyDeviceInfo>, MeshGuardError> {
-    let num = *state.my_node_num.lock().await;
-    let name = state.my_device_name.lock().await.clone();
+    let num = state.engine().my_node_num;
+    let name = state.engine().my_device_name.clone();
     match (num, name) {
         (Some(n), Some(name)) => Ok(Some(MyDeviceInfo {
             node_num: n,
@@ -217,11 +218,13 @@ pub(crate) fn seal_err(e: SealError) -> MeshGuardError {
 }
 
 async fn my_identity(state: &AppState) -> Result<(u32, String), MeshGuardError> {
-    let num = (*state.my_node_num.lock().await).ok_or(MeshGuardError::NotConnected)?;
+    let num = state
+        .engine()
+        .my_node_num
+        .ok_or(MeshGuardError::NotConnected)?;
     let name = state
+        .engine()
         .my_device_name
-        .lock()
-        .await
         .clone()
         .ok_or(MeshGuardError::NotConnected)?;
     Ok((num, name))
@@ -231,7 +234,8 @@ async fn my_identity(state: &AppState) -> Result<(u32, String), MeshGuardError> 
 /// derivation. Refuses when it is not known yet: deriving with a placeholder
 /// would silently produce the wrong key and look like a passphrase mismatch.
 async fn peer_long_name(state: &AppState, peer_node_num: u32) -> Result<String, MeshGuardError> {
-    let nodes = state.mesh_nodes.lock().await;
+    let engine = state.engine();
+    let nodes = &engine.nodes;
     let node = nodes
         .get(&peer_node_num)
         .ok_or(MeshGuardError::NodeNotFound(peer_node_num))?;
@@ -256,7 +260,7 @@ pub(crate) async fn send_as(
 ) -> Result<(), MeshGuardError> {
     let mut radio_guard = state.radio.lock().await;
     let radio = radio_guard.as_mut().ok_or(MeshGuardError::NotConnected)?;
-    if *state.my_node_num.lock().await != Some(my_num) {
+    if state.engine().my_node_num != Some(my_num) {
         return Err(MeshGuardError::Protocol(
             "The radio changed while sending — please try again".into(),
         ));
@@ -271,41 +275,23 @@ fn key_copy(key: &crate::crypto::SessionKey) -> crate::crypto::SessionKey {
 /// Install a chat key before transmitting, so the peer's immediate reply can
 /// be decrypted. Returns the key it replaced, for rollback. Refuses if the
 /// in-memory keys now belong to another radio than `my_num`.
-async fn install_key(
+fn install_key(
     state: &AppState,
     my_num: u32,
     peer_node_num: u32,
     key: crate::crypto::SessionKey,
 ) -> Result<Option<crate::crypto::SessionKey>, MeshGuardError> {
-    let owner = state.keys_owner.lock().await;
-    if *owner != Some(my_num) {
-        return Err(MeshGuardError::Protocol(
-            "The radio changed — please try again".into(),
-        ));
-    }
-    Ok(state.session_keys.lock().await.insert(peer_node_num, key))
+    state.engine().install_key(my_num, peer_node_num, key)
 }
 
 /// Undo [`install_key`], unless the keys meanwhile belong to another radio.
-async fn rollback_key(
+fn rollback_key(
     state: &AppState,
     my_num: u32,
     peer_node_num: u32,
     previous: Option<crate::crypto::SessionKey>,
 ) {
-    let owner = state.keys_owner.lock().await;
-    if *owner != Some(my_num) {
-        return;
-    }
-    let mut keys = state.session_keys.lock().await;
-    match previous {
-        Some(k) => {
-            keys.insert(peer_node_num, k);
-        }
-        None => {
-            keys.remove(&peer_node_num);
-        }
-    }
+    state.engine().rollback_key(my_num, peer_node_num, previous);
 }
 
 /// Serialises pairing operations (passphrase, QR scan, QR accept), so two
@@ -348,7 +334,8 @@ async fn save_peer(
         features: 0,
         confirmed,
     };
-    let mut config = state.config.lock().await;
+    let mut engine = state.engine();
+    let config = &mut engine.config;
     let before = config.peers.clone();
     config.peers.retain(|p| p.node_num != peer_node_num);
     config.peers.push(peer.clone());
@@ -392,9 +379,9 @@ pub async fn start_chat(
     )
     .map_err(seal_err)?;
 
-    let previous = install_key(&state, my_num, peer_node_num, key_copy(&session_key)).await?;
+    let previous = install_key(&state, my_num, peer_node_num, key_copy(&session_key))?;
     if let Err(e) = send_as(&state, my_num, peer_node_num, sealed.frame).await {
-        rollback_key(&state, my_num, peer_node_num, previous).await;
+        rollback_key(&state, my_num, peer_node_num, previous);
         return Err(e);
     }
 
@@ -426,14 +413,13 @@ pub async fn accept_chat(
     // Keep the request until the accept is actually transmitted, so a failed
     // attempt can be retried without falling back to another version.
     let payload = state
+        .engine()
         .pending_pair_requests
-        .lock()
-        .await
         .get(&peer_node_num)
         .cloned()
         .ok_or_else(|| MeshGuardError::Protocol("No pending chat request from this node".into()))?;
 
-    let policy = state.inbound.policy;
+    let policy = state.engine().protection.policy;
     let now = u64::from(unix_now());
     let mut accepted_v2_request = None;
     let protocol = match decode_frame(&payload, Some(&session_key), &aad_context(&peer_id, &me)) {
@@ -444,11 +430,7 @@ pub async fn accept_chat(
                 .check_freshness(now, policy.max_skew_secs, policy.max_ttl_mins)
                 .is_err()
             {
-                state
-                    .pending_pair_requests
-                    .lock()
-                    .await
-                    .remove(&peer_node_num);
+                state.engine().pending_pair_requests.remove(&peer_node_num);
                 return Err(MeshGuardError::Protocol(
                     "Chat request expired — ask your peer to send it again".into(),
                 ));
@@ -468,9 +450,8 @@ pub async fn accept_chat(
     // Anti-downgrade (ADR-003 §3): a v2 pin is only lowered by removing the
     // peer first, never implicitly by a v1 request.
     let current_pin = state
+        .engine()
         .config
-        .lock()
-        .await
         .peers
         .iter()
         .find(|p| p.node_num == peer_node_num)
@@ -498,16 +479,11 @@ pub async fn accept_chat(
     // sealing, which can fail), so a replay
     // of it (also after a restart) can never trigger another acceptance.
     if let Some(id) = accepted_v2_request {
-        let mut dedup = state.inbound.dedup.lock().await;
-        match dedup.observe(&peer_id, id, now) {
+        let mut engine = state.engine();
+        match engine.protection.dedup.observe(&peer_id, id, now) {
             Seen::New => {}
             Seen::Duplicate { .. } => {
-                drop(dedup);
-                state
-                    .pending_pair_requests
-                    .lock()
-                    .await
-                    .remove(&peer_node_num);
+                engine.pending_pair_requests.remove(&peer_node_num);
                 return Err(MeshGuardError::Protocol(
                     "This chat request was already accepted".into(),
                 ));
@@ -518,41 +494,33 @@ pub async fn accept_chat(
                 ))
             }
         }
-        if let Err(e) = state.inbound.save_dedup(&state.config_dir, &dedup).await {
-            dedup.forget(&peer_id, &id);
+        if let Err(e) = engine.save_dedup() {
+            engine.protection.dedup.forget(&peer_id, &id);
             return Err(e);
         }
     }
 
-    let previous = match install_key(&state, my_num, peer_node_num, key_copy(&session_key)).await {
+    let previous = match install_key(&state, my_num, peer_node_num, key_copy(&session_key)) {
         Ok(p) => p,
         Err(e) => {
             // Not accepted after all: un-record the request so it can be retried.
             if let Some(id) = accepted_v2_request {
-                let mut dedup = state.inbound.dedup.lock().await;
-                dedup.forget(&peer_id, &id);
-                let _ = state.inbound.save_dedup(&state.config_dir, &dedup).await;
+                forget_dedup(&state, &peer_id, &id);
             }
             return Err(e);
         }
     };
     let sent = send_as(&state, my_num, peer_node_num, sealed.frame).await;
     if let Err(e) = sent {
-        rollback_key(&state, my_num, peer_node_num, previous).await;
+        rollback_key(&state, my_num, peer_node_num, previous);
         // Not accepted after all: let the user retry the same request.
         if let Some(id) = accepted_v2_request {
-            let mut dedup = state.inbound.dedup.lock().await;
-            dedup.forget(&peer_id, &id);
-            let _ = state.inbound.save_dedup(&state.config_dir, &dedup).await;
+            forget_dedup(&state, &peer_id, &id);
         }
         return Err(e);
     }
 
-    state
-        .pending_pair_requests
-        .lock()
-        .await
-        .remove(&peer_node_num);
+    state.engine().pending_pair_requests.remove(&peer_node_num);
     let peer = save_peer(&state, peer_node_num, peer_name, protocol, true).await?;
     remember_key(&app_handle, &state, my_num, peer_node_num, &session_key).await;
     if protocol == WireProtocol::V2 {
@@ -606,14 +574,14 @@ pub async fn has_session(
     peer_node_num: u32,
     state: State<'_, AppState>,
 ) -> Result<bool, MeshGuardError> {
-    let keys = state.session_keys.lock().await;
-    Ok(keys.contains_key(&peer_node_num))
+    Ok(state.engine().keys.contains_key(&peer_node_num))
 }
 
 /// List saved peers from config.
 #[tauri::command]
 pub async fn list_peers(state: State<'_, AppState>) -> Result<Vec<PeerConfig>, MeshGuardError> {
-    let config = state.config.lock().await;
+    let engine = state.engine();
+    let config = &engine.config;
     Ok(config.peers.clone())
 }
 
@@ -623,10 +591,11 @@ pub async fn remove_peer(
     peer_node_num: u32,
     state: State<'_, AppState>,
 ) -> Result<(), MeshGuardError> {
-    state.session_keys.lock().await.remove(&peer_node_num);
+    state.engine().keys.remove(&peer_node_num);
     crate::key_store::remove_peer(&state.config_dir, peer_node_num)?;
 
-    let mut config = state.config.lock().await;
+    let mut engine = state.engine();
+    let config = &mut engine.config;
     config.peers.retain(|p| p.node_num != peer_node_num);
     config.save(&state.config_dir)?;
     Ok(())
@@ -637,7 +606,8 @@ pub async fn remove_peer(
 pub async fn get_last_connection(
     state: State<'_, AppState>,
 ) -> Result<Option<String>, MeshGuardError> {
-    let config = state.config.lock().await;
+    let engine = state.engine();
+    let config = &engine.config;
     Ok(config.last_ble_address.clone())
 }
 
@@ -646,7 +616,7 @@ pub async fn get_last_connection(
 pub async fn get_last_link(
     state: State<'_, AppState>,
 ) -> Result<Option<LinkTarget>, MeshGuardError> {
-    Ok(state.config.lock().await.last_link.clone())
+    Ok(state.engine().config.last_link.clone())
 }
 
 /// Connect to the saved radio in the background, retrying until it is
@@ -683,7 +653,7 @@ pub struct StatusSendReport {
 pub async fn get_status_presets(
     state: State<'_, AppState>,
 ) -> Result<Vec<StatusPreset>, MeshGuardError> {
-    Ok(state.config.lock().await.status_presets.clone())
+    Ok(state.engine().config.status_presets.clone())
 }
 
 /// Replace the check-in buttons (wording is free; length is checked so every
@@ -715,7 +685,8 @@ pub async fn set_status_presets(
         }
         cleaned.push(StatusPreset { text, ..p });
     }
-    let mut config = state.config.lock().await;
+    let mut engine = state.engine();
+    let config = &mut engine.config;
     config.status_presets = cleaned;
     config.save(&state.config_dir)?;
     Ok(config.status_presets.clone())
@@ -726,7 +697,8 @@ pub async fn set_status_presets(
 pub async fn reset_status_presets(
     state: State<'_, AppState>,
 ) -> Result<Vec<StatusPreset>, MeshGuardError> {
-    let mut config = state.config.lock().await;
+    let mut engine = state.engine();
+    let config = &mut engine.config;
     config.status_presets = crate::device_config::default_status_presets();
     config.save(&state.config_dir)?;
     Ok(config.status_presets.clone())
@@ -786,9 +758,8 @@ pub async fn send_status(
     let mut results = Vec::with_capacity(peers.len());
     for peer in peers {
         let protocol = state
+            .engine()
             .config
-            .lock()
-            .await
             .peers
             .iter()
             .find(|p| p.node_num == peer)
@@ -864,7 +835,10 @@ pub struct PairOfferView {
 pub async fn create_pair_offer(
     state: State<'_, AppState>,
 ) -> Result<PairOfferView, MeshGuardError> {
-    let my_num = (*state.my_node_num.lock().await).ok_or(MeshGuardError::NotConnected)?;
+    let my_num = state
+        .engine()
+        .my_node_num
+        .ok_or(MeshGuardError::NotConnected)?;
     let offer = meshguard_core::qrpair::PairOffer::generate(my_num);
     let uri = offer.code().to_uri();
     let svg = qrcode::QrCode::with_error_correction_level(uri.as_bytes(), qrcode::EcLevel::M)
@@ -915,9 +889,8 @@ pub async fn pair_with_code(
     // The showing device refuses known contacts (ADR-004), so a rescan would
     // only replace our working key with one the other side never accepts.
     if state
+        .engine()
         .config
-        .lock()
-        .await
         .peers
         .iter()
         .any(|p| p.node_num == peer)
@@ -939,16 +912,15 @@ pub async fn pair_with_code(
     )
     .map_err(seal_err)?;
     // The accept is sealed with the chat key: install it before sending.
-    let previous = install_key(&state, my_num, peer, key_copy(&hs.chat_key)).await?;
+    let previous = install_key(&state, my_num, peer, key_copy(&hs.chat_key))?;
     let previous_copy = previous.as_ref().map(key_copy);
     if let Err(e) = send_as(&state, my_num, peer, sealed.frame).await {
-        rollback_key(&state, my_num, peer, previous).await;
+        rollback_key(&state, my_num, peer, previous);
         return Err(e);
     }
     let name = state
-        .mesh_nodes
-        .lock()
-        .await
+        .engine()
+        .nodes
         .get(&peer)
         .map(|n| n.long_name.clone())
         .filter(|n| !n.trim().is_empty())
@@ -958,7 +930,7 @@ pub async fn pair_with_code(
     let saved = match save_peer(&state, peer, name, WireProtocol::V2, false).await {
         Ok(p) => p,
         Err(e) => {
-            rollback_key(&state, my_num, peer, previous_copy).await;
+            rollback_key(&state, my_num, peer, previous_copy);
             return Err(e);
         }
     };
@@ -968,10 +940,10 @@ pub async fn pair_with_code(
 }
 
 /// Undo a durable replay record for a request that was not accepted after all.
-async fn forget_dedup(state: &AppState, peer: &PeerIdentity, id: &meshguard_core::MessageId) {
-    let mut dedup = state.inbound.dedup.lock().await;
-    dedup.forget(peer, id);
-    let _ = state.inbound.save_dedup(&state.config_dir, &dedup).await;
+fn forget_dedup(state: &AppState, peer: &PeerIdentity, id: &meshguard_core::MessageId) {
+    let mut engine = state.engine();
+    engine.protection.dedup.forget(peer, id);
+    let _ = engine.save_dedup();
 }
 
 #[derive(Clone, Serialize)]
@@ -1018,7 +990,7 @@ pub(crate) async fn try_accept_qr(app: &tauri::AppHandle, from_node: u32, frame:
     if env.message_type != MessageType::PairRequest {
         return false;
     }
-    let policy = state.inbound.policy;
+    let policy = state.engine().protection.policy;
     let now = u64::from(unix_now());
     if env
         .check_freshness(now, policy.max_skew_secs, policy.max_ttl_mins)
@@ -1040,9 +1012,8 @@ pub(crate) async fn try_accept_qr(app: &tauri::AppHandle, from_node: u32, frame:
     // claim a known node number with their own key. Re-pairing means
     // removing the contact first.
     let known = state
+        .engine()
         .config
-        .lock()
-        .await
         .peers
         .iter()
         .any(|p| p.node_num == from_node);
@@ -1054,17 +1025,17 @@ pub(crate) async fn try_accept_qr(app: &tauri::AppHandle, from_node: u32, frame:
 
     // Replay protection: each request is accepted once, durably.
     {
-        let mut dedup = state.inbound.dedup.lock().await;
-        if dedup.observe(&peer_id, env.message_id, now) != Seen::New {
+        let mut engine = state.engine();
+        if engine
+            .protection
+            .dedup
+            .observe(&peer_id, env.message_id, now)
+            != Seen::New
+        {
             return true;
         }
-        if state
-            .inbound
-            .save_dedup(&state.config_dir, &dedup)
-            .await
-            .is_err()
-        {
-            dedup.forget(&peer_id, &env.message_id);
+        if engine.save_dedup().is_err() {
+            engine.protection.dedup.forget(&peer_id, &env.message_id);
             return true;
         }
     }
@@ -1078,23 +1049,22 @@ pub(crate) async fn try_accept_qr(app: &tauri::AppHandle, from_node: u32, frame:
         unix_now(),
         DEFAULT_FRAME_BUDGET,
     ) else {
-        forget_dedup(&state, &peer_id, &env.message_id).await;
+        forget_dedup(&state, &peer_id, &env.message_id);
         return true;
     };
-    let Ok(previous) = install_key(&state, my_num, from_node, key_copy(&chat_key)).await else {
-        forget_dedup(&state, &peer_id, &env.message_id).await;
+    let Ok(previous) = install_key(&state, my_num, from_node, key_copy(&chat_key)) else {
+        forget_dedup(&state, &peer_id, &env.message_id);
         return true;
     };
     if let Err(e) = send_as(&state, my_num, from_node, sealed.frame).await {
-        rollback_key(&state, my_num, from_node, previous).await;
-        forget_dedup(&state, &peer_id, &env.message_id).await;
+        rollback_key(&state, my_num, from_node, previous);
+        forget_dedup(&state, &peer_id, &env.message_id);
         tracing::warn!("QR pair accept to {from_node} not sent: {e}");
         return true;
     }
     let name = state
-        .mesh_nodes
-        .lock()
-        .await
+        .engine()
+        .nodes
         .get(&from_node)
         .map(|n| n.long_name.clone())
         .filter(|n| !n.trim().is_empty())
@@ -1103,8 +1073,8 @@ pub(crate) async fn try_accept_qr(app: &tauri::AppHandle, from_node: u32, frame:
     if let Err(e) = save_peer(&state, from_node, name.clone(), WireProtocol::V2, true).await {
         // Keep memory and disk consistent: no half-paired contact, and the
         // request may be retried.
-        rollback_key(&state, my_num, from_node, previous).await;
-        forget_dedup(&state, &peer_id, &env.message_id).await;
+        rollback_key(&state, my_num, from_node, previous);
+        forget_dedup(&state, &peer_id, &env.message_id);
         tracing::warn!("Could not save QR peer {from_node}: {e}");
         let _ = app.emit("qr-pair-failed", e.to_string());
         return true;
@@ -1139,7 +1109,10 @@ pub async fn run_path_test(
     node_num: u32,
     state: State<'_, AppState>,
 ) -> Result<(), MeshGuardError> {
-    let my_num = (*state.my_node_num.lock().await).ok_or(MeshGuardError::NotConnected)?;
+    let my_num = state
+        .engine()
+        .my_node_num
+        .ok_or(MeshGuardError::NotConnected)?;
     if node_num == my_num {
         return Err(MeshGuardError::Protocol("That is your own radio".into()));
     }

@@ -10,8 +10,11 @@
 pub mod config;
 pub mod dedup_store;
 pub mod diagnostics;
+pub mod engine;
 pub mod error;
 pub mod link_target;
 pub mod nodes;
+pub mod receive;
 
+pub use engine::Engine;
 pub use error::MeshGuardError;

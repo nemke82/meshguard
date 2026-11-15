@@ -144,13 +144,11 @@ pub fn load_for(
 }
 
 /// Make the in-memory chat keys match the radio we just connected to, then
-/// restore its remembered keys. Runs before the listener starts, so the
-/// first packets can already be decrypted.
+/// restore its remembered keys and open the history. Runs before the
+/// listener starts, so the first packets can already be decrypted and saved.
 pub async fn prepare_for_radio(p: &crate::mesh_radio::ConnectParams, my_node: u32) {
-    let peers: Vec<u32> = p
+    let peers: Vec<u32> = crate::state::lock_engine(&p.engine)
         .config
-        .lock()
-        .await
         .peers
         .iter()
         .map(|c| c.node_num)
@@ -165,22 +163,16 @@ pub async fn prepare_for_radio(p: &crate::mesh_radio::ConnectParams, my_node: u3
         None => Vec::new(),
     };
 
-    let mut owner = p.keys_owner.lock().await;
-    let mut keys = p.session_keys.lock().await;
-    if *owner != Some(my_node) {
-        // Keys are tied to one local radio (identity is in the key and AAD).
-        keys.clear();
-        *owner = Some(my_node);
+    let (restored, changed) = {
+        let mut engine = crate::state::lock_engine(&p.engine);
+        // Before the listener starts: incoming messages must find the
+        // history open (or definitely off), never "not decided yet".
+        engine.open_history(p.vault.as_deref());
+        engine.adopt_keys(my_node, loaded)
+    };
+    if changed {
         // Signal history describes what *this* radio heard.
         p.node_history.lock().await.clear();
-    }
-    let mut restored = 0;
-    for (peer, key) in loaded {
-        // A key set up in this session wins over the stored one.
-        if let std::collections::hash_map::Entry::Vacant(e) = keys.entry(peer) {
-            e.insert(key);
-            restored += 1;
-        }
     }
     if restored > 0 {
         tracing::info!("Restored {restored} remembered chat key(s)");

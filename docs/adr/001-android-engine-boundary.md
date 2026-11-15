@@ -111,3 +111,10 @@ If step 3 fails because the library cannot run without Tauri initialisation, fal
 2. **Accepted:** `minSdk` ≥ 26.
 3. **Accepted:** Rust-owned SQLite as the single store (see §5).
 4. **Still open:** CompanionDeviceManager. Evaluate it during the P2 gate spike.
+
+## 8. Implementation notes
+
+- **2A:** `crates/meshguard-engine` has no Tauri, tokio or transport dependency (`meshtastic` with `default-features = false`, protobufs only). It holds settings and peers, the dedup file, diagnostics, the error type and the node model. `nodes::observe` updates nodes from a packet as a pure function.
+- **2B:** `Engine` owns the shared state: chat keys and their owning radio, peers and settings, replay cache and rate limits, pending chat requests, mesh nodes and the history store. `Engine::on_from_radio(&FromRadio, my_node, now)` returns `Action`s: ACK to send, UI event, notification, own GPS fix, path-test reply, signal sample, peer ACK for the outbox, undecryptable frame (the app checks it against a QR offer, then calls `note_pair_request`), and feature probe. The Tauri app keeps it in a `std::sync::Mutex` that is never held across an `.await`. The listener and the commands are its clients.
+  - Messages are handled one at a time under that lock. A new message's id is therefore written to `dedup.json` only after the message is in the history, with no other writer in between, so the earlier "uncommitted ids" bookkeeping is gone.
+- **2C (next):** sending and the outbox move into the engine (`enqueue`, `tick`), together with ToRadio encoding for the Kotlin service.

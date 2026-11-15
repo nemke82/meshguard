@@ -8,17 +8,16 @@
 //! background loop then resends what is due, settles ACK timeouts and
 //! expires messages past their TTL, following `meshguard_core::delivery`.
 
-use std::path::Path;
 use std::time::Duration;
 
 use meshguard_core::delivery::{DeliveryState, DueAction, OutboundMessage, RetryPolicy};
 use meshguard_core::envelope::DEFAULT_FRAME_BUDGET;
 use meshguard_core::ids::{ConversationId, MessageId, TransportId};
 use meshguard_core::outbound::{self, OutPayload, WireVersion};
-use meshguard_core::status::{StatusBody, FEATURE_STATUS};
+use meshguard_core::status::StatusBody;
 use meshguard_core::PeerIdentity;
 use meshguard_store::{
-    conversation_id, parse_conversation_id, Cursor, Direction, MessageKind, Store, StoreError,
+    conversation_id, parse_conversation_id, Cursor, Direction, MessageKind, Store,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
@@ -27,18 +26,10 @@ use crate::device_config::WireProtocol;
 use crate::error::MeshGuardError;
 use crate::state::AppState;
 
-const STORE_FILE: &str = "store.db";
 /// How often the outbox is checked.
 const OUTBOX_TICK: Duration = Duration::from_secs(5);
 
-/// Where history goes in this session.
-pub enum Slot {
-    /// Not tried yet (the vault may still be opening).
-    Closed,
-    Open(Store),
-    /// Memory only; the reason is shown to the user.
-    Off(String),
-}
+pub use meshguard_engine::engine::Slot;
 
 fn now_secs() -> u64 {
     chrono::Utc::now().timestamp().max(0) as u64
@@ -52,61 +43,14 @@ fn jitter() -> f64 {
     (u64::from_be_bytes(v) >> 11) as f64 / (1u64 << 53) as f64
 }
 
-/// Move an unreadable store aside (kept, never deleted) and start a new one.
-fn set_aside(dir: &Path) {
-    let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
-    for suffix in ["", "-wal", "-shm"] {
-        let from = dir.join(format!("{STORE_FILE}{suffix}"));
-        if from.exists() {
-            let to = dir.join(format!("{STORE_FILE}.unreadable-{stamp}{suffix}"));
-            if let Err(e) = std::fs::rename(&from, &to) {
-                tracing::warn!("Could not move {} aside: {e}", from.display());
-            }
-        }
-    }
-}
-
-fn open_store(dir: &Path, vault: &crate::crypto::SessionKey) -> Slot {
-    if let Err(e) = std::fs::create_dir_all(dir) {
-        return Slot::Off(format!("Could not create the data folder: {e}"));
-    }
-    let path = dir.join(STORE_FILE);
-    match Store::open(&path, vault) {
-        Ok(store) => {
-            tracing::info!("Message history store opened");
-            Slot::Open(store)
-        }
-        Err(StoreError::WrongKey) => {
-            // The vault key changed (keyring entry lost, app data restored
-            // elsewhere). The old history cannot be read with this key.
-            tracing::warn!("Message history was saved with another key; starting a new one");
-            set_aside(dir);
-            match Store::open(&path, vault) {
-                Ok(store) => Slot::Open(store),
-                Err(e) => Slot::Off(format!("History could not be opened: {e}")),
-            }
-        }
-        Err(StoreError::TooNew { .. }) => {
-            Slot::Off("History was saved by a newer MeshGuard; update the app to see it".into())
-        }
-        Err(e) => Slot::Off(format!("History could not be opened: {e}")),
-    }
-}
-
-/// Open the store on first use.
+/// Open the store on first use (once the vault key is available).
 async fn ensure_open(app: &tauri::AppHandle) {
     let state = app.state::<AppState>();
-    if !matches!(*state.history.lock().await, Slot::Closed) {
+    if !matches!(state.engine().history, Slot::Closed) {
         return;
     }
     let vault = state.vault(app).await;
-    let mut slot = state.history.lock().await;
-    if matches!(*slot, Slot::Closed) {
-        *slot = match vault {
-            Some(v) => open_store(&state.config_dir, &v),
-            None => Slot::Off("This device has no secure key store, so history is kept only while the app is open".into()),
-        };
-    }
+    state.engine().open_history(vault.as_deref());
 }
 
 /// Run `f` on the store. `None` when history is memory-only or `f` failed
@@ -116,88 +60,15 @@ pub async fn with<T>(
     f: impl FnOnce(&mut Store) -> meshguard_store::Result<T>,
 ) -> Option<T> {
     ensure_open(app).await;
-    let state = app.state::<AppState>();
-    let mut slot = state.history.lock().await;
-    match &mut *slot {
-        Slot::Open(store) => match f(store) {
-            Ok(v) => Some(v),
-            Err(e) => {
-                tracing::warn!("History store: {e}");
-                None
-            }
-        },
-        _ => None,
-    }
+    app.state::<AppState>().engine().with_store(f)
 }
 
 /// Display name of a peer: the name it paired with, else the mesh name.
-pub async fn peer_title(state: &AppState, peer: u32) -> Option<String> {
-    let from_config = state
-        .config
-        .lock()
-        .await
-        .peers
-        .iter()
-        .find(|p| p.node_num == peer)
-        .map(|p| p.device_name.clone())
-        .filter(|n| !n.is_empty());
-    match from_config {
-        Some(n) => Some(n),
-        None => state
-            .mesh_nodes
-            .lock()
-            .await
-            .get(&peer)
-            .map(|n| n.long_name.clone())
-            .filter(|n| !n.is_empty()),
-    }
+pub fn peer_title(state: &AppState, peer: u32) -> Option<String> {
+    state.engine().peer_title(peer)
 }
 
 // ── Incoming ──────────────────────────────────────────────────
-
-/// What happened to an incoming message.
-pub enum Recorded {
-    /// Saved in this conversation.
-    Stored(String),
-    /// History is memory-only on this device (by design, not an error).
-    MemoryOnly,
-    /// History is on but the write failed: the caller must not ACK, so the
-    /// sender retries and the message is not lost from the history.
-    Failed,
-}
-
-/// Store an incoming message.
-#[allow(clippy::too_many_arguments)]
-pub async fn record_incoming(
-    app: &tauri::AppHandle,
-    my_node: u32,
-    peer: u32,
-    message_id: MessageId,
-    kind: MessageKind,
-    body: Vec<u8>,
-    created_at: u64,
-) -> Recorded {
-    let title = peer_title(&app.state::<AppState>(), peer).await;
-    let now = now_secs();
-    ensure_open(app).await;
-    let state = app.state::<AppState>();
-    let mut slot = state.history.lock().await;
-    let Slot::Open(store) = &mut *slot else {
-        return Recorded::MemoryOnly;
-    };
-    let r = (|| {
-        let c = store.upsert_conversation(my_node, peer, title.as_deref())?;
-        store.insert_incoming(&c, message_id, kind, &body, created_at, now)?;
-        Ok::<_, StoreError>(c.0)
-    })();
-    match r {
-        Ok(c) => Recorded::Stored(c),
-        Err(e) => {
-            tracing::warn!("Could not save an incoming message: {e}");
-            Recorded::Failed
-        }
-    }
-}
 
 /// Record an authenticated ACK, also for a message already marked failed
 /// or expired. Returns true when it matched a stored outgoing message.
@@ -302,19 +173,7 @@ pub struct SendOutcome {
     pub protocol: WireProtocol,
 }
 
-async fn peer_wire(state: &AppState, peer: u32) -> (WireProtocol, bool) {
-    state
-        .config
-        .lock()
-        .await
-        .peers
-        .iter()
-        .find(|p| p.node_num == peer)
-        .map(|p| (p.protocol, p.features & FEATURE_STATUS != 0))
-        .unwrap_or_default()
-}
-
-async fn seal_for(
+fn seal_for(
     state: &AppState,
     my_node: u32,
     peer: u32,
@@ -322,14 +181,12 @@ async fn seal_for(
     message_id: MessageId,
     created_at: u64,
 ) -> Result<(Vec<u8>, WireProtocol), MeshGuardError> {
-    let (protocol, capable) = peer_wire(state, peer).await;
-    // Same lock order as key_store::prepare_for_radio: owner, then keys.
-    let owner = state.keys_owner.lock().await;
-    let keys = state.session_keys.lock().await;
-    if *owner != Some(my_node) {
+    let engine = state.engine();
+    let (protocol, capable) = engine.peer_wire(peer);
+    if engine.keys_owner != Some(my_node) {
         return Err(MeshGuardError::NoSession);
     }
-    let key = keys.get(&peer).ok_or(MeshGuardError::NoSession)?;
+    let key = engine.keys.get(&peer).ok_or(MeshGuardError::NoSession)?;
     let sealed = outbound::seal_with_id(
         WireVersion::from(protocol),
         content.payload(protocol, capable),
@@ -344,11 +201,10 @@ async fn seal_for(
     Ok((sealed.frame, protocol))
 }
 
-async fn transport_id(state: &AppState) -> TransportId {
+fn transport_id(state: &AppState) -> TransportId {
     let kind = state
+        .engine()
         .config
-        .lock()
-        .await
         .last_link
         .as_ref()
         .map(|l| l.kind())
@@ -360,7 +216,7 @@ async fn transport_id(state: &AppState) -> TransportId {
 /// is not enough: link loss removes the radio but keeps the node number.
 async fn live_radio(state: &AppState) -> Option<u32> {
     let radio_up = state.radio.lock().await.is_some();
-    let node = *state.my_node_num.lock().await;
+    let node = state.engine().my_node_num;
     node.filter(|_| radio_up)
 }
 
@@ -397,7 +253,7 @@ async fn after_attempt(
     let state = app.state::<AppState>();
     let policy = RetryPolicy::default();
     let r = match attempt {
-        Attempt::Submitted => out.record_submitted(now, transport_id(&state).await, &policy),
+        Attempt::Submitted => out.record_submitted(now, transport_id(&state), &policy),
         Attempt::Failed => out.record_submit_failed(now, &policy, jitter()),
         Attempt::Unavailable => return,
     };
@@ -429,10 +285,14 @@ pub async fn send(
 ) -> Result<SendOutcome, MeshGuardError> {
     let state = app.state::<AppState>();
     // Keys belong to one local radio; while it is away, queue for it.
-    let my_node = (*state.keys_owner.lock().await)
-        .or(*state.my_node_num.lock().await)
-        .ok_or(MeshGuardError::NotConnected)?;
-    let (protocol, capable) = peer_wire(&state, peer).await;
+    let (my_node, (protocol, capable)) = {
+        let engine = state.engine();
+        let my_node = engine
+            .keys_owner
+            .or(engine.my_node_num)
+            .ok_or(MeshGuardError::NotConnected)?;
+        (my_node, engine.peer_wire(peer))
+    };
     let now = now_secs();
     let message_id = MessageId::random();
     let ttl = u64::from(outbound::ttl_mins(content.payload(protocol, capable))) * 60;
@@ -440,12 +300,12 @@ pub async fn send(
 
     // Seal first: a message that cannot be sent (no key, too long) is not
     // stored.
-    let (frame, protocol) = seal_for(&state, my_node, peer, &content, message_id, now).await?;
+    let (frame, protocol) = seal_for(&state, my_node, peer, &content, message_id, now)?;
 
     // Held from storing until the first attempt is recorded, so the outbox
     // loop cannot transmit the same new row as well.
     let _claim = state.outbox_lock.lock().await;
-    let title = peer_title(&state, peer).await;
+    let title = peer_title(&state, peer);
     let (kind, body) = (content.kind(), content.body()?);
     let snapshot = out.clone();
     let c = with(app, move |s| {
@@ -551,9 +411,7 @@ async fn outbox_tick(app: &tauri::AppHandle) {
                     &content,
                     outbound.message_id,
                     item.created_at,
-                )
-                .await
-                else {
+                ) else {
                     // No key for this chat right now (forgotten peer): wait.
                     continue;
                 };
@@ -596,8 +454,8 @@ pub struct HistoryInfo {
 pub async fn get_history_info(app_handle: tauri::AppHandle) -> Result<HistoryInfo, MeshGuardError> {
     ensure_open(&app_handle).await;
     let state = app_handle.state::<AppState>();
-    let slot = state.history.lock().await;
-    Ok(match &*slot {
+    let engine = state.engine();
+    Ok(match &engine.history {
         Slot::Open(_) => HistoryInfo {
             saved: true,
             reason: None,
@@ -653,9 +511,7 @@ pub async fn list_conversations(
     for (c, last) in rows {
         let title = match c.title {
             Some(t) if !t.is_empty() => t,
-            _ => peer_title(&state, c.peer_node)
-                .await
-                .unwrap_or_else(|| format!("!{:08x}", c.peer_node)),
+            _ => peer_title(&state, c.peer_node).unwrap_or_else(|| format!("!{:08x}", c.peer_node)),
         };
         views.push(ConversationView {
             conversation_id: c.id.0,
@@ -764,66 +620,6 @@ pub async fn delete_conversation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::SessionKey;
-    use meshguard_store::MessageKind;
-
-    fn tmp_dir(name: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("mg-history-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        d
-    }
-
-    #[test]
-    fn a_store_from_another_key_is_set_aside_not_deleted() {
-        let dir = tmp_dir("wrong-key");
-        let a = SessionKey::from_bytes([1; 32]);
-        let Slot::Open(mut s) = open_store(&dir, &a) else {
-            panic!("store should open");
-        };
-        let c = s.upsert_conversation(1, 2, None).unwrap();
-        s.insert_incoming(&c, MessageId::random(), MessageKind::Text, b"x", 1, 1)
-            .unwrap();
-        drop(s);
-
-        let b = SessionKey::from_bytes([2; 32]);
-        let Slot::Open(fresh) = open_store(&dir, &b) else {
-            panic!("a new store should open");
-        };
-        assert!(fresh.conversations().unwrap().is_empty());
-        let kept: Vec<_> = std::fs::read_dir(&dir)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|n| {
-                n.starts_with("store.db.unreadable-")
-                    && !n.ends_with("-wal")
-                    && !n.ends_with("-shm")
-            })
-            .collect();
-        assert_eq!(kept.len(), 1, "old store kept aside: {kept:?}");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn a_newer_store_turns_history_off_and_stays() {
-        let dir = tmp_dir("too-new");
-        std::fs::create_dir_all(&dir).unwrap();
-        {
-            let conn = rusqlite_conn(&dir.join(STORE_FILE));
-            conn.pragma_update(None, "user_version", meshguard_store::SCHEMA_VERSION + 1)
-                .unwrap();
-        }
-        assert!(matches!(
-            open_store(&dir, &SessionKey::from_bytes([1; 32])),
-            Slot::Off(_)
-        ));
-        assert!(dir.join(STORE_FILE).exists());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    fn rusqlite_conn(path: &std::path::Path) -> rusqlite::Connection {
-        rusqlite::Connection::open(path).unwrap()
-    }
 
     #[test]
     fn content_round_trips_through_storage() {

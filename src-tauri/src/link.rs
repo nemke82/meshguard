@@ -83,19 +83,12 @@ fn connect_params(
 ) -> ConnectParams {
     ConnectParams {
         app_handle: app.clone(),
-        mesh_nodes: state.mesh_nodes.clone(),
-        my_node_num: state.my_node_num.clone(),
-        my_device_name: state.my_device_name.clone(),
-        session_keys: state.session_keys.clone(),
-        pending_pair_requests: state.pending_pair_requests.clone(),
+        engine: state.engine.clone(),
         radio: state.radio.clone(),
-        config: state.config.clone(),
         config_dir: state.config_dir.clone(),
-        inbound: state.inbound.clone(),
         link_gen,
         link: state.link.clone(),
         vault,
-        keys_owner: state.keys_owner.clone(),
         my_position: state.my_position.clone(),
         node_history: state.node_history.clone(),
         path_tests: state.path_tests.clone(),
@@ -137,16 +130,17 @@ async fn connect_locked(
     *state.radio.lock().await = Some(radio);
 
     {
-        let mut config = state.config.lock().await;
+        let mut engine = state.engine();
+        let name = engine.my_device_name.clone();
+        let node_num = engine.my_node_num;
+        let config = &mut engine.config;
         config.last_link = Some(target.clone());
         config.last_ble_address = Some(format!("{}:{}", target.kind(), target.label()));
-        let name = state.my_device_name.lock().await.clone();
         if let Some(name) = &name {
             config.last_device_name = Some(name.clone());
         }
-        let node_num = *state.my_node_num.lock().await;
         crate::device_config::remember_link(
-            &mut config,
+            config,
             target,
             name.as_deref(),
             node_num,
@@ -192,11 +186,10 @@ pub async fn connect(
 }
 
 /// The node number saved for `target`, if it is a saved radio.
-async fn saved_node(state: &AppState, target: &LinkTarget) -> Option<u32> {
+fn saved_node(state: &AppState, target: &LinkTarget) -> Option<u32> {
     state
+        .engine()
         .config
-        .lock()
-        .await
         .saved_links
         .iter()
         .find(|l| l.target == *target)
@@ -242,19 +235,20 @@ pub async fn disconnect(state: &AppState) {
     state.link.reconnect_gen.fetch_add(1, Ordering::SeqCst);
     state.link.link_gen.fetch_add(1, Ordering::SeqCst);
     shutdown_radio(state).await;
-    *state.my_node_num.lock().await = None;
-    state.mesh_nodes.lock().await.clear();
+    let mut engine = state.engine();
+    engine.my_node_num = None;
+    engine.nodes.clear();
 }
 
 /// Start (or restart) the background loop that reconnects to the last radio.
 /// Returns false when there is no saved target.
 pub async fn start_reconnect_loop(app: tauri::AppHandle) -> bool {
     let state = app.state::<AppState>();
-    let Some(mut target) = state.config.lock().await.last_link.clone() else {
+    let Some(mut target) = state.engine().config.last_link.clone() else {
         return false;
     };
     // Fixed for the whole loop: the address may change, the radio may not.
-    let node_num = saved_node(&state, &target).await;
+    let node_num = saved_node(&state, &target);
     let my_loop = state.link.reconnect_gen.fetch_add(1, Ordering::SeqCst) + 1;
     let app_for_loop = app.clone();
     tauri::async_runtime::spawn(async move {

@@ -20,17 +20,17 @@ use tokio::sync::Mutex;
 
 use std::path::PathBuf;
 
-use meshguard_core::inbound::{process_inbound, Inbound, InboundContext};
-use meshguard_core::outbound::WireVersion;
-#[cfg(target_os = "android")]
-use meshguard_core::status::StatusKind;
-use meshguard_core::status::{GeoFix, FEATURE_STATUS, SUPPORTED_FEATURES};
+use meshguard_core::status::GeoFix;
 use meshguard_engine::nodes;
-use meshguard_core::{MessageId, PeerIdentity};
+use meshguard_engine::receive::{Action, Event};
 
-use crate::device_config::{AppConfig, WireProtocol};
 use crate::error::MeshGuardError;
-use crate::state::{InboundState, MeshNodeInfo};
+use crate::state::{lock_engine, MeshNodeInfo, SharedEngine};
+
+pub use meshguard_engine::receive::{
+    IncomingMessageEvent, IncomingStatusEvent, MessageDeliveredEvent, PairRequestEvent,
+    PeerProtocolEvent,
+};
 
 /// The BLE service UUID that all Meshtastic firmware advertises.
 const MESHTASTIC_SERVICE_UUID: uuid::Uuid = uuid::Uuid::from_bytes([
@@ -699,23 +699,16 @@ impl PacketRouter<(), RouterError> for MeshGuardRouter {
 
 pub struct ConnectParams {
     pub app_handle: tauri::AppHandle,
-    pub mesh_nodes: Arc<Mutex<HashMap<u32, MeshNodeInfo>>>,
-    pub my_node_num: Arc<Mutex<Option<u32>>>,
-    pub my_device_name: Arc<Mutex<Option<String>>>,
-    pub session_keys: Arc<Mutex<HashMap<u32, crate::crypto::SessionKey>>>,
-    pub pending_pair_requests: Arc<Mutex<HashMap<u32, Vec<u8>>>>,
+    /// Keys, peers, nodes, replay protection and history.
+    pub engine: SharedEngine,
     /// The radio slot in `AppState`, so the listener can transmit ACKs.
     pub radio: Arc<Mutex<Option<MeshRadio>>>,
-    pub config: Arc<Mutex<AppConfig>>,
     pub config_dir: PathBuf,
-    pub inbound: Arc<InboundState>,
     /// Generation of this link (see `link.rs`).
     pub link_gen: u64,
     pub link: Arc<crate::link::LinkManager>,
     /// Vault key for restoring remembered chat keys (ADR-002), if available.
     pub vault: Option<Arc<crate::crypto::SessionKey>>,
-    /// Local radio the in-memory chat keys belong to.
-    pub keys_owner: Arc<Mutex<Option<u32>>>,
     /// Latest GPS fix of our own radio.
     pub my_position: Arc<Mutex<Option<GeoFix>>>,
     pub node_history: Arc<Mutex<crate::diagnostics::History>>,
@@ -729,14 +722,9 @@ pub struct ConnectParams {
 #[derive(Clone)]
 struct ListenerCtx {
     app_handle: tauri::AppHandle,
-    mesh_nodes: Arc<Mutex<HashMap<u32, MeshNodeInfo>>>,
+    engine: SharedEngine,
     my_node_num: u32,
-    session_keys: Arc<Mutex<HashMap<u32, crate::crypto::SessionKey>>>,
-    pending_pair_requests: Arc<Mutex<HashMap<u32, Vec<u8>>>>,
     radio: Arc<Mutex<Option<MeshRadio>>>,
-    config: Arc<Mutex<AppConfig>>,
-    config_dir: PathBuf,
-    inbound: Arc<InboundState>,
     link_gen: u64,
     link: Arc<crate::link::LinkManager>,
     my_position: Arc<Mutex<Option<GeoFix>>>,
@@ -748,14 +736,9 @@ impl ListenerCtx {
     fn new(p: &ConnectParams, my_node_num: u32) -> Self {
         Self {
             app_handle: p.app_handle.clone(),
-            mesh_nodes: p.mesh_nodes.clone(),
+            engine: p.engine.clone(),
             my_node_num,
-            session_keys: p.session_keys.clone(),
-            pending_pair_requests: p.pending_pair_requests.clone(),
             radio: p.radio.clone(),
-            config: p.config.clone(),
-            config_dir: p.config_dir.clone(),
-            inbound: p.inbound.clone(),
             link_gen: p.link_gen,
             link: p.link.clone(),
             my_position: p.my_position.clone(),
@@ -799,7 +782,8 @@ async fn run_config_and_listen(
                             tracing::info!("My node num: {}", my_info.my_node_num);
                         }
                         PayloadVariant::NodeInfo(node_info) => {
-                            let node = nodes::from_node_info(node_info, chrono::Utc::now().timestamp());
+                            let node =
+                                nodes::from_node_info(node_info, chrono::Utc::now().timestamp());
                             if Some(node.node_num) == found_node_num {
                                 if let Some(ref user) = node_info.user {
                                     found_device_name = Some(user.long_name.clone());
@@ -857,9 +841,12 @@ async fn run_config_and_listen(
         update_my_position(&p.my_position, pos).await;
     }
 
-    *p.mesh_nodes.lock().await = nodes;
-    *p.my_node_num.lock().await = Some(node_num);
-    *p.my_device_name.lock().await = found_device_name;
+    {
+        let mut engine = lock_engine(&p.engine);
+        engine.nodes = nodes;
+        engine.my_node_num = Some(node_num);
+        engine.my_device_name = found_device_name;
+    }
 
     emit_connection_state(&p.app_handle, "connected");
     let _ = p.app_handle.emit("mesh-nodes-updated", ());
@@ -1064,24 +1051,6 @@ async fn update_my_position(slot: &Mutex<Option<GeoFix>>, pos: &protobufs::Posit
     *current = nodes::newest_fix(*current, pos);
 }
 
-/// Apply what a packet tells us about its sender (see `nodes::observe`).
-async fn observe_mesh_packet(packet: &protobufs::MeshPacket, ctx: &ListenerCtx) {
-    let now = chrono::Utc::now().timestamp();
-    let seen = nodes::observe(&mut *ctx.mesh_nodes.lock().await, packet, ctx.my_node_num, now);
-    if let Some(pos) = &seen.my_position {
-        update_my_position(&ctx.my_position, pos).await;
-    }
-    if let Some(d) = &seen.path_reply {
-        handle_path_test_reply(ctx, packet.from, d).await;
-    }
-    if let Some(sample) = seen.sample {
-        ctx.node_history.lock().await.record(packet.from, sample);
-    }
-    if seen.nodes_changed {
-        let _ = ctx.app_handle.emit("mesh-nodes-updated", ());
-    }
-}
-
 /// A traceroute reply: report the route if we have a test outstanding.
 async fn handle_path_test_reply(ctx: &ListenerCtx, from: u32, data: &protobufs::Data) {
     use meshtastic::Message as _;
@@ -1122,96 +1091,96 @@ fn spawn_listener(mut listener: meshtastic::packet::PacketReceiver, ctx: Listene
                 tracing::debug!("Listener of a replaced link stopping");
                 break;
             }
-            if let Some(ref variant) = from_radio.payload_variant {
-                pkt_counter += 1;
-                let vname = variant_name(variant);
-                if vname != "QueueStatus" {
-                    tracing::debug!("Listener #{pkt_counter}: {vname}");
-                }
-
-                match variant {
-                    PayloadVariant::NodeInfo(node_info) => {
-                        let node = nodes::from_node_info(node_info, chrono::Utc::now().timestamp());
-                        if node.node_num != ctx.my_node_num {
-                            tracing::info!(
-                                "Mesh node update: {} ({})",
-                                node.long_name,
-                                node.node_num
-                            );
-                            ctx.mesh_nodes.lock().await.insert(node.node_num, node);
-                            let _ = ctx.app_handle.emit("mesh-nodes-updated", ());
-                        }
-                    }
-                    PayloadVariant::Packet(mesh_packet) => {
-                        let pv = match &mesh_packet.payload_variant {
-                            Some(protobufs::mesh_packet::PayloadVariant::Decoded(d)) => {
-                                format!("Decoded(port={})", d.portnum)
-                            }
-                            Some(protobufs::mesh_packet::PayloadVariant::Encrypted(e)) => {
-                                format!("Encrypted({} bytes)", e.len())
-                            }
-                            None => "None".to_string(),
-                        };
-                        tracing::info!(
-                            "Mesh packet from={} to={} channel={} payload={pv}",
-                            mesh_packet.from,
-                            mesh_packet.to,
-                            mesh_packet.channel
-                        );
-                        observe_mesh_packet(mesh_packet, &ctx).await;
-                        handle_incoming_packet(mesh_packet, &ctx).await;
-                    }
-                    _ => {}
-                }
+            let Some(variant) = &from_radio.payload_variant else {
+                continue;
+            };
+            pkt_counter += 1;
+            let vname = variant_name(variant);
+            if vname != "QueueStatus" {
+                tracing::debug!("Listener #{pkt_counter}: {vname}");
             }
+            if let PayloadVariant::Packet(mesh_packet) = variant {
+                let pv = match &mesh_packet.payload_variant {
+                    Some(protobufs::mesh_packet::PayloadVariant::Decoded(d)) => {
+                        format!("Decoded(port={})", d.portnum)
+                    }
+                    Some(protobufs::mesh_packet::PayloadVariant::Encrypted(e)) => {
+                        format!("Encrypted({} bytes)", e.len())
+                    }
+                    None => "None".to_string(),
+                };
+                tracing::info!(
+                    "Mesh packet from={} to={} channel={} payload={pv}",
+                    mesh_packet.from,
+                    mesh_packet.to,
+                    mesh_packet.channel
+                );
+            }
+            let now = chrono::Utc::now().timestamp().max(0) as u64;
+            let actions = lock_engine(&ctx.engine).on_from_radio(&from_radio, ctx.my_node_num, now);
+            run_actions(&ctx, actions, now).await;
         }
         tracing::warn!("Mesh radio listener ended — radio disconnected");
         crate::link::on_link_lost(ctx.app_handle.clone(), ctx.link_gen);
     });
 }
 
-#[derive(Clone, serde::Serialize)]
-pub struct IncomingMessageEvent {
-    pub from_node: u32,
-    pub from_name: String,
-    pub text: String,
-    pub timestamp: i64,
-    pub message_id: String,
-    /// Set when the message was saved to the history store.
-    pub conversation_id: Option<String>,
+/// Carry out what the engine decided for one packet.
+async fn run_actions(ctx: &ListenerCtx, actions: Vec<Action>, now: u64) {
+    for action in actions {
+        match action {
+            Action::SendAck { to, frame } => send_ack(ctx, to, frame).await,
+            Action::Emit(event) => emit_event(&ctx.app_handle, event),
+            Action::Notify { title, body, node } => {
+                #[cfg(target_os = "android")]
+                show_android_notification(&ctx.app_handle, &title, &body, node);
+                #[cfg(not(target_os = "android"))]
+                let _ = (title, body, node);
+            }
+            Action::MyPosition(pos) => update_my_position(&ctx.my_position, &pos).await,
+            Action::PathReply { from, data } => handle_path_test_reply(ctx, from, &data).await,
+            Action::Sample { node, sample } => ctx.node_history.lock().await.record(node, sample),
+            Action::PeerAck { peer, message_id } => {
+                crate::history::record_peer_ack(&ctx.app_handle, ctx.my_node_num, peer, message_id)
+                    .await;
+                let _ = ctx.app_handle.emit(
+                    "message-delivered",
+                    MessageDeliveredEvent {
+                        peer_node: peer,
+                        message_id: message_id.to_hex(),
+                    },
+                );
+            }
+            Action::Undecryptable { from, payload } => {
+                // A device showing a QR code accepts requests sealed with it.
+                if crate::commands::try_accept_qr(&ctx.app_handle, from, &payload).await {
+                    continue;
+                }
+                let more = lock_engine(&ctx.engine).note_pair_request(from, payload, now);
+                Box::pin(run_actions(ctx, more, now)).await;
+            }
+            Action::ProbePeers => {
+                let app = ctx.app_handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    use tauri::Manager;
+                    let state = app.state::<crate::state::AppState>();
+                    crate::status_tx::probe_peers(&state).await;
+                });
+            }
+        }
+    }
 }
 
-/// A check-in, SOS or location share from a peer.
-#[derive(Clone, serde::Serialize)]
-pub struct IncomingStatusEvent {
-    pub from_node: u32,
-    pub from_name: String,
-    pub message_id: String,
-    pub status: meshguard_core::status::StatusBody,
-    /// Sender clock, unix seconds.
-    pub timestamp: i64,
-    /// Set when the message was saved to the history store.
-    pub conversation_id: Option<String>,
-}
-
-/// The peer app confirmed receipt of one of our v2 messages (authenticated).
-#[derive(Clone, serde::Serialize)]
-pub struct MessageDeliveredEvent {
-    pub peer_node: u32,
-    pub message_id: String,
-}
-
-#[derive(Clone, serde::Serialize)]
-pub struct PeerProtocolEvent {
-    pub node_num: u32,
-    pub protocol: WireProtocol,
-}
-
-#[derive(Clone, serde::Serialize)]
-pub struct PairRequestEvent {
-    pub from_node: u32,
-    pub from_name: String,
-    pub timestamp: i64,
+/// Send an engine event to the UI.
+pub fn emit_event(app: &tauri::AppHandle, event: Event) {
+    let name = event.name();
+    let _ = match event {
+        Event::NodesUpdated => app.emit(name, ()),
+        Event::IncomingMessage(e) => app.emit(name, e),
+        Event::IncomingStatus(e) => app.emit(name, e),
+        Event::PeerProtocol(e) => app.emit(name, e),
+        Event::PairRequest(e) | Event::PairAccepted(e) => app.emit(name, e),
+    };
 }
 
 #[cfg(target_os = "android")]
@@ -1238,461 +1207,10 @@ fn show_android_notification(
     }
 }
 
-async fn handle_incoming_packet(packet: &protobufs::MeshPacket, ctx: &ListenerCtx) {
-    let decoded = match &packet.payload_variant {
-        Some(protobufs::mesh_packet::PayloadVariant::Decoded(d)) => d,
-        Some(protobufs::mesh_packet::PayloadVariant::Encrypted(e)) => {
-            tracing::warn!(
-                "Received encrypted packet from {} ({} bytes) — cannot process. \
-                 Both devices must share the same Meshtastic channel PSK.",
-                packet.from,
-                e.len()
-            );
-            return;
-        }
-        None => return,
-    };
-
-    let portnum = decoded.portnum;
-    let private_app = protobufs::PortNum::PrivateApp as i32;
-
-    if portnum != private_app {
-        tracing::debug!(
-            "Ignoring packet from {} with portnum={portnum} (want {private_app}=PrivateApp)",
-            packet.from
-        );
-        return;
-    }
-
-    let from_node = packet.from;
-    let payload = &decoded.payload;
-
-    if payload.is_empty() {
-        tracing::debug!("Empty PrivateApp payload from {from_node}");
-        return;
-    }
-
-    tracing::info!(
-        "PrivateApp message from node {from_node} ({} bytes)",
-        payload.len()
-    );
-
-    let now = chrono::Utc::now().timestamp().max(0) as u64;
-    let sender = PeerIdentity::meshtastic_node(from_node);
-    let me = PeerIdentity::meshtastic_node(ctx.my_node_num);
-    let pinned: Option<WireVersion> = ctx
-        .config
-        .lock()
-        .await
-        .peers
-        .iter()
-        .find(|p| p.node_num == from_node)
-        .map(|p| p.protocol.into());
-
-    let outcome = {
-        let keys = ctx.session_keys.lock().await;
-        let mut dedup = ctx.inbound.dedup.lock().await;
-        let ictx = InboundContext {
-            sender: &sender,
-            me: &me,
-            key: keys.get(&from_node),
-            pinned,
-            now,
-        };
-        let outcome = process_inbound(payload, &ictx, &mut dedup, &ctx.inbound.policy);
-        let new_id = match &outcome {
-            Inbound::Text {
-                message_id: Some(id),
-                ..
-            } => Some(*id),
-            Inbound::Status { message_id, .. } => Some(*message_id),
-            _ => None,
-        };
-        if let Some(id) = new_id {
-            // A new message's id becomes durable only after the message is
-            // in the history (after_record). Until then no snapshot may
-            // contain it: a crash in between must let the retry through.
-            ctx.inbound
-                .uncommitted
-                .lock()
-                .await
-                .push((sender.clone(), id));
-        } else if outcome.authenticated_version() == Some(WireVersion::V2) {
-            // Persist while still holding the lock so concurrent writers
-            // cannot reorder snapshots.
-            if let Err(e) = save_dedup(ctx, &dedup).await {
-                tracing::warn!("Could not persist dedup cache: {e}");
-            }
-        }
-        outcome
-    };
-
-    // ADR-003 §3 rule (a): an authenticated v2 frame upgrades a v1 peer.
-    if outcome.authenticated_version() == Some(WireVersion::V2) && pinned == Some(WireVersion::V1) {
-        upgrade_peer_to_v2(ctx, from_node).await;
-    }
-
-    // Any authenticated frame proves the peer holds our key; from then on
-    // background frames (feature probes) cannot be mistaken for a request.
-    if outcome.authenticated_version().is_some() {
-        let newly = {
-            let mut config = ctx.config.lock().await;
-            let before = config
-                .peers
-                .iter()
-                .any(|p| p.node_num == from_node && p.confirmed);
-            crate::device_config::mark_peer_confirmed(&mut config, &ctx.config_dir, from_node);
-            !before && config.peers.iter().any(|p| p.node_num == from_node)
-        };
-        if newly {
-            let app = ctx.app_handle.clone();
-            tauri::async_runtime::spawn(async move {
-                use tauri::Manager;
-                let state = app.state::<crate::state::AppState>();
-                crate::status_tx::probe_peers(&state).await;
-            });
-        }
-    }
-
-    match outcome {
-        Inbound::Text {
-            version,
-            message_id,
-            text,
-            sent_at,
-            ack,
-        } => {
-            // v1 frames carry no id: give the stored copy a local one.
-            let wire_id = message_id;
-            let id = message_id.unwrap_or_else(MessageId::random);
-            let message_id = id.to_hex();
-            let sent_at = sent_at.map(u64::from).unwrap_or(now);
-            // Saved before the UI hears of it (and before the ACK), so a
-            // message the user saw is never missing from the history.
-            let recorded = crate::history::record_incoming(
-                &ctx.app_handle,
-                ctx.my_node_num,
-                from_node,
-                id,
-                meshguard_store::MessageKind::Text,
-                text.as_bytes().to_vec(),
-                sent_at,
-            )
-            .await;
-            let Some(conversation_id) =
-                after_record(ctx, &sender, wire_id.as_ref(), recorded).await
-            else {
-                return;
-            };
-            // Never log decrypted content (RFC §5.4).
-            tracing::info!(
-                "Incoming {version:?} text from {from_node} ({} bytes, id={message_id})",
-                text.len()
-            );
-
-            #[cfg(target_os = "android")]
-            show_android_notification(&ctx.app_handle, "New Message", &text, from_node);
-
-            let _ = ctx.app_handle.emit(
-                "incoming-message",
-                IncomingMessageEvent {
-                    from_node,
-                    from_name: String::new(),
-                    text,
-                    timestamp: sent_at as i64,
-                    message_id,
-                    conversation_id,
-                },
-            );
-            if let Some(frame) = ack {
-                send_ack(ctx, from_node, frame, now).await;
-            }
-        }
-        Inbound::Status {
-            message_id,
-            status,
-            sent_at,
-            ack,
-        } => {
-            tracing::info!(
-                "Incoming status {:?} from {from_node} (location: {}, id={message_id})",
-                status.kind,
-                status.location.is_some()
-            );
-            mark_features(ctx, from_node, FEATURE_STATUS).await;
-            let recorded = match status.encode() {
-                Ok(body) => {
-                    crate::history::record_incoming(
-                        &ctx.app_handle,
-                        ctx.my_node_num,
-                        from_node,
-                        message_id,
-                        meshguard_store::MessageKind::Status,
-                        body,
-                        u64::from(sent_at),
-                    )
-                    .await
-                }
-                Err(_) => crate::history::Recorded::Failed,
-            };
-            let Some(conversation_id) =
-                after_record(ctx, &sender, Some(&message_id), recorded).await
-            else {
-                return;
-            };
-            let from_name = ctx
-                .mesh_nodes
-                .lock()
-                .await
-                .get(&from_node)
-                .map(|n| n.long_name.clone())
-                .filter(|n| !n.is_empty())
-                .unwrap_or_else(|| format!("!{from_node:08x}"));
-
-            #[cfg(target_os = "android")]
-            {
-                let title = match status.kind {
-                    StatusKind::Sos => format!("\u{1F198} SOS from {from_name}"),
-                    StatusKind::NeedHelp => format!("\u{26A0}\u{FE0F} {from_name} needs help"),
-                    StatusKind::Location => format!("\u{1F4CD} {from_name} shared a location"),
-                    _ => format!("{from_name} checked in"),
-                };
-                show_android_notification(
-                    &ctx.app_handle,
-                    &title,
-                    &status.fallback_text(),
-                    from_node,
-                );
-            }
-
-            let _ = ctx.app_handle.emit(
-                "incoming-status",
-                IncomingStatusEvent {
-                    from_node,
-                    from_name,
-                    message_id: message_id.to_hex(),
-                    status,
-                    timestamp: i64::from(sent_at),
-                    conversation_id,
-                },
-            );
-            if let Some(frame) = ack {
-                send_ack(ctx, from_node, frame, now).await;
-            }
-        }
-        Inbound::Caps { features, ack } => {
-            tracing::info!("Node {from_node} announced features {features:#x}");
-            mark_features(ctx, from_node, features & SUPPORTED_FEATURES).await;
-            if let Some(frame) = ack {
-                send_ack(ctx, from_node, frame, now).await;
-            }
-        }
-        Inbound::Duplicate { message_id, ack } => {
-            tracing::debug!("Duplicate frame from {from_node} suppressed");
-            // The first copy may still be on its way into the history (e.g.
-            // an old listener during a reconnect). ACK only if it is durable:
-            // still in dedup and not pending. Checked under the dedup lock,
-            // which after_record holds while it commits or forgets the id.
-            let durable = {
-                let mut dedup = ctx.inbound.dedup.lock().await;
-                let pending = ctx
-                    .inbound
-                    .uncommitted
-                    .lock()
-                    .await
-                    .iter()
-                    .any(|(s, i)| *s == sender && *i == message_id);
-                if pending {
-                    // Withheld: do not use up the message's ACK allowance.
-                    dedup.uncount(&sender, &message_id);
-                    false
-                } else {
-                    dedup.contains(&sender, &message_id)
-                }
-            };
-            if !durable {
-                tracing::debug!("Duplicate from {from_node} not ACKed: first copy not saved");
-            } else if let Some(frame) = ack {
-                send_ack(ctx, from_node, frame, now).await;
-            }
-        }
-        Inbound::PeerAck { acked } => {
-            tracing::info!("Peer ACK from {from_node} for {acked}");
-            let probed = {
-                let mut probes = ctx.inbound.caps_probes.lock().await;
-                let hit = probes.get(&from_node).is_some_and(|(id, _)| *id == acked);
-                if hit {
-                    probes.remove(&from_node);
-                }
-                hit
-            };
-            if probed {
-                tracing::info!("Node {from_node} understands check-in/SOS messages");
-                mark_features(ctx, from_node, FEATURE_STATUS).await;
-                return;
-            }
-            crate::history::record_peer_ack(&ctx.app_handle, ctx.my_node_num, from_node, acked)
-                .await;
-            let _ = ctx.app_handle.emit(
-                "message-delivered",
-                MessageDeliveredEvent {
-                    peer_node: from_node,
-                    message_id: acked.to_hex(),
-                },
-            );
-        }
-        Inbound::PairAccept { version, name } => {
-            tracing::info!("Pair accepted ({version:?}) by node {from_node}");
-            let _ = ctx.app_handle.emit(
-                "pair-accepted",
-                PairRequestEvent {
-                    from_node,
-                    from_name: name,
-                    timestamp: now as i64,
-                },
-            );
-        }
-        Inbound::PairRequest { version, .. } => {
-            tracing::info!("Pair request ({version:?}) from node {from_node} — already have key");
-        }
-        Inbound::Dropped(reason) => {
-            tracing::info!("Dropped frame from {from_node}: {reason:?}");
-        }
-        Inbound::Undecryptable(reason) => {
-            tracing::info!(
-                "Cannot decrypt frame from {from_node} ({reason}) — treating as pair request"
-            );
-            // A device showing a QR code accepts requests sealed with it.
-            if crate::commands::try_accept_qr(&ctx.app_handle, from_node, payload).await {
-                return;
-            }
-            handle_possible_pair_request(ctx, from_node, payload.clone(), now).await;
-        }
-    }
-}
-
-/// Decide what to do after saving an incoming message to the history.
-/// `Some(conversation id or None)` = go on (show, notify, ACK); `None` =
-/// drop the frame unACKed: history is on but the write failed, so the id is
-/// taken out of the dedup cache and the sender's retry delivers it again.
-/// v1 frames (no id) cannot be retried by the sender and are shown anyway.
-async fn after_record(
-    ctx: &ListenerCtx,
-    sender: &PeerIdentity,
-    wire_id: Option<&MessageId>,
-    recorded: crate::history::Recorded,
-) -> Option<Option<String>> {
-    use crate::history::Recorded;
-    let conversation = match recorded {
-        Recorded::Stored(c) => Some(c),
-        Recorded::MemoryOnly => None,
-        Recorded::Failed => {
-            let Some(id) = wire_id else {
-                // v1: the sender cannot retry; show it without history.
-                return Some(None);
-            };
-            let mut dedup = ctx.inbound.dedup.lock().await;
-            dedup.forget(sender, id);
-            uncommit(ctx, sender, id).await;
-            tracing::warn!("Dropped a message until it can be saved; the sender will retry");
-            return None;
-        }
-    };
-    let Some(id) = wire_id else {
-        return Some(conversation);
-    };
-    // The message is saved (or history is memory-only): now make its id
-    // durable, so a replay after restart is recognised.
-    let mut dedup = ctx.inbound.dedup.lock().await;
-    uncommit(ctx, sender, id).await;
-    if let Err(e) = save_dedup(ctx, &dedup).await {
-        tracing::warn!("Could not persist dedup cache: {e}");
-        // Fail closed: without a durable record, a replay after restart
-        // would be shown again. Forget the id and drop the frame unACKed;
-        // the sender's retry delivers it (the history ignores the copy).
-        dedup.forget(sender, id);
-        return None;
-    }
-    Some(conversation)
-}
-
-async fn uncommit(ctx: &ListenerCtx, sender: &PeerIdentity, id: &MessageId) {
-    ctx.inbound
-        .uncommitted
-        .lock()
-        .await
-        .retain(|(s, i)| !(s == sender && i == id));
-}
-
-async fn save_dedup(
-    ctx: &ListenerCtx,
-    dedup: &meshguard_core::dedup::DedupCache,
-) -> Result<(), MeshGuardError> {
-    ctx.inbound.save_dedup(&ctx.config_dir, dedup).await
-}
-
-/// Store an undecryptable frame as a pending pairing attempt and, subject to
-/// rate limits, tell the user. Rate limiting stops unknown nodes on a public
-/// channel from flooding the user with "chat request" notifications.
-async fn handle_possible_pair_request(
-    ctx: &ListenerCtx,
-    from_node: u32,
-    payload: Vec<u8>,
-    now: u64,
-) {
-    ctx.pending_pair_requests
-        .lock()
-        .await
-        .insert(from_node, payload);
-
-    let allowed = ctx
-        .inbound
-        .pair_notify_per_node
-        .lock()
-        .await
-        .try_fire(&from_node, now)
-        && ctx.inbound.pair_notify_global.lock().await.try_take(now);
-    if !allowed {
-        tracing::info!("Pair-request notification from {from_node} rate-limited");
-        return;
-    }
-
-    let from_name = ctx
-        .mesh_nodes
-        .lock()
-        .await
-        .get(&from_node)
-        .map(|n| n.long_name.clone())
-        .unwrap_or_default();
-
-    #[cfg(target_os = "android")]
-    show_android_notification(
-        &ctx.app_handle,
-        "Chat Request",
-        &if from_name.is_empty() {
-            format!("Node {from_node} wants to start a secure chat")
-        } else {
-            format!("{from_name} wants to start a secure chat")
-        },
-        from_node,
-    );
-    let _ = ctx.app_handle.emit(
-        "pair-request",
-        PairRequestEvent {
-            from_node,
-            from_name,
-            timestamp: now as i64,
-        },
-    );
-}
-
-/// Transmit an application ACK if the global airtime budget allows it.
-async fn send_ack(ctx: &ListenerCtx, to_node: u32, frame: Vec<u8>, now: u64) {
+/// Transmit an application ACK (the engine already charged the airtime
+/// budget), only through the link the frame it answers came from.
+async fn send_ack(ctx: &ListenerCtx, to_node: u32, frame: Vec<u8>) {
     if !ctx.link.is_current(ctx.link_gen) {
-        return;
-    }
-    if !ctx.inbound.ack_budget.lock().await.try_take(now) {
-        tracing::info!("ACK to {to_node} skipped: airtime budget exhausted");
         return;
     }
     let mut radio = ctx.radio.lock().await;
@@ -1709,33 +1227,6 @@ async fn send_ack(ctx: &ListenerCtx, to_node: u32, frame: Vec<u8>, now: u64) {
         }
         None => tracing::debug!("ACK to {to_node} skipped: radio not stored yet"),
     }
-}
-
-async fn mark_features(ctx: &ListenerCtx, node_num: u32, bits: u32) {
-    if bits == 0 {
-        return;
-    }
-    let mut config = ctx.config.lock().await;
-    crate::device_config::mark_peer_features(&mut config, &ctx.config_dir, node_num, bits);
-}
-
-async fn upgrade_peer_to_v2(ctx: &ListenerCtx, node_num: u32) {
-    let mut config = ctx.config.lock().await;
-    let Some(peer) = config.peers.iter_mut().find(|p| p.node_num == node_num) else {
-        return;
-    };
-    peer.protocol = WireProtocol::V2;
-    match config.save(&ctx.config_dir) {
-        Ok(()) => tracing::info!("Peer {node_num} upgraded to wire protocol v2"),
-        Err(e) => tracing::warn!("Peer {node_num} upgraded to v2 but saving failed: {e}"),
-    }
-    let _ = ctx.app_handle.emit(
-        "peer-protocol",
-        PeerProtocolEvent {
-            node_num,
-            protocol: WireProtocol::V2,
-        },
-    );
 }
 
 fn emit_connection_state(app_handle: &tauri::AppHandle, state: &str) {
