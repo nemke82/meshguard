@@ -1,0 +1,7 @@
+• Message history, saved on the device and encrypted
+• Chat list with last message and unread count
+• Delete a conversation
+• Unsent messages wait and are sent when the radio is back
+• Wi-Fi radios found automatically; connected radios remembered
+• Desktop remembers chat keys (OS keyring)
+• Test of the Android background service: Notification Settings → Background service (test)
