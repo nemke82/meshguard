@@ -38,7 +38,14 @@
           </div>
 
           <div class="form-card">
-            <h2 class="section-title">Connect Your Device</h2>
+            <!-- Radios connected to before; filled by loadSavedLinks(). -->
+            <div id="saved-links" class="saved-links" style="display:none;">
+              <h2 class="section-title">Saved Radios</h2>
+              <div id="saved-links-list" class="scan-results"></div>
+              <div id="saved-links-status" class="scan-status"></div>
+            </div>
+
+            <h2 class="section-title" id="connect-title">Connect Your Device</h2>
 
             <div class="conn-tabs">
               <button type="button" class="conn-tab active" data-tab="ble">
@@ -75,13 +82,25 @@
 
             <!-- WiFi tab -->
             <div id="tab-wifi" class="conn-tab-content">
-              <p class="connect-info">Connect to a Meshtastic device over WiFi. Enter the device IP address (the device must have WiFi enabled and be on the same network).</p>
-              <label class="field">
-                <span class="field-label">Device IP Address</span>
-                <input type="text" id="wifi-address" placeholder="192.168.1.100" />
-                <span class="field-hint">Default Meshtastic port 4403 is used automatically</span>
-              </label>
-              <button type="button" id="btn-connect-wifi" class="btn btn-primary btn-full">Connect via WiFi</button>
+              <p class="connect-info">Find Meshtastic radios on the WiFi network this device is on. The radio needs WiFi enabled and must be on the same network.</p>
+              <button type="button" id="btn-scan-wifi" class="btn btn-scan">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                </svg>
+                Scan Network
+              </button>
+              <div id="wifi-scan-status" class="scan-status"></div>
+              <div id="wifi-scan-results" class="scan-results"></div>
+
+              <details class="wifi-manual">
+                <summary>Enter address manually</summary>
+                <label class="field">
+                  <span class="field-label">Device IP Address</span>
+                  <input type="text" id="wifi-address" placeholder="192.168.1.100" />
+                  <span class="field-hint">Default Meshtastic port 4403 is used automatically</span>
+                </label>
+                <button type="button" id="btn-connect-wifi" class="btn btn-primary btn-full">Connect via WiFi</button>
+              </details>
             </div>
 
             <!-- USB tab -->

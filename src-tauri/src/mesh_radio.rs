@@ -719,6 +719,9 @@ pub struct ConnectParams {
     pub my_position: Arc<Mutex<Option<GeoFix>>>,
     pub node_history: Arc<Mutex<crate::diagnostics::History>>,
     pub path_tests: Arc<Mutex<crate::diagnostics::PathTests>>,
+    /// Refuse the link unless this node answers (a saved radio's address
+    /// may now belong to another device). Checked before any state changes.
+    pub expect_node: Option<u32>,
 }
 
 /// Everything the background listener needs; cheap to clone.
@@ -831,6 +834,19 @@ async fn run_config_and_listen(
 
     let node_num = found_node_num
         .ok_or_else(|| MeshGuardError::MeshRadio("Radio did not report MyNodeInfo".into()))?;
+
+    // Before touching keys, nodes or the connection state: a different radio
+    // must not replace the one we meant to reach.
+    if let Some(want) = p.expect_node {
+        if node_num != want {
+            if let Err(e) = configured_api.disconnect().await {
+                tracing::debug!("Wrong radio's transport shutdown: {e}");
+            }
+            return Err(MeshGuardError::MeshRadio(format!(
+                "A different radio (!{node_num:08x}) answered instead of !{want:08x}"
+            )));
+        }
+    }
 
     nodes.remove(&node_num);
 

@@ -103,6 +103,55 @@ pub async fn connect_serial(
     .await
 }
 
+/// Look for Meshtastic radios on the current Wi-Fi network (mDNS).
+#[tauri::command]
+pub async fn scan_wifi_radios(
+    app_handle: tauri::AppHandle,
+) -> Result<Vec<crate::discovery::WifiRadio>, MeshGuardError> {
+    crate::discovery::scan(&app_handle, crate::discovery::SCAN_TIME).await
+}
+
+/// Radios connected to before, newest first.
+#[tauri::command]
+pub async fn get_saved_links(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::device_config::SavedLink>, MeshGuardError> {
+    Ok(state.config.lock().await.saved_links.clone())
+}
+
+/// Forget a saved radio (and stop auto-connecting to it).
+#[tauri::command]
+pub async fn forget_saved_link(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<(), MeshGuardError> {
+    let mut config = state.config.lock().await;
+    if crate::device_config::forget_link(&mut config, &id) {
+        config.save(&state.config_dir)?;
+    }
+    Ok(())
+}
+
+/// Connect to a saved radio (see `link::connect_saved`).
+#[tauri::command]
+pub async fn connect_saved_link(
+    id: String,
+    pin: Option<u32>,
+    app_handle: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), MeshGuardError> {
+    let (target, node_num) = state
+        .config
+        .lock()
+        .await
+        .saved_links
+        .iter()
+        .find(|l| l.id == id)
+        .map(|l| (l.target.clone(), l.node_num))
+        .ok_or_else(|| MeshGuardError::Io("This saved radio no longer exists".into()))?;
+    link::connect_saved(target, node_num, pin, &app_handle, &state).await
+}
+
 /// Disconnect from the Meshtastic device.
 #[tauri::command]
 pub async fn disconnect_device(state: State<'_, AppState>) -> Result<(), MeshGuardError> {

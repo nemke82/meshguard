@@ -4,6 +4,7 @@ pub mod crypto;
 pub mod dedup_store;
 pub mod device_config;
 pub mod diagnostics;
+pub mod discovery;
 pub mod error;
 pub mod key_store;
 pub mod link;
@@ -45,6 +46,10 @@ pub fn run() {
             commands::connect_device,
             commands::connect_tcp,
             commands::connect_serial,
+            commands::scan_wifi_radios,
+            commands::get_saved_links,
+            commands::forget_saved_link,
+            commands::connect_saved_link,
             commands::disconnect_device,
             commands::is_connected,
             commands::get_mesh_nodes,

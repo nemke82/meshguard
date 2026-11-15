@@ -43,7 +43,8 @@ meshguard/
 │   │   ├── crypto.rs          # AES-256-GCM + HKDF-SHA256 key derivation
 │   │   ├── protocol.rs        # Compact binary wire format for mesh messages
 │   │   ├── commands.rs        # Tauri IPC commands (scan, connect, chat, pair)
-│   │   ├── device_config.rs   # Saved device/peer configuration
+│   │   ├── device_config.rs   # Saved radios, peers and settings
+│   │   ├── discovery.rs       # Wi-Fi radio discovery (mDNS _meshtastic._tcp)
 │   │   ├── state.rs           # Shared app state (nodes, keys, radio)
 │   │   └── error.rs           # Error types
 │   ├── Cargo.toml
