@@ -262,7 +262,7 @@ const state = {
   // Message history (ADR-005): saved on this device, or memory only.
   history: { saved: false, reason: null },
   conversations: [],
-  chat: { conversationId: null, cursor: null, hasMore: false, readOnly: false, gen: 0 },
+  chat: { conversationId: null, cursor: null, hasMore: false, readOnly: false, gen: 0, late: null },
   passphraseMode: null, // "initiate" or "accept"
   passphraseTargetNode: null,
   pendingPairRequests: [],
@@ -273,6 +273,8 @@ const state = {
 // Screen Navigation
 // ============================================================
 function showScreen(screen) {
+  // Leaving the chat: whatever it was still loading is no longer wanted.
+  if (screen !== screenChat) state.chat.gen += 1;
   document.querySelectorAll(".screen").forEach((s) => s.classList.remove("active"));
   screen.classList.add("active");
   if (screen === screenConnect) loadSavedLinks();
@@ -611,6 +613,8 @@ async function loadMeshData() {
     state.peers = peers || [];
 
     if (deviceInfo) {
+      // Another radio means other conversations: drop this session's bubbles.
+      if (state.myNodeNum != null && state.myNodeNum !== deviceInfo.node_num) state.messages = {};
       state.myNodeNum = deviceInfo.node_num;
       myDeviceLabel.textContent = deviceInfo.device_name + " (connected)";
     }
@@ -917,6 +921,7 @@ function enterChat(nodeNum, peerName, opts = {}) {
     hasMore: false,
     readOnly,
     gen: state.chat.gen + 1,
+    late: null,
   };
   chatPeerName.textContent = peerName || "Peer";
   screenChat.classList.toggle("read-only", readOnly);
@@ -985,34 +990,42 @@ async function loadChatMessages(nodeNum) {
     return;
   }
   const gen = state.chat.gen;
-  // The store has everything that was received or sent; from memory keep
-  // only sends still on their way (no id yet). Messages that arrive while
-  // the page loads are added to this list by the event handlers.
-  const memory = state.messages[nodeNum] || [];
-  state.messages[nodeNum] = memory.filter((m) => m.mine && !m.wireId);
+  const before = new Set(state.messages[nodeNum] || []);
+  // Delivery updates that arrive while the page loads, applied on top of it.
+  state.chat.late = new Map();
   let page;
   try {
     page = await invoke("get_messages", { conversationId, before: null, limit: HISTORY_PAGE });
   } catch (err) {
     console.error("Could not load messages:", err);
   }
-  if (gen !== state.chat.gen) return; // another chat was opened meanwhile
+  if (gen !== state.chat.gen) return; // left or opened another chat meanwhile
+  const late = state.chat.late;
+  state.chat.late = null;
+  const current = state.messages[nodeNum] || [];
   if (!page) {
     // Show what this session has rather than an empty chat.
-    state.messages[nodeNum] = memory.concat(
-      state.messages[nodeNum].filter((m) => !memory.includes(m))
-    );
     chatIntro();
-    state.messages[nodeNum].forEach((m) => renderMessage(m));
+    current.forEach((m) => renderMessage(m));
     return;
   }
   const stored = page.map(fromStored);
+  for (const m of stored) {
+    if (!m.mine || m.status === "delivered") continue;
+    if (unmatchedDelivered.delete(m.id)) m.status = "delivered";
+    else if (late.has(m.id)) m.status = late.get(m.id);
+  }
   const ids = new Set(stored.map((m) => m.id));
-  const live = state.messages[nodeNum].filter(
-    (m) => !ids.has(m.id) && !(m.wireId && ids.has(m.wireId))
+  // The store has everything received or sent. From memory keep sends still
+  // waiting for their id and whatever arrived while the page loaded.
+  const live = current.filter(
+    (m) =>
+      (!before.has(m) || (m.mine && !m.wireId)) &&
+      !ids.has(m.id) &&
+      !(m.wireId && ids.has(m.wireId))
   );
   state.messages[nodeNum] = stored.concat(live);
-  chatIntro(); // redraw: something may have arrived while the page loaded
+  chatIntro();
   messagesContainer.style.scrollBehavior = "auto"; // open at the newest, no animation
   state.messages[nodeNum].forEach((m) => renderMessage(m));
   messagesContainer.style.scrollBehavior = "";
@@ -1045,12 +1058,17 @@ async function loadEarlierMessages() {
   const fromBottom = messagesContainer.scrollHeight - messagesContainer.scrollTop;
   const anchor = btn.nextSibling.nextSibling; // after the intro line
   for (const m of older) messagesContainer.insertBefore(messageElement(m), anchor);
-  messagesContainer.style.scrollBehavior = "auto";
-  messagesContainer.scrollTop = messagesContainer.scrollHeight - fromBottom;
-  messagesContainer.style.scrollBehavior = "";
   if (page.length) state.chat.cursor = page[0].cursor;
   state.chat.hasMore = page.length === HISTORY_PAGE;
   btn.hidden = !state.chat.hasMore;
+  messagesContainer.style.scrollBehavior = "auto";
+  messagesContainer.scrollTop = messagesContainer.scrollHeight - fromBottom;
+  messagesContainer.style.scrollBehavior = "";
+}
+
+function otherRadio(conversationId, nodeNum) {
+  const mine = conversationIdFor(nodeNum);
+  return !!(conversationId && mine && conversationId !== mine);
 }
 
 function onActiveChat(nodeNum) {
@@ -1059,7 +1077,7 @@ function onActiveChat(nodeNum) {
 
 function markActiveChatRead() {
   const id = state.chat.conversationId;
-  if (!state.history.saved || !id) return;
+  if (!state.history.saved || !id || !screenChat.classList.contains("active")) return;
   invoke("mark_conversation_read", { conversationId: id }).catch(() => {});
   const conv = state.conversations.find((c) => c.conversation_id === id);
   if (conv) conv.unread = 0;
@@ -1067,13 +1085,15 @@ function markActiveChatRead() {
 
 btnDeleteHistory.addEventListener("click", async () => {
   const nodeNum = state.activePeerNodeNum;
-  const conversationId = state.chat.conversationId;
+  const { conversationId, readOnly } = state.chat;
   if (nodeNum == null) return;
   const name = chatPeerName.textContent;
   const what = state.history.saved
     ? `Delete all messages with ${name} from this device? Unsent messages are dropped too. This cannot be undone.`
     : `Clear the messages with ${name}?`;
   if (!confirm(what)) return;
+  // Drop any page still loading for this chat; it would bring them back.
+  const gen = ++state.chat.gen;
   try {
     if (state.history.saved && conversationId) {
       await invoke("delete_conversation", { conversationId });
@@ -1084,12 +1104,12 @@ btnDeleteHistory.addEventListener("click", async () => {
   }
   delete state.messages[nodeNum];
   state.conversations = state.conversations.filter((c) => c.conversation_id !== conversationId);
-  if (state.chat.readOnly) {
+  if (gen !== state.chat.gen) return; // the user moved on; leave that screen alone
+  if (readOnly) {
     await loadMeshData();
     showScreen(screenMesh);
     return;
   }
-  state.chat.gen += 1;
   state.chat.cursor = null;
   state.chat.hasMore = false;
   chatIntro();
@@ -1140,6 +1160,14 @@ async function sendMessage() {
     // (v2 peers) turns it into "delivered", via the message-delivered event.
     const receipt = await invoke("send_message", { peerNodeNum: nodeNum, text });
     msg.wireId = receipt && receipt.message_id;
+    // The history page loaded meanwhile and already shows the saved copy.
+    const list = state.messages[nodeNum] || [];
+    if (msg.wireId && list.some((m) => m !== msg && m.id === msg.wireId)) {
+      state.messages[nodeNum] = list.filter((m) => m !== msg);
+      const el = document.getElementById(`msg-${msg.id}`);
+      if (el) el.remove();
+      return;
+    }
     if (msg.wireId && unmatchedDelivered.delete(msg.wireId)) {
       msg.status = "delivered";
       updateMessageStatus(msg.id, "delivered");
@@ -1306,13 +1334,15 @@ async function setupEventListeners() {
     };
 
     if (state.messages[nodeNum].some((m) => m.id === msg.id)) return;
-    state.messages[nodeNum].push(msg);
+    // Saved for a radio we are no longer on: in its history, not this chat.
+    const here = !otherRadio(data.conversation_id, nodeNum);
+    if (here) state.messages[nodeNum].push(msg);
 
-    const onChatScreen = onActiveChat(nodeNum);
+    const onChatScreen = here && onActiveChat(nodeNum);
     if (onChatScreen) {
       renderMessage(msg);
     }
-    noteIncoming(nodeNum, data.conversation_id, onChatScreen);
+    if (here) noteIncoming(nodeNum, data.conversation_id, onChatScreen);
 
     NotificationSound.play();
 
@@ -1343,11 +1373,12 @@ async function setupEventListeners() {
       status: "delivered",
     };
     if (state.messages[nodeNum].some((m) => m.id === msg.id)) return;
-    state.messages[nodeNum].push(msg);
+    const here = !otherRadio(data.conversation_id, nodeNum);
+    if (here) state.messages[nodeNum].push(msg);
 
-    const onChatScreen = onActiveChat(nodeNum);
+    const onChatScreen = here && onActiveChat(nodeNum);
     if (onChatScreen) renderMessage(msg);
-    noteIncoming(nodeNum, data.conversation_id, onChatScreen);
+    if (here) noteIncoming(nodeNum, data.conversation_id, onChatScreen);
 
     const name = data.from_name || lookupNodeName(nodeNum);
     NotificationSound.play();
@@ -1397,6 +1428,9 @@ async function setupEventListeners() {
     const { message_id, state: st } = event.payload;
     const status = uiStatus(st);
     if (!status) return;
+    if (state.chat.late && state.chat.late.get(message_id) !== "delivered") {
+      state.chat.late.set(message_id, status);
+    }
     for (const list of Object.values(state.messages)) {
       const msg = list.find((m) => m.mine && m.wireId === message_id);
       if (msg) {
@@ -1412,6 +1446,7 @@ async function setupEventListeners() {
 
   await listen("message-delivered", (event) => {
     const { peer_node, message_id } = event.payload;
+    if (state.chat.late) state.chat.late.set(message_id, "delivered");
     const msg = (state.messages[peer_node] || []).find(
       (m) => m.mine && m.wireId === message_id
     );
@@ -1646,6 +1681,7 @@ async function sendCheckin(nodeNums, kind, text, withLocation) {
         status: r.message_id && unmatchedDelivered.delete(r.message_id) ? "delivered" : uiStatus(r.state) || "sent",
       };
       if (!state.messages[r.peer_node]) state.messages[r.peer_node] = [];
+      if (state.messages[r.peer_node].some((m) => m.id === r.message_id)) continue;
       state.messages[r.peer_node].push(msg);
       if (state.activePeerNodeNum === r.peer_node && screenChat.classList.contains("active")) {
         renderMessage(msg);
