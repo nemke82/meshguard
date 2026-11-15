@@ -1690,6 +1690,7 @@ input[type="range"]::-moz-range-thumb {
 }
 
 .history-banner[hidden],
+#bg-service-field[hidden],
 .chat-readonly-note[hidden],
 .btn-load-earlier[hidden] {
   display: none;

@@ -14,6 +14,26 @@ pub use meshguard_engine::nodes::{MeshNodeInfo, ONLINE_WINDOW_SECS};
 /// A `std` mutex: never hold it across an `.await`.
 pub type SharedEngine = Arc<std::sync::Mutex<Engine>>;
 
+/// The one engine of this process. The Tauri app and the Android service
+/// (through JNI, ADR-001 §4) must share it, so whoever comes first creates
+/// it; both pass the same folder (on Android, the app's data directory).
+pub fn process_engine(config_dir: &std::path::Path) -> SharedEngine {
+    static ENGINE: std::sync::OnceLock<SharedEngine> = std::sync::OnceLock::new();
+    let engine = ENGINE.get_or_init(|| {
+        let now = chrono::Utc::now().timestamp().max(0) as u64;
+        Arc::new(std::sync::Mutex::new(Engine::new(config_dir.to_path_buf(), now)))
+    });
+    let dir = lock_engine(engine).config_dir.clone();
+    if dir != config_dir {
+        tracing::warn!(
+            "Engine already uses {}, not {}",
+            dir.display(),
+            config_dir.display()
+        );
+    }
+    engine.clone()
+}
+
 /// Lock the engine (a panic while it was held does not make it unusable).
 pub fn lock_engine(engine: &SharedEngine) -> std::sync::MutexGuard<'_, Engine> {
     engine.lock().unwrap_or_else(|e| e.into_inner())
@@ -68,10 +88,9 @@ impl AppState {
     }
 
     pub fn new(config_dir: PathBuf) -> Self {
-        let now = chrono::Utc::now().timestamp().max(0) as u64;
         Self {
             radio: Arc::new(Mutex::new(None)),
-            engine: Arc::new(std::sync::Mutex::new(Engine::new(config_dir.clone(), now))),
+            engine: process_engine(&config_dir),
             config_dir,
             link: Arc::new(crate::link::LinkManager::default()),
             my_position: Arc::new(Mutex::new(None)),

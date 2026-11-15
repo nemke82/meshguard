@@ -34,6 +34,7 @@ meshguard/
 ├── crates/meshguard-core/  # Platform-free core: v2 envelope, codec, crypto, dedup, delivery
 ├── crates/meshguard-store/ # Encrypted SQLite store: history, inbox, outbox (ADR-005)
 ├── crates/meshguard-engine/ # No-Tauri engine: keys, peers, nodes, dedup, history, packet handling (ADR-001)
+├── android/kotlin/         # Kotlin sources copied in by patch-android.sh (Vault, CoreBridge, service)
 ├── docs/                   # Design RFC, ADRs, audit
 ├── website/                # meshguard.net (deployed to Vercel on push to main)
 ├── src-tauri/
@@ -41,6 +42,7 @@ meshguard/
 │   │   ├── lib.rs             # Tauri app entry
 │   │   ├── main.rs            # Binary entry
 │   │   ├── mesh_radio.rs      # BLE scan, connect, polling stream, message I/O
+│   │   ├── android_bridge.rs  # JNI entry points for the Kotlin CoreBridge (ADR-001)
 │   │   ├── ble_plugin.rs      # Native Android BLE plugin (Kotlin bridge)
 │   │   ├── crypto.rs          # AES-256-GCM + HKDF-SHA256 key derivation
 │   │   ├── protocol.rs        # Compact binary wire format for mesh messages

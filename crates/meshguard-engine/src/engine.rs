@@ -200,6 +200,17 @@ impl Engine {
         (restored, changed)
     }
 
+    /// The radio connected to most recently, if its node number is known
+    /// (from the saved radios).
+    pub fn last_radio(&self) -> Option<u32> {
+        let target = self.config.last_link.as_ref()?;
+        self.config
+            .saved_links
+            .iter()
+            .find(|l| l.target == *target)
+            .and_then(|l| l.node_num)
+    }
+
     // ── History store ─────────────────────────────────────────
 
     /// Open the history store with the vault key (`None`: no key store on
@@ -351,6 +362,20 @@ mod tests {
         assert_eq!(e.adopt_keys(5, vec![]), (0, true));
         assert!(e.keys.is_empty());
         assert!(e.install_key(1, 3, k(9)).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_last_radio_comes_from_the_saved_links() {
+        let dir = tmp_dir("last-radio");
+        let mut e = Engine::new(dir.clone(), 1);
+        assert_eq!(e.last_radio(), None);
+        let target = crate::link_target::LinkTarget::Tcp {
+            address: "10.0.0.5:4403".into(),
+        };
+        crate::config::remember_link(&mut e.config, &target, Some("Base"), Some(0x11), 1);
+        e.config.last_link = Some(target);
+        assert_eq!(e.last_radio(), Some(0x11));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

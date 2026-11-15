@@ -344,6 +344,20 @@
             Test Sound
           </button>
 
+          <div class="field" id="bg-service-field" hidden>
+            <span class="field-label">Background service (test)</span>
+            <span class="field-hint">
+              Checks that MeshGuard keeps working after you swipe the app away. After
+              about 15 seconds a test conversation appears in your notifications; reply
+              to it to queue a message to your first paired contact.
+            </span>
+            <div class="btn-group">
+              <button type="button" id="bg-service-start" class="btn btn-secondary">Start test</button>
+              <button type="button" id="bg-service-stop" class="btn btn-secondary">Stop</button>
+            </div>
+            <span class="field-hint" id="bg-service-status" role="status"></span>
+          </div>
+
           <div class="btn-group">
             <button type="button" id="notif-settings-close" class="btn btn-primary btn-full">Done</button>
           </div>
