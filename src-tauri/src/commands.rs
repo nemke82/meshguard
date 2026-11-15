@@ -3,7 +3,7 @@ use tauri::State;
 
 use meshguard_core::codec::{decode_frame, DecodedFrame};
 use meshguard_core::dedup::Seen;
-use meshguard_core::envelope::{aad_context, MessageType, SealError, DEFAULT_FRAME_BUDGET};
+use meshguard_core::envelope::{aad_context, MessageType, DEFAULT_FRAME_BUDGET};
 use meshguard_core::outbound::{self, OutPayload};
 use meshguard_core::v1::V1Payload;
 use meshguard_core::PeerIdentity;
@@ -207,15 +207,7 @@ pub(crate) fn unix_now() -> u32 {
     chrono::Utc::now().timestamp().clamp(0, i64::from(u32::MAX)) as u32
 }
 
-pub(crate) fn seal_err(e: SealError) -> MeshGuardError {
-    match e {
-        SealError::TooLarge { len, max } => MeshGuardError::Protocol(format!(
-            "Message too long: {len} bytes on the wire, limit is {max}"
-        )),
-        SealError::InvalidBody => MeshGuardError::Protocol("invalid message body".into()),
-        SealError::Crypto => MeshGuardError::Encryption("sealing failed".into()),
-    }
-}
+pub(crate) use meshguard_engine::outbox::seal_err;
 
 async fn my_identity(state: &AppState) -> Result<(u32, String), MeshGuardError> {
     let num = state

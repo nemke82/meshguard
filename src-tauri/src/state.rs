@@ -41,9 +41,6 @@ pub struct AppState {
 
     /// Signal history per node (diagnostics), in memory only.
     pub node_history: Arc<Mutex<crate::diagnostics::History>>,
-    /// Serialises outbox work (send, resend, ACK, delete), so each step
-    /// reads the current stored state and a row is never sent twice.
-    pub outbox_lock: Mutex<()>,
     /// Outstanding path tests (traceroute).
     pub path_tests: Arc<Mutex<crate::diagnostics::PathTests>>,
 
@@ -80,7 +77,6 @@ impl AppState {
             my_position: Arc::new(Mutex::new(None)),
             pair_offer: Mutex::new(None),
             node_history: Arc::new(Mutex::new(crate::diagnostics::History::default())),
-            outbox_lock: Mutex::new(()),
             path_tests: Arc::new(Mutex::new(crate::diagnostics::PathTests::default())),
             status_tx: Mutex::new(crate::status_tx::StatusTx::default()),
             vault: Mutex::new(None),

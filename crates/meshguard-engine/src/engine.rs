@@ -90,6 +90,8 @@ pub struct Engine {
     pub my_device_name: Option<String>,
     /// Conversation history and outbox (ADR-005).
     pub history: Slot,
+    /// Outgoing messages being transmitted right now.
+    pub(crate) in_flight: crate::outbox::InFlight,
 }
 
 impl Engine {
@@ -107,6 +109,7 @@ impl Engine {
             my_node_num: None,
             my_device_name: None,
             history: Slot::Closed,
+            in_flight: Default::default(),
         }
     }
 
