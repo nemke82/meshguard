@@ -45,16 +45,14 @@ fi
 # on first use (fails offline) and needs Google Play Services, which many
 # privacy-focused phones do not have. Same API, larger APK.
 APP_GRADLE="$ANDROID_DIR/app/build.gradle.kts"
-if [ -f "$APP_GRADLE" ] && ! grep -q "module = \"play-services-mlkit-barcode-scanning\"" "$APP_GRADLE"; then
+if [ -f "$APP_GRADLE" ] && ! grep -q "com.google.mlkit:barcode-scanning:" "$APP_GRADLE"; then
   cat >> "$APP_GRADLE" << 'GRADLE'
 
-// A module substitution keeps the original artifact name and fails to
-// resolve, so exclude the Play Services artifact from the app and depend
-// on the bundled one directly (same com.google.mlkit.vision.barcode API).
-configurations.all {
-    exclude(group = "com.google.android.gms", module = "play-services-mlkit-barcode-scanning")
-}
-
+// Add the bundled model next to the plugin's Play Services artifact. Do not
+// exclude play-services-mlkit-barcode-scanning: it holds the shared API
+// classes (BarcodeScanning, BarcodeScanner, ...) and the bundled artifact
+// depends on it itself. With the bundled AAR present, ML Kit uses its
+// embedded models and never downloads one.
 dependencies {
     implementation("com.google.mlkit:barcode-scanning:17.3.0")
 }
