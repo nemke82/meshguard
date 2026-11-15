@@ -2751,7 +2751,6 @@ dependencies = [
  "meshguard-store",
  "meshtastic",
  "qrcode",
- "rusqlite",
  "serde",
  "serde_json",
  "tauri",

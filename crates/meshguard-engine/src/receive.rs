@@ -498,8 +498,12 @@ impl Engine {
         now: u64,
     ) -> Recorded {
         let title = self.peer_title(peer);
-        let Slot::Open(store) = &mut self.history else {
-            return Recorded::MemoryOnly;
+        let store = match &mut self.history {
+            Slot::Open(store) => store,
+            Slot::Off(_) => return Recorded::MemoryOnly,
+            // Not opened yet: not knowing whether history is on, do not
+            // ACK (the sender retries once it is open).
+            Slot::Closed => return Recorded::Failed,
         };
         let r = (|| {
             let c = store.upsert_conversation(my_node, peer, title.as_deref())?;
@@ -681,6 +685,24 @@ mod tests {
         let again = e.on_mesh_packet(&p, ME, NOW + 1);
         assert!(incoming(&again).is_empty());
         assert_eq!(acks(&again), 1);
+    }
+
+    #[test]
+    fn nothing_is_acked_before_history_is_opened() {
+        let dir = std::env::temp_dir().join(format!("mg-recv-{}-closed", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut e = Engine::new(dir, NOW);
+        e.adopt_keys(ME, vec![(PEER, key())]);
+        let p = packet(PEER, frame(WireVersion::V2, OutPayload::Text("hi")));
+        let a = e.on_mesh_packet(&p, ME, NOW);
+        assert!(incoming(&a).is_empty());
+        assert_eq!(acks(&a), 0);
+        // Once open, the sender's retry is saved and shown.
+        e.open_history(Some(&SessionKey::from_bytes([1; 32])));
+        let a = e.on_mesh_packet(&p, ME, NOW + 1);
+        assert!(incoming(&a)[0].conversation_id.is_some());
+        assert_eq!(acks(&a), 1);
     }
 
     #[test]
