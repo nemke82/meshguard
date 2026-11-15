@@ -246,6 +246,9 @@ const messageInput = $("#message-input");
 const charCount = $("#char-count");
 const messagesContainer = $("#messages");
 const chatPeerName = $("#chat-peer-name");
+const historyBanner = $("#history-banner");
+const btnDeleteHistory = $("#btn-delete-history");
+const chatReadonlyNote = $("#chat-readonly-note");
 
 // ============================================================
 // State
@@ -255,6 +258,13 @@ const state = {
   peers: [],
   messages: {},
   activePeerNodeNum: null,
+  myNodeNum: null,
+  // Message history (ADR-005): saved on this device, or memory only.
+  history: { saved: false, reason: null },
+  conversations: [],
+  chat: { conversationId: null, cursor: null, hasMore: false, readOnly: false, gen: 0 },
+  // Delivery updates seen while history pages load (one buffer per load).
+  lateBuffers: new Set(),
   passphraseMode: null, // "initiate" or "accept"
   passphraseTargetNode: null,
   pendingPairRequests: [],
@@ -265,6 +275,8 @@ const state = {
 // Screen Navigation
 // ============================================================
 function showScreen(screen) {
+  // Leaving the chat: whatever it was still loading is no longer wanted.
+  if (screen !== screenChat) state.chat.gen += 1;
   document.querySelectorAll(".screen").forEach((s) => s.classList.remove("active"));
   screen.classList.add("active");
   if (screen === screenConnect) loadSavedLinks();
@@ -596,12 +608,16 @@ async function loadMeshData() {
       invoke("get_mesh_nodes"),
       invoke("get_my_device_info"),
       invoke("list_peers"),
+      loadConversations(),
     ]);
 
     state.meshNodes = nodes || [];
     state.peers = peers || [];
 
     if (deviceInfo) {
+      // Another radio means other conversations: drop this session's bubbles.
+      if (state.myNodeNum != null && state.myNodeNum !== deviceInfo.node_num) state.messages = {};
+      state.myNodeNum = deviceInfo.node_num;
       myDeviceLabel.textContent = deviceInfo.device_name + " (connected)";
     }
 
@@ -657,8 +673,62 @@ function renderMeshNodes() {
   }
 }
 
+// ============================================================
+// Chats (message history, ADR-005)
+// ============================================================
+function hex8(n) {
+  return (n >>> 0).toString(16).padStart(8, "0");
+}
+
+/** Store id of the chat with `peerNode` on the connected radio. */
+function conversationIdFor(peerNode) {
+  return state.myNodeNum == null ? null : `c:${hex8(state.myNodeNum)}:${hex8(peerNode)}`;
+}
+
+async function loadConversations() {
+  try {
+    const [info, convs] = await Promise.all([
+      invoke("get_history_info"),
+      invoke("list_conversations"),
+    ]);
+    state.history = info || { saved: false, reason: null };
+    state.conversations = convs || [];
+  } catch (err) {
+    console.error("Could not load message history:", err);
+    state.conversations = [];
+  }
+}
+
+/** Paired peers and saved chats, newest activity first. */
+function chatEntries() {
+  const entries = [];
+  const seen = new Set();
+  const mine = state.conversations.filter(
+    (c) => state.myNodeNum == null || c.my_node === state.myNodeNum
+  );
+  for (const peer of state.peers) {
+    const conv = mine.find((c) => c.peer_node === peer.node_num) || null;
+    if (conv) seen.add(conv.conversation_id);
+    entries.push({ peer, conv, nodeNum: peer.node_num, title: peer.device_name });
+  }
+  // History kept after the contact was removed: readable and deletable.
+  for (const conv of mine) {
+    if (seen.has(conv.conversation_id)) continue;
+    entries.push({ peer: null, conv, nodeNum: conv.peer_node, title: conv.title });
+  }
+  const at = (e) => (e.conv ? e.conv.last_message_at : 0);
+  entries.sort((a, b) => at(b) - at(a) || a.title.localeCompare(b.title));
+  return entries;
+}
+
+function chatPreview(conv) {
+  if (!conv || conv.preview == null) return "";
+  return (conv.preview_outgoing ? "You: " : "") + conv.preview;
+}
+
 function renderActiveChats() {
-  if (state.peers.length === 0) {
+  const entries = chatEntries();
+  if (entries.length === 0) {
     activeChatsSection.style.display = "none";
     return;
   }
@@ -666,30 +736,45 @@ function renderActiveChats() {
   activeChatsSection.style.display = "";
   activeChatsList.innerHTML = "";
 
-  for (const peer of state.peers) {
+  for (const { peer, conv, nodeNum, title } of entries) {
     const card = document.createElement("div");
-    card.className = "mesh-node-card peer-chat-card";
-    const initial = (peer.device_name || "?")[0].toUpperCase();
+    card.className = "mesh-node-card peer-chat-card" + (peer ? "" : " history-only");
+    const initial = escapeHtml((title || "?")[0].toUpperCase());
+    const unread = conv ? conv.unread : 0;
+    const preview = chatPreview(conv);
+    const badge = peer
+      ? '<span class="peer-badge">Encrypted Chat</span>'
+      : '<span class="peer-badge history-badge">Not paired</span>';
     card.innerHTML = `
       <div class="node-avatar">${initial}</div>
       <div class="node-info">
-        <div class="node-name">${escapeHtml(peer.device_name)}</div>
-        <div class="node-meta"><span class="peer-badge">Encrypted Chat</span></div>
+        <div class="node-name">${escapeHtml(title)}</div>
+        ${preview ? `<div class="chat-preview${unread ? " unread" : ""}">${escapeHtml(preview)}</div>` : ""}
+        <div class="node-meta">
+          ${badge}
+          ${conv && conv.last_message_at ? `<span class="node-heard">${timeAgo(conv.last_message_at)}</span>` : ""}
+        </div>
       </div>
       <div class="node-actions">
-        <button class="btn-remove-peer" title="Remove" data-node="${peer.node_num}">&times;</button>
+        ${unread ? `<span class="unread-badge" aria-label="${unread} unread">${unread > 99 ? "99+" : unread}</span>` : ""}
+        ${peer ? `<button class="btn-remove-peer" title="Remove contact">&times;</button>` : ""}
       </div>
     `;
     card.addEventListener("click", (e) => {
       if (e.target.closest(".btn-remove-peer")) return;
-      openExistingChat(peer);
+      if (peer) openExistingChat(peer);
+      else enterChat(nodeNum, title, { readOnly: true, conversationId: conv.conversation_id });
     });
-    card.querySelector(".btn-remove-peer").addEventListener("click", async (e) => {
-      e.stopPropagation();
-      if (!confirm(`Remove peer "${peer.device_name}"?`)) return;
-      await invoke("remove_peer", { peerNodeNum: peer.node_num });
-      await loadMeshData();
-    });
+    const btnRemove = card.querySelector(".btn-remove-peer");
+    if (btnRemove) {
+      btnRemove.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const keep = state.history.saved ? " Its message history stays until you delete it." : "";
+        if (!confirm(`Remove contact "${peer.device_name}"?${keep}`)) return;
+        await invoke("remove_peer", { peerNodeNum: peer.node_num });
+        await loadMeshData();
+      });
+    }
     activeChatsList.appendChild(card);
   }
 }
@@ -829,12 +914,35 @@ btnAcceptPair.addEventListener("click", () => {
 // ============================================================
 // Chat Screen
 // ============================================================
-function enterChat(nodeNum, peerName) {
+function enterChat(nodeNum, peerName, opts = {}) {
+  const readOnly = !!opts.readOnly;
   state.activePeerNodeNum = nodeNum;
+  state.chat = {
+    conversationId: opts.conversationId || conversationIdFor(nodeNum),
+    cursor: null,
+    hasMore: false,
+    readOnly,
+    gen: state.chat.gen + 1,
+  };
   chatPeerName.textContent = peerName || "Peer";
-  loadChatMessages(nodeNum);
+  screenChat.classList.toggle("read-only", readOnly);
+  chatReadonlyNote.hidden = !readOnly;
+  renderHistoryBanner();
   showScreen(screenChat);
-  addSystemMessage("Secure session active. All messages are encrypted with AES-256-GCM.");
+  loadChatMessages(nodeNum);
+}
+
+function renderHistoryBanner() {
+  if (state.history.saved) {
+    historyBanner.hidden = true;
+    return;
+  }
+  const reason = state.history.reason;
+  historyBanner.textContent =
+    reason && /kept only/.test(reason)
+      ? reason
+      : `${reason || "Message history is not saved on this device."} Messages are kept only until the app closes.`;
+  historyBanner.hidden = false;
 }
 
 btnBackMeshChat.addEventListener("click", async () => {
@@ -842,11 +950,180 @@ btnBackMeshChat.addEventListener("click", async () => {
   showScreen(screenMesh);
 });
 
-function loadChatMessages(nodeNum) {
-  messagesContainer.innerHTML = "";
-  const msgs = state.messages[nodeNum] || [];
-  msgs.forEach(renderMessage);
+const HISTORY_PAGE = 50;
+
+/** A stored message (get_messages) as a chat bubble. */
+function fromStored(m) {
+  return {
+    id: m.message_id,
+    wireId: m.outgoing ? m.message_id : undefined,
+    text: m.text != null ? m.text : m.status ? m.status.text : "",
+    checkin: m.status || undefined,
+    // Ours: when we wrote it; theirs: the sender's clock, as when it arrived.
+    timestamp: (m.outgoing ? m.stored_at : m.created_at) * 1000,
+    mine: m.outgoing,
+    status: m.outgoing ? uiStatus(m.state) || "sent" : "delivered",
+  };
 }
+
+function chatIntro() {
+  messagesContainer.innerHTML = "";
+  const more = document.createElement("button");
+  more.type = "button";
+  more.id = "btn-load-earlier";
+  more.className = "btn-load-earlier";
+  more.textContent = "Load earlier messages";
+  more.hidden = true;
+  more.addEventListener("click", loadEarlierMessages);
+  messagesContainer.appendChild(more);
+  addSystemMessage(
+    state.chat.readOnly
+      ? "Saved history. This contact is no longer paired."
+      : "Secure session active. All messages are encrypted with AES-256-GCM."
+  );
+}
+
+/** One page of saved messages, with delivery updates that arrived while it
+ *  loaded applied on top. */
+async function fetchPage(conversationId, before) {
+  const late = new Map();
+  state.lateBuffers.add(late);
+  let rows;
+  try {
+    rows = await invoke("get_messages", { conversationId, before, limit: HISTORY_PAGE });
+  } catch (err) {
+    console.error("Could not load messages:", err);
+    return { ok: false };
+  } finally {
+    state.lateBuffers.delete(late);
+  }
+  const messages = rows.map(fromStored);
+  for (const m of messages) {
+    if (!m.mine || m.status === "delivered") continue;
+    if (unmatchedDelivered.delete(m.id)) m.status = "delivered";
+    else if (late.has(m.id)) m.status = late.get(m.id);
+  }
+  return {
+    ok: true,
+    messages,
+    cursor: rows.length ? rows[0].cursor : null,
+    full: rows.length === HISTORY_PAGE,
+  };
+}
+
+async function loadChatMessages(nodeNum) {
+  chatIntro();
+  const conversationId = state.chat.conversationId;
+  if (!state.history.saved || !conversationId) {
+    (state.messages[nodeNum] || []).forEach((m) => renderMessage(m));
+    return;
+  }
+  const gen = state.chat.gen;
+  const before = new Set(state.messages[nodeNum] || []);
+  const pending = new Set([...before].filter((m) => m.mine && !m.wireId));
+  const page = await fetchPage(conversationId, null);
+  if (gen !== state.chat.gen) return; // left or opened another chat meanwhile
+  const current = state.messages[nodeNum] || [];
+  if (!page.ok) {
+    // Show what this session has rather than an empty chat.
+    chatIntro();
+    current.forEach((m) => renderMessage(m));
+    return;
+  }
+  const stored = page.messages;
+  const ids = new Set(stored.map((m) => m.id));
+  // The store has everything received or sent. From memory keep sends that
+  // were still waiting for their id and whatever arrived while it loaded.
+  const live = current.filter(
+    (m) =>
+      (!before.has(m) || pending.has(m)) &&
+      !ids.has(m.id) &&
+      !(m.wireId && ids.has(m.wireId))
+  );
+  state.messages[nodeNum] = stored.concat(live);
+  chatIntro();
+  messagesContainer.style.scrollBehavior = "auto"; // open at the newest, no animation
+  state.messages[nodeNum].forEach((m) => renderMessage(m));
+  messagesContainer.style.scrollBehavior = "";
+  state.chat.cursor = page.cursor;
+  state.chat.hasMore = page.full;
+  $("#btn-load-earlier").hidden = !state.chat.hasMore;
+  markActiveChatRead();
+}
+
+async function loadEarlierMessages() {
+  const { conversationId, cursor, gen } = state.chat;
+  const nodeNum = state.activePeerNodeNum;
+  if (!cursor || !conversationId) return;
+  const btn = $("#btn-load-earlier");
+  btn.disabled = true;
+  const page = await fetchPage(conversationId, cursor);
+  if (gen !== state.chat.gen) return;
+  btn.disabled = false;
+  if (!page.ok) return;
+  const known = new Set((state.messages[nodeNum] || []).map((m) => m.id));
+  const older = page.messages.filter((m) => !known.has(m.id));
+  state.messages[nodeNum] = older.concat(state.messages[nodeNum] || []);
+  // Keep the view where it was while older bubbles go in above it.
+  const fromBottom = messagesContainer.scrollHeight - messagesContainer.scrollTop;
+  const anchor = btn.nextSibling.nextSibling; // after the intro line
+  for (const m of older) messagesContainer.insertBefore(messageElement(m), anchor);
+  if (page.cursor) state.chat.cursor = page.cursor;
+  state.chat.hasMore = page.full;
+  btn.hidden = !state.chat.hasMore;
+  messagesContainer.style.scrollBehavior = "auto";
+  messagesContainer.scrollTop = messagesContainer.scrollHeight - fromBottom;
+  messagesContainer.style.scrollBehavior = "";
+}
+
+function otherRadio(conversationId, nodeNum) {
+  const mine = conversationIdFor(nodeNum);
+  return !!(conversationId && mine && conversationId !== mine);
+}
+
+function onActiveChat(nodeNum) {
+  return state.activePeerNodeNum === nodeNum && screenChat.classList.contains("active");
+}
+
+function markActiveChatRead() {
+  const id = state.chat.conversationId;
+  if (!state.history.saved || !id || !screenChat.classList.contains("active")) return;
+  invoke("mark_conversation_read", { conversationId: id }).catch(() => {});
+  const conv = state.conversations.find((c) => c.conversation_id === id);
+  if (conv) conv.unread = 0;
+}
+
+btnDeleteHistory.addEventListener("click", async () => {
+  const nodeNum = state.activePeerNodeNum;
+  const { conversationId, readOnly } = state.chat;
+  if (nodeNum == null) return;
+  const name = chatPeerName.textContent;
+  const what = state.history.saved
+    ? `Delete all messages with ${name} from this device? Unsent messages are dropped too. This cannot be undone.`
+    : `Clear the messages with ${name}?`;
+  if (!confirm(what)) return;
+  // Drop any page still loading for this chat; it would bring them back.
+  const gen = ++state.chat.gen;
+  try {
+    if (state.history.saved && conversationId) {
+      await invoke("delete_conversation", { conversationId });
+    }
+  } catch (err) {
+    alert("Could not delete the history: " + err);
+    return;
+  }
+  delete state.messages[nodeNum];
+  state.conversations = state.conversations.filter((c) => c.conversation_id !== conversationId);
+  if (gen !== state.chat.gen) return; // the user moved on; leave that screen alone
+  if (readOnly) {
+    await loadMeshData();
+    if (gen === state.chat.gen) showScreen(screenMesh);
+    return;
+  }
+  state.chat.cursor = null;
+  state.chat.hasMore = false;
+  chatIntro();
+});
 
 messageInput.addEventListener("input", () => {
   const len = byteLength(messageInput.value);
@@ -870,7 +1147,7 @@ btnSend.addEventListener("click", () => {
 async function sendMessage() {
   const text = messageInput.value.trim();
   const nodeNum = state.activePeerNodeNum;
-  if (!text || !nodeNum) return;
+  if (!text || !nodeNum || state.chat.readOnly) return;
 
   const msg = {
     id: crypto.randomUUID(),
@@ -893,6 +1170,14 @@ async function sendMessage() {
     // (v2 peers) turns it into "delivered", via the message-delivered event.
     const receipt = await invoke("send_message", { peerNodeNum: nodeNum, text });
     msg.wireId = receipt && receipt.message_id;
+    // The history page loaded meanwhile and already shows the saved copy.
+    const list = state.messages[nodeNum] || [];
+    if (msg.wireId && list.some((m) => m !== msg && m.id === msg.wireId)) {
+      state.messages[nodeNum] = list.filter((m) => m !== msg);
+      const el = document.getElementById(`msg-${msg.id}`);
+      if (el) el.remove();
+      return;
+    }
     if (msg.wireId && unmatchedDelivered.delete(msg.wireId)) {
       msg.status = "delivered";
       updateMessageStatus(msg.id, "delivered");
@@ -910,6 +1195,12 @@ async function sendMessage() {
 }
 
 function renderMessage(msg) {
+  const el = messageElement(msg);
+  messagesContainer.appendChild(el);
+  messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
+function messageElement(msg) {
   const el = document.createElement("div");
   const urgent = msg.checkin && URGENT_KINDS.has(msg.checkin.kind);
   el.className = `message ${msg.mine ? "mine" : "peer"}${urgent ? " urgent" : ""}`;
@@ -922,9 +1213,8 @@ function renderMessage(msg) {
       ${msg.mine ? `<span class="msg-status" id="status-${msg.id}">${statusIcon(msg.status)}</span>` : ""}
     </div>
   `;
-  messagesContainer.appendChild(el);
   wireMapLinks(el);
-  messagesContainer.scrollTop = messagesContainer.scrollHeight;
+  return el;
 }
 
 function addSystemMessage(text) {
@@ -972,6 +1262,24 @@ function statusIcon(status) {
 // ============================================================
 // Tauri Event Listeners
 // ============================================================
+
+/** A saved incoming message: read if its chat is open, else the chat list
+ *  shows it as unread. */
+let chatListRefresh = null;
+function noteIncoming(nodeNum, conversationId, onChatScreen) {
+  if (onChatScreen) {
+    if (conversationId && conversationId === state.chat.conversationId) markActiveChatRead();
+    return;
+  }
+  if (!screenMesh.classList.contains("active")) return;
+  // Several arrivals in a burst: one reload.
+  clearTimeout(chatListRefresh);
+  chatListRefresh = setTimeout(async () => {
+    await loadConversations();
+    renderActiveChats();
+  }, 300);
+}
+
 async function setupEventListeners() {
   await listen("connection-state", (event) => {
     const s = event.payload;
@@ -1035,14 +1343,16 @@ async function setupEventListeners() {
       status: "delivered",
     };
 
-    state.messages[nodeNum].push(msg);
+    if (state.messages[nodeNum].some((m) => m.id === msg.id)) return;
+    // Saved for a radio we are no longer on: in its history, not this chat.
+    const here = !otherRadio(data.conversation_id, nodeNum);
+    if (here) state.messages[nodeNum].push(msg);
 
-    const onChatScreen =
-      state.activePeerNodeNum === nodeNum && screenChat.classList.contains("active");
-
+    const onChatScreen = here && onActiveChat(nodeNum);
     if (onChatScreen) {
       renderMessage(msg);
     }
+    if (here) noteIncoming(nodeNum, data.conversation_id, onChatScreen);
 
     NotificationSound.play();
 
@@ -1072,11 +1382,13 @@ async function setupEventListeners() {
       mine: false,
       status: "delivered",
     };
-    state.messages[nodeNum].push(msg);
+    if (state.messages[nodeNum].some((m) => m.id === msg.id)) return;
+    const here = !otherRadio(data.conversation_id, nodeNum);
+    if (here) state.messages[nodeNum].push(msg);
 
-    const onChatScreen =
-      state.activePeerNodeNum === nodeNum && screenChat.classList.contains("active");
+    const onChatScreen = here && onActiveChat(nodeNum);
     if (onChatScreen) renderMessage(msg);
+    if (here) noteIncoming(nodeNum, data.conversation_id, onChatScreen);
 
     const name = data.from_name || lookupNodeName(nodeNum);
     NotificationSound.play();
@@ -1126,6 +1438,9 @@ async function setupEventListeners() {
     const { message_id, state: st } = event.payload;
     const status = uiStatus(st);
     if (!status) return;
+    for (const late of state.lateBuffers) {
+      if (late.get(message_id) !== "delivered") late.set(message_id, status);
+    }
     for (const list of Object.values(state.messages)) {
       const msg = list.find((m) => m.mine && m.wireId === message_id);
       if (msg) {
@@ -1141,6 +1456,7 @@ async function setupEventListeners() {
 
   await listen("message-delivered", (event) => {
     const { peer_node, message_id } = event.payload;
+    for (const late of state.lateBuffers) late.set(message_id, "delivered");
     const msg = (state.messages[peer_node] || []).find(
       (m) => m.mine && m.wireId === message_id
     );
@@ -1375,6 +1691,7 @@ async function sendCheckin(nodeNums, kind, text, withLocation) {
         status: r.message_id && unmatchedDelivered.delete(r.message_id) ? "delivered" : uiStatus(r.state) || "sent",
       };
       if (!state.messages[r.peer_node]) state.messages[r.peer_node] = [];
+      if (state.messages[r.peer_node].some((m) => m.id === r.message_id)) continue;
       state.messages[r.peer_node].push(msg);
       if (state.activePeerNodeNum === r.peer_node && screenChat.classList.contains("active")) {
         renderMessage(msg);
