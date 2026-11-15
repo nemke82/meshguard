@@ -61,6 +61,7 @@ meshguard/
 │   └── patch-android.sh       # Android BLE permissions + native Kotlin plugin
 └── .github/workflows/
     ├── ci.yml                 # Check + test + clippy on push/PR
+    ├── android-pr.yml         # Android build on PRs that touch Rust/Kotlin
     └── release.yml            # Build all platforms on tag push
 ```
 
