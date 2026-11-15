@@ -25,7 +25,7 @@ use meshguard_core::outbound::WireVersion;
 #[cfg(target_os = "android")]
 use meshguard_core::status::StatusKind;
 use meshguard_core::status::{FixSource, GeoFix, FEATURE_STATUS, SUPPORTED_FEATURES};
-use meshguard_core::PeerIdentity;
+use meshguard_core::{MessageId, PeerIdentity};
 
 use crate::device_config::{AppConfig, WireProtocol};
 use crate::error::MeshGuardError;
@@ -1391,6 +1391,8 @@ pub struct IncomingMessageEvent {
     pub text: String,
     pub timestamp: i64,
     pub message_id: String,
+    /// Set when the message was saved to the history store.
+    pub conversation_id: Option<String>,
 }
 
 /// A check-in, SOS or location share from a peer.
@@ -1402,6 +1404,8 @@ pub struct IncomingStatusEvent {
     pub status: meshguard_core::status::StatusBody,
     /// Sender clock, unix seconds.
     pub timestamp: i64,
+    /// Set when the message was saved to the history store.
+    pub conversation_id: Option<String>,
 }
 
 /// The peer app confirmed receipt of one of our v2 messages (authenticated).
@@ -1510,27 +1514,28 @@ async fn handle_incoming_packet(packet: &protobufs::MeshPacket, ctx: &ListenerCt
             now,
         };
         let outcome = process_inbound(payload, &ictx, &mut dedup, &ctx.inbound.policy);
-        // Only authenticated v2 frames change the cache. Persist while still
-        // holding the lock so concurrent writers cannot reorder snapshots.
-        if outcome.authenticated_version() == Some(WireVersion::V2) {
-            if let Err(e) = crate::dedup_store::save(&ctx.config_dir, &dedup) {
+        let new_id = match &outcome {
+            Inbound::Text {
+                message_id: Some(id),
+                ..
+            } => Some(*id),
+            Inbound::Status { message_id, .. } => Some(*message_id),
+            _ => None,
+        };
+        if let Some(id) = new_id {
+            // A new message's id becomes durable only after the message is
+            // in the history (after_record). Until then no snapshot may
+            // contain it: a crash in between must let the retry through.
+            ctx.inbound
+                .uncommitted
+                .lock()
+                .await
+                .push((sender.clone(), id));
+        } else if outcome.authenticated_version() == Some(WireVersion::V2) {
+            // Persist while still holding the lock so concurrent writers
+            // cannot reorder snapshots.
+            if let Err(e) = save_dedup(ctx, &dedup).await {
                 tracing::warn!("Could not persist dedup cache: {e}");
-                // Fail closed for new v2 texts: without a durable record, a
-                // replay after restart would be shown again. Forget the id
-                // and drop the frame unACKed; the sender's retry delivers it.
-                let new_id = match &outcome {
-                    Inbound::Text {
-                        message_id: Some(id),
-                        ..
-                    } => Some(*id),
-                    Inbound::Status { message_id, .. } => Some(*message_id),
-                    _ => None,
-                };
-                if let Some(id) = new_id {
-                    dedup.forget(&sender, &id);
-                    tracing::warn!("Dropped message from {from_node} until it can be recorded");
-                    return;
-                }
             }
         }
         outcome
@@ -1571,9 +1576,28 @@ async fn handle_incoming_packet(packet: &protobufs::MeshPacket, ctx: &ListenerCt
             sent_at,
             ack,
         } => {
-            let message_id = message_id
-                .map(|id| id.to_hex())
-                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            // v1 frames carry no id: give the stored copy a local one.
+            let wire_id = message_id;
+            let id = message_id.unwrap_or_else(MessageId::random);
+            let message_id = id.to_hex();
+            let sent_at = sent_at.map(u64::from).unwrap_or(now);
+            // Saved before the UI hears of it (and before the ACK), so a
+            // message the user saw is never missing from the history.
+            let recorded = crate::history::record_incoming(
+                &ctx.app_handle,
+                ctx.my_node_num,
+                from_node,
+                id,
+                meshguard_store::MessageKind::Text,
+                text.as_bytes().to_vec(),
+                sent_at,
+            )
+            .await;
+            let Some(conversation_id) =
+                after_record(ctx, &sender, wire_id.as_ref(), recorded).await
+            else {
+                return;
+            };
             // Never log decrypted content (RFC §5.4).
             tracing::info!(
                 "Incoming {version:?} text from {from_node} ({} bytes, id={message_id})",
@@ -1589,8 +1613,9 @@ async fn handle_incoming_packet(packet: &protobufs::MeshPacket, ctx: &ListenerCt
                     from_node,
                     from_name: String::new(),
                     text,
-                    timestamp: sent_at.map(i64::from).unwrap_or(now as i64),
+                    timestamp: sent_at as i64,
                     message_id,
+                    conversation_id,
                 },
             );
             if let Some(frame) = ack {
@@ -1609,6 +1634,26 @@ async fn handle_incoming_packet(packet: &protobufs::MeshPacket, ctx: &ListenerCt
                 status.location.is_some()
             );
             mark_features(ctx, from_node, FEATURE_STATUS).await;
+            let recorded = match status.encode() {
+                Ok(body) => {
+                    crate::history::record_incoming(
+                        &ctx.app_handle,
+                        ctx.my_node_num,
+                        from_node,
+                        message_id,
+                        meshguard_store::MessageKind::Status,
+                        body,
+                        u64::from(sent_at),
+                    )
+                    .await
+                }
+                Err(_) => crate::history::Recorded::Failed,
+            };
+            let Some(conversation_id) =
+                after_record(ctx, &sender, Some(&message_id), recorded).await
+            else {
+                return;
+            };
             let from_name = ctx
                 .mesh_nodes
                 .lock()
@@ -1642,6 +1687,7 @@ async fn handle_incoming_packet(packet: &protobufs::MeshPacket, ctx: &ListenerCt
                     message_id: message_id.to_hex(),
                     status,
                     timestamp: i64::from(sent_at),
+                    conversation_id,
                 },
             );
             if let Some(frame) = ack {
@@ -1655,9 +1701,32 @@ async fn handle_incoming_packet(packet: &protobufs::MeshPacket, ctx: &ListenerCt
                 send_ack(ctx, from_node, frame, now).await;
             }
         }
-        Inbound::Duplicate { ack } => {
+        Inbound::Duplicate { message_id, ack } => {
             tracing::debug!("Duplicate frame from {from_node} suppressed");
-            if let Some(frame) = ack {
+            // The first copy may still be on its way into the history (e.g.
+            // an old listener during a reconnect). ACK only if it is durable:
+            // still in dedup and not pending. Checked under the dedup lock,
+            // which after_record holds while it commits or forgets the id.
+            let durable = {
+                let mut dedup = ctx.inbound.dedup.lock().await;
+                let pending = ctx
+                    .inbound
+                    .uncommitted
+                    .lock()
+                    .await
+                    .iter()
+                    .any(|(s, i)| *s == sender && *i == message_id);
+                if pending {
+                    // Withheld: do not use up the message's ACK allowance.
+                    dedup.uncount(&sender, &message_id);
+                    false
+                } else {
+                    dedup.contains(&sender, &message_id)
+                }
+            };
+            if !durable {
+                tracing::debug!("Duplicate from {from_node} not ACKed: first copy not saved");
+            } else if let Some(frame) = ack {
                 send_ack(ctx, from_node, frame, now).await;
             }
         }
@@ -1676,6 +1745,8 @@ async fn handle_incoming_packet(packet: &protobufs::MeshPacket, ctx: &ListenerCt
                 mark_features(ctx, from_node, FEATURE_STATUS).await;
                 return;
             }
+            crate::history::record_peer_ack(&ctx.app_handle, ctx.my_node_num, from_node, acked)
+                .await;
             let _ = ctx.app_handle.emit(
                 "message-delivered",
                 MessageDeliveredEvent {
@@ -1712,6 +1783,66 @@ async fn handle_incoming_packet(packet: &protobufs::MeshPacket, ctx: &ListenerCt
             handle_possible_pair_request(ctx, from_node, payload.clone(), now).await;
         }
     }
+}
+
+/// Decide what to do after saving an incoming message to the history.
+/// `Some(conversation id or None)` = go on (show, notify, ACK); `None` =
+/// drop the frame unACKed: history is on but the write failed, so the id is
+/// taken out of the dedup cache and the sender's retry delivers it again.
+/// v1 frames (no id) cannot be retried by the sender and are shown anyway.
+async fn after_record(
+    ctx: &ListenerCtx,
+    sender: &PeerIdentity,
+    wire_id: Option<&MessageId>,
+    recorded: crate::history::Recorded,
+) -> Option<Option<String>> {
+    use crate::history::Recorded;
+    let conversation = match recorded {
+        Recorded::Stored(c) => Some(c),
+        Recorded::MemoryOnly => None,
+        Recorded::Failed => {
+            let Some(id) = wire_id else {
+                // v1: the sender cannot retry; show it without history.
+                return Some(None);
+            };
+            let mut dedup = ctx.inbound.dedup.lock().await;
+            dedup.forget(sender, id);
+            uncommit(ctx, sender, id).await;
+            tracing::warn!("Dropped a message until it can be saved; the sender will retry");
+            return None;
+        }
+    };
+    let Some(id) = wire_id else {
+        return Some(conversation);
+    };
+    // The message is saved (or history is memory-only): now make its id
+    // durable, so a replay after restart is recognised.
+    let mut dedup = ctx.inbound.dedup.lock().await;
+    uncommit(ctx, sender, id).await;
+    if let Err(e) = save_dedup(ctx, &dedup).await {
+        tracing::warn!("Could not persist dedup cache: {e}");
+        // Fail closed: without a durable record, a replay after restart
+        // would be shown again. Forget the id and drop the frame unACKed;
+        // the sender's retry delivers it (the history ignores the copy).
+        dedup.forget(sender, id);
+        return None;
+    }
+    Some(conversation)
+}
+
+async fn uncommit(ctx: &ListenerCtx, sender: &PeerIdentity, id: &MessageId) {
+    ctx.inbound
+        .uncommitted
+        .lock()
+        .await
+        .retain(|(s, i)| !(s == sender && i == id));
+}
+
+async fn save_dedup(
+    ctx: &ListenerCtx,
+    dedup: &meshguard_core::dedup::DedupCache,
+) -> Result<(), MeshGuardError> {
+    ctx.inbound.save_dedup(&ctx.config_dir, dedup).await
 }
 
 /// Store an undecryptable frame as a pending pairing attempt and, subject to

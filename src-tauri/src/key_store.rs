@@ -200,10 +200,101 @@ pub async fn open_vault(app: &tauri::AppHandle, dir: &Path) -> Option<Arc<Sessio
         .map(Arc::new)
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(target_os = "ios")]
 pub async fn open_vault(_app: &tauri::AppHandle, _dir: &Path) -> Option<Arc<SessionKey>> {
     tracing::debug!("No platform key store here — chat keys are kept in memory only");
     None
+}
+
+/// Desktop: the vault key lives in the OS keyring (Secret Service on
+/// Linux, Keychain on macOS, Credential Manager on Windows; ADR-005 §3).
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub async fn open_vault(_app: &tauri::AppHandle, _dir: &Path) -> Option<Arc<SessionKey>> {
+    // The keyring client talks D-Bus/system APIs synchronously.
+    tokio::task::spawn_blocking(desktop::open_or_create)
+        .await
+        .ok()
+        .flatten()
+        .map(Arc::new)
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+mod desktop {
+    use super::*;
+    use keyring::{Entry, Error};
+
+    const SERVICE: &str = "net.meshguard.app";
+    const ACCOUNT: &str = "vault-v1";
+
+    pub(super) fn open_or_create() -> Option<SessionKey> {
+        open_or_create_in(SERVICE, ACCOUNT)
+    }
+
+    pub(super) fn open_or_create_in(service: &str, account: &str) -> Option<SessionKey> {
+        let entry = match Entry::new(service, account) {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::info!("No OS keyring ({e}) — chats and history stay in memory only");
+                return None;
+            }
+        };
+        match entry.get_secret() {
+            Ok(bytes) => match <[u8; 32]>::try_from(bytes.as_slice()) {
+                Ok(arr) => Some(SessionKey::from_bytes(arr)),
+                Err(_) => {
+                    // Never overwrite: an unexpected value may be someone
+                    // else's entry or a future format.
+                    tracing::warn!("Keyring vault entry has an unexpected size — not using it");
+                    None
+                }
+            },
+            Err(Error::NoEntry) => {
+                let key = SessionKey::random();
+                let bytes = key.to_bytes();
+                if let Err(e) = entry.set_secret(bytes.as_slice()) {
+                    tracing::warn!("Could not save the vault key in the keyring: {e}");
+                    return None;
+                }
+                // Read back: some backends accept a write they cannot keep.
+                match entry.get_secret() {
+                    Ok(back) if back.as_slice() == bytes.as_slice() => {
+                        tracing::info!("Created the vault key in the OS keyring");
+                        Some(key)
+                    }
+                    _ => {
+                        tracing::warn!("Keyring did not keep the vault key — memory only");
+                        None
+                    }
+                }
+            }
+            Err(e) => {
+                // Locked keyring, denied access, D-Bus failure: try again
+                // next start, never replace the key.
+                tracing::warn!("Keyring unavailable ({e}) — chats and history stay in memory only");
+                None
+            }
+        }
+    }
+
+    /// Talks to the real OS keyring with a throw-away account; run with
+    /// `cargo test -- --ignored keyring` on a desktop session.
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        #[ignore = "needs a desktop keyring"]
+        fn keyring_vault_is_created_once_and_reused() {
+            let account = format!("vault-test-{}", std::process::id());
+            let first = open_or_create_in(SERVICE, &account).expect("keyring available");
+            let again = open_or_create_in(SERVICE, &account).expect("keyring available");
+            assert_eq!(*first.to_bytes(), *again.to_bytes());
+            Entry::new(SERVICE, &account)
+                .unwrap()
+                .delete_credential()
+                .unwrap();
+        }
+    }
 }
 
 #[cfg(target_os = "android")]

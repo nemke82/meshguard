@@ -60,6 +60,30 @@ pub struct InboundState {
     /// for the id proves the peer understands the newer message types.
     /// At most one per peer; expired entries are pruned.
     pub caps_probes: Mutex<HashMap<u32, (meshguard_core::MessageId, u64)>>,
+    /// Ids of new messages already in `dedup` whose message is not saved to
+    /// the history yet; left out of every dedup snapshot written to disk.
+    pub uncommitted: Mutex<Vec<(meshguard_core::PeerIdentity, meshguard_core::MessageId)>>,
+}
+
+impl InboundState {
+    /// Write the dedup cache to disk, leaving out ids whose message is not
+    /// saved to the history yet. Caller holds the `dedup` lock (lock order:
+    /// `dedup`, then `uncommitted`).
+    pub async fn save_dedup(
+        &self,
+        config_dir: &Path,
+        dedup: &DedupCache,
+    ) -> Result<(), crate::error::MeshGuardError> {
+        let pending = self.uncommitted.lock().await;
+        if pending.is_empty() {
+            return crate::dedup_store::save(config_dir, dedup);
+        }
+        let mut snapshot = dedup.clone();
+        for (sender, id) in pending.iter() {
+            snapshot.forget(sender, id);
+        }
+        crate::dedup_store::save(config_dir, &snapshot)
+    }
 }
 
 /// Maximum remembered `(sender, message_id)` pairs.
@@ -83,6 +107,7 @@ impl InboundState {
             // Burst of 3, then one per minute.
             pair_notify_global: Mutex::new(TokenBucket::new(3, 60)),
             caps_probes: Mutex::new(HashMap::new()),
+            uncommitted: Mutex::new(Vec::new()),
         }
     }
 }
@@ -129,6 +154,11 @@ pub struct AppState {
 
     /// Signal history per node (diagnostics), in memory only.
     pub node_history: Arc<Mutex<crate::diagnostics::History>>,
+    /// Conversation history and outbox (ADR-005); opened on first use.
+    pub history: Mutex<crate::history::Slot>,
+    /// Serialises outbox work (send, resend, ACK, delete), so each step
+    /// reads the current stored state and a row is never sent twice.
+    pub outbox_lock: Mutex<()>,
     /// Outstanding path tests (traceroute).
     pub path_tests: Arc<Mutex<crate::diagnostics::PathTests>>,
 
@@ -168,6 +198,8 @@ impl AppState {
             my_position: Arc::new(Mutex::new(None)),
             pair_offer: Mutex::new(None),
             node_history: Arc::new(Mutex::new(crate::diagnostics::History::default())),
+            history: Mutex::new(crate::history::Slot::Closed),
+            outbox_lock: Mutex::new(()),
             path_tests: Arc::new(Mutex::new(crate::diagnostics::PathTests::default())),
             status_tx: Mutex::new(crate::status_tx::StatusTx::default()),
             vault: Mutex::new(None),

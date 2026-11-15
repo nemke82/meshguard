@@ -69,7 +69,30 @@ pub fn max_status_text_bytes(with_location: bool, budget: usize) -> usize {
     crate::envelope::max_body_len(budget).saturating_sub(fixed)
 }
 
-/// Encrypt `payload` from `me` to `peer`.
+/// Lifetime of `payload` on the wire (v2 `ttl_mins`). An outbox entry
+/// expires after the same time, so a retry never outlives the message.
+pub fn ttl_mins(payload: OutPayload<'_>) -> u16 {
+    match payload {
+        OutPayload::Text(_) => DEFAULT_TEXT_TTL_MINS,
+        OutPayload::PairRequest(_) | OutPayload::PairAccept(_) => PAIRING_TTL_MINS,
+        OutPayload::Status(st) => {
+            if st.kind.is_urgent() {
+                URGENT_STATUS_TTL_MINS
+            } else {
+                STATUS_TTL_MINS
+            }
+        }
+        OutPayload::StatusAsText(st) => {
+            if st.kind.is_urgent() {
+                URGENT_STATUS_TTL_MINS
+            } else {
+                DEFAULT_TEXT_TTL_MINS
+            }
+        }
+    }
+}
+
+/// Encrypt `payload` from `me` to `peer` with a new message id.
 #[allow(clippy::too_many_arguments)]
 pub fn seal(
     version: WireVersion,
@@ -79,6 +102,32 @@ pub fn seal(
     peer: &PeerIdentity,
     now: u32,
     budget: usize,
+) -> Result<Sealed, SealError> {
+    seal_with_id(
+        version,
+        payload,
+        key,
+        me,
+        peer,
+        now,
+        budget,
+        MessageId::random(),
+    )
+}
+
+/// Like [`seal`], with a given message id: an outbox retry reuses the id
+/// (and `created_at`) of the first attempt, with a fresh nonce, so the
+/// recipient's dedup recognises it (ADR-003). v1 frames carry no id.
+#[allow(clippy::too_many_arguments)]
+pub fn seal_with_id(
+    version: WireVersion,
+    payload: OutPayload<'_>,
+    key: &SessionKey,
+    me: &PeerIdentity,
+    peer: &PeerIdentity,
+    created_at: u32,
+    budget: usize,
+    message_id: MessageId,
 ) -> Result<Sealed, SealError> {
     match version {
         WireVersion::V1 => {
@@ -102,45 +151,24 @@ pub fn seal(
             })
         }
         WireVersion::V2 => {
-            let (ty, body, ttl) = match payload {
-                OutPayload::Text(s) => (
-                    MessageType::Text,
-                    s.as_bytes().to_vec(),
-                    DEFAULT_TEXT_TTL_MINS,
+            let ttl = ttl_mins(payload);
+            let (ty, body) = match payload {
+                OutPayload::Text(s) => (MessageType::Text, s.as_bytes().to_vec()),
+                OutPayload::PairRequest(s) => (MessageType::PairRequest, s.as_bytes().to_vec()),
+                OutPayload::PairAccept(s) => (MessageType::PairAccept, s.as_bytes().to_vec()),
+                OutPayload::Status(st) => (
+                    MessageType::Status,
+                    st.encode().map_err(|_| SealError::InvalidBody)?,
                 ),
-                OutPayload::PairRequest(s) => (
-                    MessageType::PairRequest,
-                    s.as_bytes().to_vec(),
-                    PAIRING_TTL_MINS,
-                ),
-                OutPayload::PairAccept(s) => (
-                    MessageType::PairAccept,
-                    s.as_bytes().to_vec(),
-                    PAIRING_TTL_MINS,
-                ),
-                OutPayload::Status(st) => {
-                    let ttl = if st.kind.is_urgent() {
-                        URGENT_STATUS_TTL_MINS
-                    } else {
-                        STATUS_TTL_MINS
-                    };
-                    let body = st.encode().map_err(|_| SealError::InvalidBody)?;
-                    (MessageType::Status, body, ttl)
-                }
                 OutPayload::StatusAsText(st) => {
-                    let ttl = if st.kind.is_urgent() {
-                        URGENT_STATUS_TTL_MINS
-                    } else {
-                        DEFAULT_TEXT_TTL_MINS
-                    };
                     let text = st.fallback_text_within(max_text_bytes(WireVersion::V2, budget));
-                    (MessageType::Text, text.into_bytes(), ttl)
+                    (MessageType::Text, text.into_bytes())
                 }
             };
             let env = EnvelopeV2 {
                 message_type: ty,
-                message_id: MessageId::random(),
-                created_at: now,
+                message_id,
+                created_at,
                 ttl_mins: ttl,
                 body,
             };
@@ -230,6 +258,45 @@ mod tests {
         assert_eq!(Some(env.message_id), s2.message_id);
         assert_eq!(env.message_type, MessageType::PairRequest);
         assert_eq!(env.ttl_mins, PAIRING_TTL_MINS);
+    }
+
+    #[test]
+    fn a_retry_keeps_id_and_time_with_a_fresh_nonce() {
+        let k = derive_p2p_key("A", "B", "pw").unwrap();
+        let (a, b) = ids();
+        let ctx = aad_context(&a, &b);
+        let id = MessageId::from_bytes([3; 16]);
+        let first = seal_with_id(
+            WireVersion::V2,
+            OutPayload::Text("hi"),
+            &k,
+            &a,
+            &b,
+            77,
+            228,
+            id,
+        )
+        .unwrap();
+        let retry = seal_with_id(
+            WireVersion::V2,
+            OutPayload::Text("hi"),
+            &k,
+            &a,
+            &b,
+            77,
+            228,
+            id,
+        )
+        .unwrap();
+        assert_ne!(first.frame, retry.frame, "fresh nonce per attempt");
+        for s in [&first, &retry] {
+            let Ok(DecodedFrame::V2(env)) = decode_frame(&s.frame, Some(&k), &ctx) else {
+                panic!("expected v2");
+            };
+            assert_eq!(env.message_id, id);
+            assert_eq!(env.created_at, 77);
+            assert_eq!(env.ttl_mins, ttl_mins(OutPayload::Text("hi")));
+        }
     }
 
     #[test]

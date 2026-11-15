@@ -28,6 +28,10 @@ pub enum StoreError {
     Db(#[from] rusqlite::Error),
     #[error("stored data could not be decrypted")]
     Decrypt,
+    /// The store was written with another vault key (for example the
+    /// keyring entry was lost). Its content cannot be read with this key.
+    #[error("the store was created with a different key")]
+    WrongKey,
     #[error("encryption failed")]
     Encrypt,
     #[error(
@@ -127,6 +131,8 @@ pub struct StoredMessage {
 pub struct DueOutbound {
     pub conversation: ConversationId,
     pub kind: MessageKind,
+    /// Time of the first attempt; a retry carries it unchanged (ADR-003).
+    pub created_at: u64,
     pub body: Vec<u8>,
     pub outbound: OutboundMessage,
 }
@@ -134,6 +140,19 @@ pub struct DueOutbound {
 /// Stable conversation id for a chat between our radio and a peer.
 pub fn conversation_id(my_node: u32, peer_node: u32) -> ConversationId {
     ConversationId(format!("c:{my_node:08x}:{peer_node:08x}"))
+}
+
+/// `(my_node, peer_node)` of an id made by [`conversation_id`].
+pub fn parse_conversation_id(id: &ConversationId) -> Option<(u32, u32)> {
+    let rest = id.0.strip_prefix("c:")?;
+    let (my, peer) = rest.split_once(':')?;
+    if my.len() != 8 || peer.len() != 8 {
+        return None;
+    }
+    Some((
+        u32::from_str_radix(my, 16).ok()?,
+        u32::from_str_radix(peer, 16).ok()?,
+    ))
 }
 
 fn to_i64(v: u64) -> i64 {
@@ -170,10 +189,61 @@ impl Store {
         // In-memory databases report "memory"; both are fine.
         let _: String = conn.pragma_update_and_check(None, "journal_mode", "WAL", |r| r.get(0))?;
         schema::migrate(&mut conn)?;
-        Ok(Self {
+        let store = Self {
             conn,
             cipher: StoreCipher::new(vault),
-        })
+        };
+        store.check_key()?;
+        Ok(store)
+    }
+
+    /// Record a key check on first use; refuse a store sealed with
+    /// another key, instead of failing later on every read.
+    fn check_key(&self) -> Result<()> {
+        let aad = cipher::key_check_aad();
+        let stored: Option<Vec<u8>> = self
+            .conn
+            .query_row("SELECT value FROM meta WHERE name = 'key_check'", [], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        match stored {
+            Some(blob) => match self.cipher.open(&blob, &aad) {
+                Ok(v) if v == cipher::KEY_CHECK => Ok(()),
+                _ => Err(StoreError::WrongKey),
+            },
+            None => {
+                // A store from schema 1 may hold rows sealed with another
+                // key; only claim it for this key when it is still empty.
+                let rows: i64 = self
+                    .conn
+                    .query_row("SELECT count(*) FROM messages", [], |r| r.get(0))?;
+                if rows > 0 && !self.first_body_opens()? {
+                    return Err(StoreError::WrongKey);
+                }
+                let blob = self.cipher.seal(cipher::KEY_CHECK, &aad)?;
+                self.conn.execute(
+                    "INSERT INTO meta (name, value) VALUES ('key_check', ?1)",
+                    params![blob],
+                )?;
+                Ok(())
+            }
+        }
+    }
+
+    fn first_body_opens(&self) -> Result<bool> {
+        let (conv, id, dir, enc): (String, Vec<u8>, i64, Vec<u8>) = self.conn.query_row(
+            "SELECT conversation_id, message_id, direction, body_enc FROM messages LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )?;
+        let conv = ConversationId(conv);
+        let id = MessageId::from_slice(&id).ok_or(StoreError::Invalid("message id"))?;
+        let dir = Direction::from_i64(dir)?;
+        Ok(self
+            .cipher
+            .open(&enc, &cipher::body_aad(&conv, &id, dir))
+            .is_ok())
     }
 
     // ── Conversations ─────────────────────────────────────────
@@ -389,6 +459,61 @@ impl Store {
         Ok(())
     }
 
+    /// Take a message out of the outbox without waiting for an ACK, keeping
+    /// `outbound.state` on the message. For peers that cannot confirm (v1):
+    /// once the radio accepted the frame, resending could only duplicate it.
+    pub fn settle_unconfirmed(
+        &mut self,
+        conversation: &ConversationId,
+        outbound: &OutboundMessage,
+    ) -> Result<()> {
+        let id = outbound.message_id.as_bytes().as_slice();
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "UPDATE messages SET state = ?3
+             WHERE conversation_id = ?1 AND message_id = ?2 AND direction = 1",
+            params![conversation.0, id, outbound.state.as_str()],
+        )?;
+        tx.execute(
+            "DELETE FROM outbox WHERE conversation_id = ?1 AND message_id = ?2",
+            params![conversation.0, id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Bookkeeping for an outgoing message whether or not it is still in
+    /// the outbox (a late ACK may confirm a message already marked failed
+    /// or expired). Without an outbox row the deadlines and attempts are 0.
+    pub fn outgoing(
+        &self,
+        conversation: &ConversationId,
+        message_id: &MessageId,
+    ) -> Result<Option<OutboundMessage>> {
+        if let Some(out) = self.outbound(conversation, message_id)? {
+            return Ok(Some(out));
+        }
+        self.conn
+            .query_row(
+                "SELECT state FROM messages
+                 WHERE conversation_id = ?1 AND message_id = ?2 AND direction = 1",
+                params![conversation.0, message_id.as_bytes().as_slice()],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|state| {
+                Ok(OutboundMessage {
+                    message_id: *message_id,
+                    state: DeliveryState::parse(&state).ok_or(StoreError::Invalid("state"))?,
+                    attempts: 0,
+                    expires_at: 0,
+                    next_deadline: 0,
+                    last_transport: None,
+                })
+            })
+            .transpose()
+    }
+
     /// Outbox bookkeeping for one outgoing message, if it is still queued.
     pub fn outbound(
         &self,
@@ -430,7 +555,7 @@ impl Store {
     pub fn due_outbound(&self, now: u64) -> Result<Vec<DueOutbound>> {
         let mut stmt = self.conn.prepare(
             "SELECT o.conversation_id, o.message_id, o.attempts, o.next_deadline, o.expires_at,
-                    o.last_transport, m.state, m.kind, m.body_enc
+                    o.last_transport, m.state, m.kind, m.body_enc, m.created_at
              FROM outbox o JOIN messages m USING (conversation_id, message_id, direction)
              WHERE o.next_deadline <= ?1 OR o.expires_at <= ?1
              ORDER BY o.next_deadline",
@@ -446,11 +571,12 @@ impl Store {
                 r.get::<_, String>(6)?,
                 r.get::<_, i64>(7)?,
                 r.get::<_, Vec<u8>>(8)?,
+                r.get::<_, i64>(9)?,
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (conv, id, attempts, next, expires, transport, state, kind, enc) = row?;
+            let (conv, id, attempts, next, expires, transport, state, kind, enc, created) = row?;
             let conversation = ConversationId(conv);
             let message_id = MessageId::from_slice(&id).ok_or(StoreError::Invalid("message id"))?;
             let body = self.cipher.open(
@@ -460,6 +586,7 @@ impl Store {
             out.push(DueOutbound {
                 conversation,
                 kind: MessageKind::from_i64(kind)?,
+                created_at: to_u64(created),
                 body,
                 outbound: OutboundMessage {
                     message_id,

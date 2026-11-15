@@ -89,8 +89,10 @@ pub enum Inbound {
         features: u32,
         ack: Option<Vec<u8>>,
     },
-    /// Already seen: do not show again; send `ack` if present.
+    /// Already seen: do not show again; send `ack` if present (unless the
+    /// first copy's processing has not finished; the caller decides).
     Duplicate {
+        message_id: MessageId,
         ack: Option<Vec<u8>>,
     },
     PairRequest {
@@ -196,7 +198,10 @@ pub fn process_inbound(
     };
 
     if seen != Seen::New {
-        return Inbound::Duplicate { ack };
+        return Inbound::Duplicate {
+            message_id: env.message_id,
+            ack,
+        };
     }
 
     match env.message_type {
@@ -305,9 +310,14 @@ mod tests {
         let ack_env = EnvelopeV2::open(&ack.unwrap(), &t.key, &back).unwrap();
         assert_eq!(ack_env.acked_id(), Some(id));
 
-        let Inbound::Duplicate { ack } = t.recv(&f, Some(WireVersion::V2)) else {
+        let Inbound::Duplicate {
+            message_id: dup_id,
+            ack,
+        } = t.recv(&f, Some(WireVersion::V2))
+        else {
             panic!("expected duplicate");
         };
+        assert_eq!(dup_id, id, "a duplicate names the id it repeats");
         assert!(ack.is_some(), "duplicates are re-ACKed within budget");
     }
 
@@ -318,7 +328,7 @@ mod tests {
         let mut acks = 0;
         for _ in 0..10 {
             match t.recv(&f, None) {
-                Inbound::Text { ack: Some(_), .. } | Inbound::Duplicate { ack: Some(_) } => {
+                Inbound::Text { ack: Some(_), .. } | Inbound::Duplicate { ack: Some(_), .. } => {
                     acks += 1
                 }
                 _ => {}
@@ -352,9 +362,8 @@ mod tests {
         let id = MessageId::random();
         let f = seal_ack(id, &t.key, &t.a, &t.b, NOW as u32, 228).unwrap();
         assert_eq!(t.recv(&f, None), Inbound::PeerAck { acked: id });
-        assert_eq!(
-            t.recv(&f, None),
-            Inbound::Duplicate { ack: None },
+        assert!(
+            matches!(t.recv(&f, None), Inbound::Duplicate { ack: None, .. }),
             "ACKs are never ACKed"
         );
     }
