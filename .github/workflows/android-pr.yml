@@ -15,6 +15,7 @@ on:
       - "src-tauri/**"
       - "crates/**"
       - "scripts/patch-android.sh"
+      - "android/**"
       # Frontend build setup (not ui/src: app code cannot break the APK build)
       - "ui/package.json"
       - "ui/package-lock.json"
