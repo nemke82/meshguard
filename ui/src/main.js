@@ -1519,6 +1519,25 @@ notifSettingsClose.addEventListener("click", () => {
   notifOverlay.style.display = "none";
 });
 
+// Android background service gate test (ADR-001 §6).
+const bgServiceField = $("#bg-service-field");
+const bgServiceStatus = $("#bg-service-status");
+bgServiceField.hidden = !/Android/i.test(navigator.userAgent);
+
+async function setBackgroundService(on) {
+  bgServiceStatus.textContent = "";
+  try {
+    await invoke("set_background_service", { on });
+    bgServiceStatus.textContent = on
+      ? "Running. You can swipe MeshGuard away now."
+      : "Stopped.";
+  } catch (err) {
+    bgServiceStatus.textContent = String(err);
+  }
+}
+$("#bg-service-start").addEventListener("click", () => setBackgroundService(true));
+$("#bg-service-stop").addEventListener("click", () => setBackgroundService(false));
+
 notifOverlay.addEventListener("click", (e) => {
   if (e.target === notifOverlay) notifOverlay.style.display = "none";
 });

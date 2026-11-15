@@ -35,6 +35,10 @@ qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 bluer = { version = "0.17", features = ["bluetoothd"] }
 
+[target.'cfg(target_os = "android")'.dependencies]
+# JNI entry points for the Kotlin foreground service (ADR-001 option D).
+jni = "0.21.1"
+
 [target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
 # Camera QR scanning for offline pairing (mobile only).
 tauri-plugin-barcode-scanner = "2"

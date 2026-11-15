@@ -171,13 +171,6 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
-import android.security.keystore.KeyGenParameterSpec
-import android.security.keystore.KeyProperties
-import java.security.KeyStore
-import javax.crypto.Cipher
-import javax.crypto.KeyGenerator
-import javax.crypto.SecretKey
-import javax.crypto.spec.GCMParameterSpec
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 
@@ -192,9 +185,6 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
             UUID.fromString("2c55e69e-4993-11ed-b878-0242ac120002")
         private val TORADIO_UUID: UUID =
             UUID.fromString("f75c76d2-129e-4dad-a1dd-7866124401e7")
-        // Android Keystore alias of the key that wraps MeshGuard's vault key.
-        private const val VAULT_ALIAS = "meshguard_vault_v1"
-        private const val GCM_IV_LEN = 12
         private val MESHTASTIC_NAME_HINTS = listOf(
             "meshtastic", "p1000", "t-beam", "heltec", "rak",
             "sensecap", "t-echo", "lora", "mesh"
@@ -897,37 +887,13 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
         invoke.resolve(JSObject().put("success", true))
     }
 
-    // ── Vault key wrapping (ADR-002) ────────────────────────────
-    //
-    // A non-exportable AES-256-GCM key in the Android Keystore wraps the
-    // random vault key that protects remembered chat keys. The wrapped bytes
-    // are iv(12) || ciphertext+tag. The key is not bound to user
-    // authentication, so the app can reconnect and decrypt in the background.
-
-    private fun vaultKey(): SecretKey {
-        val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        (ks.getKey(VAULT_ALIAS, null) as? SecretKey)?.let { return it }
-        val gen = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
-        gen.init(
-            KeyGenParameterSpec.Builder(
-                VAULT_ALIAS,
-                KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
-            )
-                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-                .setKeySize(256)
-                .build()
-        )
-        return gen.generateKey()
-    }
+    // ── Vault key wrapping (ADR-002; see Vault.kt) ──────────────
 
     @Command
     fun wrapSecret(invoke: Invoke) {
         try {
             val plain = Base64.decode(invoke.getArgs().getString("data") ?: "", Base64.NO_WRAP)
-            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(Cipher.ENCRYPT_MODE, vaultKey())
-            val out = cipher.iv + cipher.doFinal(plain)
+            val out = Vault.wrap(plain)
             plain.fill(0)
             invoke.resolve(JSObject().put("data", Base64.encodeToString(out, Base64.NO_WRAP)))
         } catch (e: Exception) {
@@ -939,27 +905,34 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
     fun unwrapSecret(invoke: Invoke) {
         try {
             val blob = Base64.decode(invoke.getArgs().getString("data") ?: "", Base64.NO_WRAP)
-            if (blob.size <= GCM_IV_LEN) {
-                invoke.reject("unwrapSecret: blob too short")
-                return
-            }
-            val iv = blob.copyOfRange(0, GCM_IV_LEN)
-            val ct = blob.copyOfRange(GCM_IV_LEN, blob.size)
-            val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-            val key = ks.getKey(VAULT_ALIAS, null) as? SecretKey
-            if (key == null) {
-                invoke.reject("unwrapSecret: no vault key")
-                return
-            }
-            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, iv))
-            val plain = cipher.doFinal(ct)
+            val plain = Vault.unwrap(blob)
             val encoded = Base64.encodeToString(plain, Base64.NO_WRAP)
             plain.fill(0)
             invoke.resolve(JSObject().put("data", encoded))
+        } catch (e: Vault.VaultException) {
+            // "no vault key" / "blob too short": checked by the Rust side.
+            invoke.reject("unwrapSecret: ${e.message}")
         } catch (e: Exception) {
             invoke.reject("unwrapSecret failed: ${e.javaClass.simpleName}")
         }
+    }
+
+    // ── Background service (ADR-001 §6 gate) ────────────────────
+
+    @Command
+    fun startBackgroundService(invoke: Invoke) {
+        try {
+            MeshGuardConnectionService.start(activity)
+            invoke.resolve(JSObject().put("started", true))
+        } catch (e: Exception) {
+            invoke.reject("Could not start the background service: ${e.javaClass.simpleName}")
+        }
+    }
+
+    @Command
+    fun stopBackgroundService(invoke: Invoke) {
+        MeshGuardConnectionService.stop(activity)
+        invoke.resolve(JSObject().put("stopped", true))
     }
 
     // ── show_notification — native Android notification ────────
@@ -1066,4 +1039,30 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
 KOTLIN
 
 echo "  -> BlePlugin.kt injected at $PLUGIN_DIR/BlePlugin.kt"
+
+# ── 4. Kotlin sources kept as real files (ADR-001 §4.5) ─────────
+# Vault, CoreBridge (JNI to the Rust engine) and the foreground service.
+KOTLIN_SRC="$(cd "$(dirname "$0")/.." && pwd)/android/kotlin/com/meshguard/app"
+for f in "$KOTLIN_SRC"/*.kt; do
+  cp "$f" "$PLUGIN_DIR/"
+  echo "  -> $(basename "$f") copied"
+done
+
+# ── 5. Foreground service in the manifest ───────────────────────
+# connectedDevice: the service will own the radio's Bluetooth link (3B).
+# Same process as the app (no android:process) so the engine is shared.
+if ! grep -q "FOREGROUND_SERVICE_CONNECTED_DEVICE" "$MANIFEST"; then
+  sed -i 's|<application|<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />\
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />\
+    <application|' "$MANIFEST"
+  echo "  -> Foreground service permissions added"
+fi
+if ! grep -q "MeshGuardConnectionService" "$MANIFEST"; then
+  sed -i 's|</application>|    <service\
+            android:name=".MeshGuardConnectionService"\
+            android:exported="false"\
+            android:foregroundServiceType="connectedDevice" />\
+    </application>|' "$MANIFEST"
+  echo "  -> MeshGuardConnectionService declared"
+fi
 echo "Android BLE patches complete."

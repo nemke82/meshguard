@@ -105,6 +105,16 @@ This is a minimal spike on a real Android device. No NDK is available in this en
 
 If step 3 fails because the library cannot run without Tauri initialisation, fall back to Option C, with the service as the sole engine owner and the UI as its client.
 
+### How to run it (step 3A build)
+
+1. Install the APK built from the step 3A PR and open MeshGuard. Allow Bluetooth and notifications. Connect to your radio once, so the vault, the history and the chat keys exist, and pair at least one contact.
+2. Open **Notification Settings** (bell icon), then **Background service (test) → Start test**. A "MeshGuard is running" notification appears. Swipe MeshGuard away from recent apps.
+3. After about 15 seconds a "MeshGuard background test" conversation appears. It says `Decoded "Zdravo 👋" without the app UI`. Reply to it inline.
+   - **Pass:** the conversation shows your reply followed by "Saved (queued) …".
+   - When you open the app again (connected to the radio), the reply is in that contact's chat and goes out within a few seconds.
+4. Kill the process, then wait. Android restarts the sticky service, and step 3 repeats on its own. Use `adb shell am kill com.meshguard.app`. A foreground service can keep the process from being killed this way; then use `adb shell am crash com.meshguard.app` (Android 11+). Do not force-stop from Settings: that also stops the service for good.
+5. Note the Android version, the phone model, and anything unexpected from `adb logcat -s MeshGuardService` here.
+
 ## 7. Owner decisions (2026-11-14)
 
 1. **Accepted:** on Android the Tauri UI becomes a client of the service-owned engine; it no longer owns BLE.
@@ -120,3 +130,7 @@ If step 3 fails because the library cannot run without Tauri initialisation, fal
 - **2C:** sending and the outbox live in the engine (`outbox.rs`). `enqueue` seals and stores a message and returns a `Transmit`; the caller writes it to the radio and reports `Submitted`, `Failed` or `Unavailable` to `finish_attempt`. `outbox_step(now, live_radio)` expires messages, settles ACK timeouts and returns at most one resend. `record_peer_ack` handles delivery confirmations.
   - The radio write happens outside the engine lock. A message being written is marked *in flight* (stale after 120 s), and the result is applied to the row as it is stored at that moment. An ACK or a deletion in between therefore wins over a late result, and the app's `outbox_lock` is gone.
   - `to_radio_packet` and `to_radio_want_config` encode raw `ToRadio` bytes for the Kotlin service, the same way the Meshtastic client library builds them.
+- **3A (gate build):**
+  - **Rust:** `android_bridge.rs` exports `CoreBridge` functions over JNI (`jni` 0.21): `version`, `init(dataDir, vaultKey)`, `selfTest`, `peers` and `enqueueReply`. The engine is one per process (`state::process_engine`), created by whichever side comes first, on the app's data directory (Tauri's `app_config_dir` on Android). `init` opens the history with the vault key that Kotlin unwraps (`Vault.kt`, the same Keystore alias as before). It also restores the chat keys of the radio used last, so a reply can be queued with no UI and no radio.
+  - **Kotlin:** `Vault.kt`, `CoreBridge.kt` and `MeshGuardConnectionService.kt` are real files in `android/kotlin/`, which `patch-android.sh` copies in. The service is a `connectedDevice` foreground service. It posts a MessagingStyle notification with a `RemoteInput` reply.
+  - **Not yet:** the service does not own the radio link; that is step 3B.

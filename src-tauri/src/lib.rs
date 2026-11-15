@@ -1,3 +1,5 @@
+#[cfg(target_os = "android")]
+pub mod android_bridge;
 pub mod ble_plugin;
 pub mod commands;
 pub mod crypto;
@@ -65,6 +67,7 @@ pub fn run() {
             commands::get_last_connection,
             commands::get_last_link,
             commands::auto_connect,
+            commands::set_background_service,
             commands::get_status_presets,
             commands::set_status_presets,
             commands::reset_status_presets,

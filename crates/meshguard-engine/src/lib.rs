@@ -12,6 +12,7 @@ pub mod dedup_store;
 pub mod diagnostics;
 pub mod engine;
 pub mod error;
+pub mod gate;
 pub mod link_target;
 pub mod nodes;
 pub mod outbox;
