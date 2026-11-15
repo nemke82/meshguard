@@ -60,6 +60,24 @@ impl DeliveryState {
             Self::Expired => "expired",
         }
     }
+
+    /// Every state, for exhaustive round-trip checks.
+    pub const ALL: [Self; 9] = [
+        Self::Draft,
+        Self::Queued,
+        Self::Submitted,
+        Self::MeshAck,
+        Self::PeerAck,
+        Self::Read,
+        Self::Retrying,
+        Self::Failed,
+        Self::Expired,
+    ];
+
+    /// Inverse of [`DeliveryState::as_str`].
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|st| st.as_str() == s)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -283,6 +301,14 @@ impl OutboundMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn state_names_round_trip() {
+        for st in DeliveryState::ALL {
+            assert_eq!(DeliveryState::parse(st.as_str()), Some(st));
+        }
+        assert_eq!(DeliveryState::parse("delivered"), None);
+    }
     use DeliveryEvent as E;
     use DeliveryState as S;
 

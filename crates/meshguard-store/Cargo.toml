@@ -1,0 +1,15 @@
+[package]
+name = "meshguard-store"
+version = "0.1.0"
+edition = "2021"
+description = "MeshGuard message store: encrypted conversation history, inbox and outbox (ADR-005)"
+license = "MIT"
+publish = false
+
+[dependencies]
+meshguard-core = { path = "../meshguard-core" }
+rusqlite = { version = "0.41.1", features = ["bundled"] }
+hkdf = "0.12"
+sha2 = "0.10"
+thiserror = "2"
+zeroize = "1"
