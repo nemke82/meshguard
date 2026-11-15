@@ -32,6 +32,7 @@ cargo tauri android init && bash scripts/patch-android.sh && cargo tauri android
 ```
 meshguard/
 ├── crates/meshguard-core/  # Platform-free core: v2 envelope, codec, crypto, dedup, delivery
+├── crates/meshguard-store/ # Encrypted SQLite store: history, inbox, outbox (ADR-005)
 ├── docs/                   # Design RFC, ADRs, audit
 ├── website/                # meshguard.net (deployed to Vercel on push to main)
 ├── src-tauri/
