@@ -33,11 +33,14 @@ graph LR
 - **QR pairing** — meet in person, scan a code, done: a random 128-bit key, no passphrase to type
 - **Family check-in** — one tap sends "I'm OK", "On my way" or "I need help"; the wording is yours to change
 - **SOS with location** — sends your radio's GPS position (coordinates, accuracy, fix time) to all paired contacts, encrypted; receivers get a full-screen alert
-- **Remembers your chats and radio** — reconnects to the last radio on start and whenever it comes back (battery, range, reboot); on Android, paired chats open without re-entering the passphrase
+- **Remembers your chats and radio** — reconnects to the last radio on start and whenever it comes back (battery, range, reboot); paired chats open without re-entering the passphrase
+- **Message history** — conversations are saved on the device, encrypted, and kept until you delete them; a chat list shows the last message and unread count
+- **Unsent messages are kept and retried** — a message written while the radio is away waits in an outbox and goes out when the radio is back; ✓✓ ends the retries
+- **Mesh diagnostics** — signal history (SNR/RSSI) and path tests per node
 - **Compact binary protocol** — messages fit within Meshtastic's ~228-byte LoRa payload limit, checked in bytes before sending
 - **Notification sounds** — audible alert + popup toast for incoming messages, with custom sound support
 - **Cross-platform** — Android, Linux (deb/rpm/AppImage), macOS
-- **WiFi & USB serial** — connect to Meshtastic devices over TCP or serial, not just Bluetooth
+- **WiFi & USB serial** — connect to Meshtastic devices over TCP or serial, not just Bluetooth; Wi-Fi radios on your network are found automatically (mDNS) and connected radios are remembered
 - **Dark theme, mobile-first UI** — designed for field use
 
 ## Downloads
@@ -215,7 +218,8 @@ flowchart LR
 | Channel encryption | Meshtastic PSK (LoRa-layer encryption, device to device) |
 | Memory safety | Written in Rust — no buffer overflows; keys zeroized on drop |
 | Passphrase handling | Never saved to storage, never transmitted |
-| Remembered chats | Android: derived chat keys sealed with a vault key held in the Android Keystore ([ADR-002](docs/adr/002-key-persistence.md)); desktop: memory only |
+| Remembered chats | Derived chat keys sealed with a random vault key ([ADR-002](docs/adr/002-key-persistence.md)). Android wraps the vault key in the Android Keystore; desktop keeps it in the OS keyring (Secret Service / Keychain). Without a keyring, nothing is saved |
+| Message history | Stored on the device only ([ADR-005](docs/adr/005-message-store.md)). Message bodies and contact names are encrypted with AES-256-GCM under a key derived from the vault key; ids, node numbers, times and delivery states are not, so the file shows *who and when*, not *what*. Delete a conversation to remove it |
 | Transport | LoRa mesh — no internet, no servers, no DNS |
 | MQTT/uplink | Disabled — no data leaves the mesh |
 
@@ -233,8 +237,15 @@ graph TB
         HTML["index.html"]
     end
 
-    subgraph "Core (meshguard-core)"
-        CORE["envelope, codec, crypto<br/>dedup, delivery, rate limits"]
+    subgraph "Core crates (no Tauri)"
+        CORE["meshguard-core<br/>envelope, codec, crypto<br/>dedup, delivery, rate limits"]
+        STORE["meshguard-store<br/>encrypted SQLite history + outbox"]
+        ENGINE["meshguard-engine<br/>keys, peers, nodes,<br/>packet handling, outbox"]
+    end
+
+    subgraph "Android service"
+        SVC["MeshGuardConnectionService<br/>foreground service"]
+        BRIDGE["CoreBridge (JNI)<br/>android_bridge.rs"]
     end
 
     subgraph "Backend (Rust / Tauri)"
@@ -263,8 +274,12 @@ graph TB
     CMD --> PROTO
     CMD --> STATE
     CMD --> CFG
-    CMD --> CORE
-    RADIO --> CORE
+    CMD --> ENGINE
+    RADIO --> ENGINE
+    ENGINE --> CORE
+    ENGINE --> STORE
+    SVC --> BRIDGE
+    BRIDGE --> ENGINE
     RADIO --> CRATE
     RADIO --> BTLEPLUG
     RADIO --> BLUER
@@ -280,8 +295,13 @@ graph TB
 ```
 meshguard/
 ├── crates/
-│   └── meshguard-core/        # Platform-free core: v2 envelope, codec, crypto, dedup,
-│                              # delivery state, rate limits, test vectors
+│   ├── meshguard-core/        # Platform-free core: v2 envelope, codec, crypto, dedup,
+│   │                          # delivery state, rate limits, test vectors
+│   ├── meshguard-store/       # Encrypted SQLite store: history, inbox, outbox (ADR-005)
+│   └── meshguard-engine/      # No-Tauri engine: keys, peers, nodes, dedup, history,
+│                              # packet handling, outbox (ADR-001)
+├── android/kotlin/            # Kotlin sources copied in by patch-android.sh
+│                              # (Vault, CoreBridge, MeshGuardConnectionService)
 ├── docs/
 │   ├── design/                # MeshGuard 2.0 design RFC
 │   ├── adr/                   # Architecture decision records
@@ -291,12 +311,15 @@ meshguard/
 │   │   ├── lib.rs             # Tauri app entry point
 │   │   ├── main.rs            # Binary entry point
 │   │   ├── mesh_radio.rs      # BLE scan, connect, polling stream, message I/O
+│   │   ├── android_bridge.rs  # JNI entry points for the Kotlin CoreBridge
 │   │   ├── ble_plugin.rs      # Native Android BLE plugin (Kotlin bridge)
 │   │   ├── crypto.rs          # Re-exports AES-256-GCM + HKDF from meshguard-core
 │   │   ├── protocol.rs        # v1 wire format (compatibility)
-│   │   ├── dedup_store.rs     # Persists the duplicate/replay cache
+│   │   ├── history.rs         # Message history + outbox loop (ADR-005)
+│   │   ├── discovery.rs       # Wi-Fi radio discovery (mDNS _meshtastic._tcp)
+│   │   ├── key_store.rs       # Saved chat keys, sealed with the vault (ADR-002)
 │   │   ├── commands.rs        # Tauri IPC commands (scan, connect, chat, pair)
-│   │   ├── device_config.rs   # Saved device/peer configuration
+│   │   ├── device_config.rs   # Re-exports the engine's saved radios, peers, settings
 │   │   ├── state.rs           # Shared app state (nodes, keys, radio)
 │   │   └── error.rs           # Error types
 │   ├── Cargo.toml
@@ -308,9 +331,10 @@ meshguard/
 │   ├── index.html
 │   └── package.json
 ├── scripts/
-│   └── patch-android.sh       # Patches Android build for BLE permissions + native plugin
+│   └── patch-android.sh       # Patches Android build: permissions, native plugin, service
 └── .github/workflows/
     ├── ci.yml                 # Check + test + clippy on push/PR
+    ├── android-pr.yml         # Android build on PRs that touch Rust/Kotlin
     └── release.yml            # Build all platforms on tag push
 ```
 
@@ -321,6 +345,8 @@ meshguard/
 | Linux | `btleplug` + `bluer` | btleplug for GATT, bluer for PIN-based BlueZ pairing via D-Bus agent |
 | macOS | `btleplug` | CoreBluetooth backend |
 | Android | Native Kotlin plugin | Custom `BlePlugin.kt` injected via `patch-android.sh` — handles scan, GATT connect, bonding, read/write |
+
+On Android, a foreground service (`MeshGuardConnectionService`) is being added so messages keep arriving while the app is closed ([ADR-001](docs/adr/001-android-engine-boundary.md)). The current build has a test switch in **Notification Settings → Background service (test)**; the service does not yet hold the radio connection.
 
 ---
 
@@ -371,8 +397,8 @@ cargo tauri android build   # release APK
 
 Tag with a date version — CI builds all platforms automatically:
 ```bash
-git tag v2026.11.14
-git push origin v2026.11.14
+git tag v2026.11.16
+git push origin v2026.11.16
 ```
 
 Produces: Android APK, .deb, .rpm, .AppImage, macOS .dmg, plus SHA256 checksums, and an Android App Bundle (`.aab`) for Google Play as a workflow artifact.
@@ -405,6 +431,7 @@ MeshGuard works with any Meshtastic-compatible radio, including:
 | "No session" error | Passphrase hasn't been entered this session. Tap the peer and re-enter it |
 | Peer runs an older MeshGuard | Turn off **MeshGuard 2.0 mode** when pairing, on both sides |
 | "Paired in MeshGuard 2.0 mode" error | The peer sent an old-format request to a 2.0 chat. Remove the peer and pair again if you really want the older format |
+| "History is kept only while the app is open" banner | MeshGuard has no vault key to encrypt history with. On Linux, run a Secret Service keyring (GNOME Keyring, KWallet); on Android, connect to your radio once. It also appears if the history file could not be opened. Chat still works for this session |
 | Message stays at ✓ | It was queued for transmission but no confirmation came back yet. The peer may be out of range or on an older version (no ✓✓ there) |
 | "Message too long" | The message is over the byte limit — shorten it (the counter shows bytes left) |
 | Short range | Use Long Range modem preset. Elevate devices. Use external antenna if available |
@@ -424,11 +451,11 @@ MeshGuard works with any Meshtastic-compatible radio, including:
 Pull requests welcome. Run checks before submitting:
 
 ```bash
-(cd crates/meshguard-core && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test)
+for c in core store engine; do (cd crates/meshguard-$c && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test); done
 (cd src-tauri && cargo clippy -- -D warnings && cargo test)
 ```
 
-Design notes: [MeshGuard 2.0 RFC](docs/design/MESHGUARD_2_0_DESIGN_RFC.md) · [ADRs](docs/adr/README.md)
+Design notes: [MeshGuard 2.0 RFC](docs/design/MESHGUARD_2_0_DESIGN_RFC.md) · [ADRs](docs/adr/README.md) · [Changelog](CHANGELOG.md)
 
 ## License
 
