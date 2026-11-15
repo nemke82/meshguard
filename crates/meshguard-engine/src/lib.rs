@@ -14,6 +14,7 @@ pub mod engine;
 pub mod error;
 pub mod link_target;
 pub mod nodes;
+pub mod outbox;
 pub mod receive;
 
 pub use engine::Engine;
