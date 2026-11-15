@@ -24,7 +24,8 @@ use meshguard_core::inbound::{process_inbound, Inbound, InboundContext};
 use meshguard_core::outbound::WireVersion;
 #[cfg(target_os = "android")]
 use meshguard_core::status::StatusKind;
-use meshguard_core::status::{FixSource, GeoFix, FEATURE_STATUS, SUPPORTED_FEATURES};
+use meshguard_core::status::{GeoFix, FEATURE_STATUS, SUPPORTED_FEATURES};
+use meshguard_engine::nodes;
 use meshguard_core::{MessageId, PeerIdentity};
 
 use crate::device_config::{AppConfig, WireProtocol};
@@ -798,7 +799,7 @@ async fn run_config_and_listen(
                             tracing::info!("My node num: {}", my_info.my_node_num);
                         }
                         PayloadVariant::NodeInfo(node_info) => {
-                            let node = node_info_to_mesh_node(node_info);
+                            let node = nodes::from_node_info(node_info, chrono::Utc::now().timestamp());
                             if Some(node.node_num) == found_node_num {
                                 if let Some(ref user) = node_info.user {
                                     found_device_name = Some(user.long_name.clone());
@@ -1058,242 +1059,27 @@ fn variant_name(v: &PayloadVariant) -> &'static str {
     }
 }
 
-fn node_info_to_mesh_node(ni: &protobufs::NodeInfo) -> MeshNodeInfo {
-    let (user_name, long_name, short_name, hw_model) = ni
-        .user
-        .as_ref()
-        .map(|u| {
-            (
-                u.long_name.clone(),
-                u.long_name.clone(),
-                u.short_name.clone(),
-                format!(
-                    "{:?}",
-                    protobufs::HardwareModel::try_from(u.hw_model)
-                        .unwrap_or(protobufs::HardwareModel::Unset)
-                ),
-            )
-        })
-        .unwrap_or_default();
-
-    let metrics = ni.device_metrics.as_ref();
-    MeshNodeInfo {
-        node_num: ni.num,
-        user_name,
-        long_name,
-        short_name,
-        hw_model,
-        snr: ni.snr,
-        rssi: 0,
-        last_heard: ni.last_heard as i64,
-        is_online: ni.last_heard > 0
-            && (chrono::Utc::now().timestamp() - ni.last_heard as i64)
-                < crate::state::ONLINE_WINDOW_SECS,
-        hops_away: ni.hops_away,
-        battery_level: metrics.and_then(|m| m.battery_level),
-        voltage: metrics.and_then(|m| m.voltage),
-        channel_utilization: metrics.and_then(|m| m.channel_utilization),
-        air_util_tx: metrics.and_then(|m| m.air_util_tx),
-        via_mqtt: ni.via_mqtt,
-    }
-}
-
-/// Radio timestamps before this (2020-09-13) mean the clock was never set.
-const MIN_VALID_UNIX_TIME: u32 = 1_600_000_000;
-
-/// Convert a Meshtastic position into a fix with accuracy and fix time.
-pub fn position_to_fix(pos: &protobufs::Position) -> Option<GeoFix> {
-    let (lat, lon) = (pos.latitude_i?, pos.longitude_i?);
-    if lat == 0 && lon == 0 {
-        return None; // "no fix" placeholder
-    }
-    // GPS uncertainty: gps_accuracy is in mm, PDOP in 1/100 (as in the
-    // Meshtastic apps).
-    let gps = (pos.gps_accuracy > 0 && pos.pdop > 0)
-        .then(|| f64::from(pos.gps_accuracy) / 1000.0 * f64::from(pos.pdop) / 100.0);
-    // Deliberately reduced precision: one step of the coordinate grid.
-    let grid = (1..32)
-        .contains(&pos.precision_bits)
-        .then(|| 2f64.powi(32 - pos.precision_bits as i32) * 1e-7 * 111_320.0);
-    // A quantised position is never more accurate than its grid.
-    let accuracy = match (gps, grid) {
-        (Some(a), Some(b)) => Some(a.max(b)),
-        (a, b) => a.or(b),
-    };
-    let source = match protobufs::position::LocSource::try_from(pos.location_source) {
-        Ok(protobufs::position::LocSource::LocInternal) => FixSource::RadioGps,
-        Ok(protobufs::position::LocSource::LocManual) => FixSource::Manual,
-        _ => FixSource::Unknown,
-    };
-    let fix = GeoFix {
-        lat_e7: lat,
-        lon_e7: lon,
-        accuracy_m: accuracy.map(|a| a.round().clamp(1.0, f64::from(u16::MAX - 1)) as u16),
-        // `timestamp` is when the GPS solution was computed; `time` may be
-        // when the packet was sent.
-        fix_time: if pos.timestamp > 0 {
-            pos.timestamp
-        } else {
-            pos.time
-        },
-        source,
-    };
-    fix.is_valid().then_some(fix)
-}
-
 async fn update_my_position(slot: &Mutex<Option<GeoFix>>, pos: &protobufs::Position) {
-    let Some(fix) = position_to_fix(pos) else {
-        return;
-    };
     let mut current = slot.lock().await;
-    // Keep the newest fix; packets can arrive out of order after a reconnect.
-    if current.is_none_or(|c| fix.fix_time >= c.fix_time) {
-        *current = Some(fix);
-    }
+    *current = nodes::newest_fix(*current, pos);
 }
 
-/// A node we have only heard packets from, before any NodeInfo arrived.
-fn unnamed_node(node_num: u32) -> MeshNodeInfo {
-    MeshNodeInfo {
-        node_num,
-        user_name: String::new(),
-        long_name: String::new(),
-        short_name: String::new(),
-        hw_model: String::new(),
-        snr: 0.0,
-        rssi: 0,
-        last_heard: 0,
-        is_online: false,
-        hops_away: None,
-        battery_level: None,
-        voltage: None,
-        channel_utilization: None,
-        air_util_tx: None,
-        via_mqtt: false,
-    }
-}
-
-/// Refresh presence, signal and metadata of the sending node from any packet
-/// we hear. The radio only pushes NodeInfo at connect time, so without this
-/// a peer that is actively messaging us would still look offline, and a
-/// chat request could arrive from a node whose name we do not know yet.
+/// Apply what a packet tells us about its sender (see `nodes::observe`).
 async fn observe_mesh_packet(packet: &protobufs::MeshPacket, ctx: &ListenerCtx) {
-    use meshtastic::Message as _;
-
-    if packet.from == ctx.my_node_num {
-        // Our radio reports its own GPS position as POSITION_APP packets.
-        if let Some(protobufs::mesh_packet::PayloadVariant::Decoded(d)) = &packet.payload_variant {
-            if d.portnum == protobufs::PortNum::PositionApp as i32 {
-                if let Ok(pos) = protobufs::Position::decode(d.payload.as_slice()) {
-                    update_my_position(&ctx.my_position, &pos).await;
-                }
-            }
-        }
-        return;
-    }
-    if packet.from == 0 {
-        return;
-    }
-    let portnum = match &packet.payload_variant {
-        Some(protobufs::mesh_packet::PayloadVariant::Decoded(d)) => Some(d.portnum),
-        _ => None,
-    };
-    // Path test (traceroute) reply addressed to us.
-    if portnum == Some(protobufs::PortNum::TracerouteApp as i32) && packet.to == ctx.my_node_num {
-        if let Some(protobufs::mesh_packet::PayloadVariant::Decoded(d)) = &packet.payload_variant {
-            handle_path_test_reply(ctx, packet.from, d).await;
-        }
-    }
-
     let now = chrono::Utc::now().timestamp();
-    let mut nodes = ctx.mesh_nodes.lock().await;
-    // Add unknown nodes only when they announce a name or talk to MeshGuard,
-    // so background traffic (telemetry, positions) does not flood the list.
-    let adds_node = portnum == Some(protobufs::PortNum::NodeinfoApp as i32)
-        || portnum == Some(protobufs::PortNum::PrivateApp as i32);
-    if !nodes.contains_key(&packet.from) && !adds_node {
-        return;
+    let seen = nodes::observe(&mut *ctx.mesh_nodes.lock().await, packet, ctx.my_node_num, now);
+    if let Some(pos) = &seen.my_position {
+        update_my_position(&ctx.my_position, pos).await;
     }
-    let node = nodes
-        .entry(packet.from)
-        .or_insert_with(|| unnamed_node(packet.from));
-
-    // Prefer the radio's receive time: packets buffered while we were
-    // disconnected must not look current. Fall back to our clock only when
-    // the radio has no valid time (e.g. no GPS fix yet), and never move
-    // last_heard backwards.
-    let heard_at = if packet.rx_time > MIN_VALID_UNIX_TIME && i64::from(packet.rx_time) <= now + 60
-    {
-        i64::from(packet.rx_time)
-    } else {
-        now
-    };
-    node.last_heard = node.last_heard.max(heard_at);
-    node.is_online = now - node.last_heard < crate::state::ONLINE_WINDOW_SECS;
-    node.via_mqtt = packet.via_mqtt;
-
-    // Hop metadata is only trustworthy when hop_start is set (firmware 2.3+).
-    let hops = (packet.hop_start > 0 && packet.hop_start >= packet.hop_limit)
-        .then(|| packet.hop_start - packet.hop_limit);
-    if let Some(h) = hops {
-        node.hops_away = Some(h);
+    if let Some(d) = &seen.path_reply {
+        handle_path_test_reply(ctx, packet.from, d).await;
     }
-    // Signal values describe the last hop, so they only describe the link to
-    // this node when this very packet was received directly.
-    let direct = hops == Some(0) && !packet.via_mqtt;
-    let mut sample = crate::diagnostics::SignalSample {
-        t: heard_at,
-        rssi: (direct && packet.rx_rssi != 0).then_some(packet.rx_rssi),
-        snr: (direct && packet.rx_snr != 0.0).then_some(packet.rx_snr),
-        hops,
-        battery: None,
-        voltage: None,
-    };
-    if direct {
-        if packet.rx_snr != 0.0 {
-            node.snr = packet.rx_snr;
-        }
-        if packet.rx_rssi != 0 {
-            node.rssi = packet.rx_rssi;
-        }
-    }
-
-    if let Some(protobufs::mesh_packet::PayloadVariant::Decoded(d)) = &packet.payload_variant {
-        if d.portnum == protobufs::PortNum::NodeinfoApp as i32 {
-            if let Ok(user) = protobufs::User::decode(d.payload.as_slice()) {
-                if !user.long_name.is_empty() {
-                    node.user_name = user.long_name.clone();
-                    node.long_name = user.long_name;
-                }
-                if !user.short_name.is_empty() {
-                    node.short_name = user.short_name;
-                }
-                if let Ok(hw) = protobufs::HardwareModel::try_from(user.hw_model) {
-                    node.hw_model = format!("{hw:?}");
-                }
-            }
-        } else if d.portnum == protobufs::PortNum::TelemetryApp as i32 {
-            if let Ok(t) = protobufs::Telemetry::decode(d.payload.as_slice()) {
-                if let Some(protobufs::telemetry::Variant::DeviceMetrics(m)) = t.variant {
-                    sample.battery = m.battery_level;
-                    sample.voltage = m.voltage;
-                    node.battery_level = m.battery_level.or(node.battery_level);
-                    node.voltage = m.voltage.or(node.voltage);
-                    node.channel_utilization = m.channel_utilization.or(node.channel_utilization);
-                    node.air_util_tx = m.air_util_tx.or(node.air_util_tx);
-                }
-            }
-        }
-    }
-    drop(nodes);
-    if sample.rssi.is_some()
-        || sample.snr.is_some()
-        || sample.hops.is_some()
-        || sample.battery.is_some()
-    {
+    if let Some(sample) = seen.sample {
         ctx.node_history.lock().await.record(packet.from, sample);
     }
-    let _ = ctx.app_handle.emit("mesh-nodes-updated", ());
+    if seen.nodes_changed {
+        let _ = ctx.app_handle.emit("mesh-nodes-updated", ());
+    }
 }
 
 /// A traceroute reply: report the route if we have a test outstanding.
@@ -1345,7 +1131,7 @@ fn spawn_listener(mut listener: meshtastic::packet::PacketReceiver, ctx: Listene
 
                 match variant {
                     PayloadVariant::NodeInfo(node_info) => {
-                        let node = node_info_to_mesh_node(node_info);
+                        let node = nodes::from_node_info(node_info, chrono::Utc::now().timestamp());
                         if node.node_num != ctx.my_node_num {
                             tracing::info!(
                                 "Mesh node update: {} ({})",
@@ -1954,45 +1740,4 @@ async fn upgrade_peer_to_v2(ctx: &ListenerCtx, node_num: u32) {
 
 fn emit_connection_state(app_handle: &tauri::AppHandle, state: &str) {
     let _ = app_handle.emit("connection-state", state);
-}
-
-#[cfg(test)]
-mod position_tests {
-    use super::*;
-
-    fn pos() -> protobufs::Position {
-        protobufs::Position {
-            latitude_i: Some(448_123_400),
-            longitude_i: Some(204_567_800),
-            time: 1_763_100_000,
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn accuracy_from_gps_or_precision() {
-        let mut p = pos();
-        p.gps_accuracy = 3_000; // mm
-        p.pdop = 250; // 2.5
-        let f = position_to_fix(&p).unwrap();
-        assert_eq!(f.accuracy_m, Some(8));
-        assert_eq!(f.fix_time, 1_763_100_000);
-
-        let mut p = pos();
-        p.precision_bits = 13; // ~ 5.8 km grid in the Meshtastic apps
-        let a = position_to_fix(&p).unwrap().accuracy_m.unwrap();
-        assert!((5_000..6_000).contains(&a), "{a}");
-
-        assert_eq!(position_to_fix(&pos()).unwrap().accuracy_m, None);
-    }
-
-    #[test]
-    fn no_fix_is_ignored() {
-        let mut p = pos();
-        p.latitude_i = Some(0);
-        p.longitude_i = Some(0);
-        assert!(position_to_fix(&p).is_none());
-        p.latitude_i = None;
-        assert!(position_to_fix(&p).is_none());
-    }
 }

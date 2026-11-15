@@ -2747,6 +2747,7 @@ dependencies = [
  "keyring",
  "mdns-sd",
  "meshguard-core",
+ "meshguard-engine",
  "meshguard-store",
  "meshtastic",
  "qrcode",
@@ -2777,6 +2778,18 @@ dependencies = [
  "thiserror 2.0.21",
  "x25519-dalek",
  "zeroize",
+]
+
+[[package]]
+name = "meshguard-engine"
+version = "0.1.0"
+dependencies = [
+ "meshguard-core",
+ "meshtastic",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tracing",
 ]
 
 [[package]]

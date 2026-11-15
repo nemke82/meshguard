@@ -33,6 +33,7 @@ cargo tauri android init && bash scripts/patch-android.sh && cargo tauri android
 meshguard/
 ├── crates/meshguard-core/  # Platform-free core: v2 envelope, codec, crypto, dedup, delivery
 ├── crates/meshguard-store/ # Encrypted SQLite store: history, inbox, outbox (ADR-005)
+├── crates/meshguard-engine/ # No-Tauri engine: nodes, peers/settings, dedup, diagnostics (ADR-001)
 ├── docs/                   # Design RFC, ADRs, audit
 ├── website/                # meshguard.net (deployed to Vercel on push to main)
 ├── src-tauri/
@@ -44,7 +45,7 @@ meshguard/
 │   │   ├── crypto.rs          # AES-256-GCM + HKDF-SHA256 key derivation
 │   │   ├── protocol.rs        # Compact binary wire format for mesh messages
 │   │   ├── commands.rs        # Tauri IPC commands (scan, connect, chat, pair)
-│   │   ├── device_config.rs   # Saved radios, peers and settings
+│   │   ├── device_config.rs   # Re-exports meshguard-engine config (saved radios, peers, settings)
 │   │   ├── discovery.rs       # Wi-Fi radio discovery (mDNS _meshtastic._tcp)
 │   │   ├── history.rs         # Message history + outbox loop on meshguard-store (ADR-005)
 │   │   ├── state.rs           # Shared app state (nodes, keys, radio)

@@ -1,0 +1,19 @@
+[package]
+name = "meshguard-engine"
+version = "0.1.0"
+edition = "2021"
+description = "MeshGuard engine without Tauri: radio packet handling, peers, settings and state shared by the app and the Android service (ADR-001)"
+license = "MIT"
+publish = false
+
+[dependencies]
+meshguard-core = { path = "../meshguard-core" }
+# Protobufs only: no tokio, no transports.
+meshtastic = { version = "0.1.8", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+
+[dev-dependencies]
+uuid = { version = "1", features = ["v4"] }
