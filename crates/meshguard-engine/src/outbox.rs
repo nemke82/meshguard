@@ -89,6 +89,8 @@ pub struct Transmit {
     pub protocol: WireProtocol,
     /// Attempts made before this one.
     pub attempt: u32,
+    /// Which in-flight mark this attempt owns (0: none, memory-only).
+    pub token: u64,
 }
 
 /// How a transmission went.
@@ -138,23 +140,38 @@ pub fn seal_err(e: SealError) -> MeshGuardError {
     }
 }
 
-/// Messages being transmitted right now: id -> since when.
+/// Messages being transmitted right now: id -> (since when, token). A
+/// mark that went stale may be replaced by a new attempt; the token tells
+/// the attempts apart, so a late result cannot touch the newer one.
 #[derive(Default)]
-pub struct InFlight(HashMap<MessageId, u64>);
+pub struct InFlight {
+    marks: HashMap<MessageId, (u64, u64)>,
+    next_token: u64,
+}
 
 impl InFlight {
-    fn mark(&mut self, id: MessageId, now: u64) {
-        self.0.insert(id, now);
+    fn mark(&mut self, id: MessageId, now: u64) -> u64 {
+        self.next_token += 1;
+        self.marks.insert(id, (now, self.next_token));
+        self.next_token
     }
 
-    fn clear(&mut self, id: &MessageId) {
-        self.0.remove(id);
+    /// End attempt `token`. False when it no longer owns the mark (it went
+    /// stale and another attempt took over, or it was never marked).
+    fn release(&mut self, id: &MessageId, token: u64) -> bool {
+        match self.marks.get(id) {
+            Some((_, t)) if *t == token => {
+                self.marks.remove(id);
+                true
+            }
+            _ => false,
+        }
     }
 
     fn contains(&mut self, id: &MessageId, now: u64) -> bool {
-        self.0
-            .retain(|_, since| now.saturating_sub(*since) < IN_FLIGHT_SECS);
-        self.0.contains_key(id)
+        self.marks
+            .retain(|_, (since, _)| now.saturating_sub(*since) < IN_FLIGHT_SECS);
+        self.marks.contains_key(id)
     }
 }
 
@@ -226,10 +243,12 @@ impl Engine {
             s.insert_outgoing(&c, kind, &body, now, &out)?;
             Ok(c)
         });
-        if conversation.is_some() {
-            // The outbox must not send it too while the caller does.
-            self.in_flight.mark(message_id, now);
-        }
+        // The outbox must not send it too while the caller does.
+        let token = if conversation.is_some() {
+            self.in_flight.mark(message_id, now)
+        } else {
+            0
+        };
         Ok(Transmit {
             conversation,
             message_id,
@@ -238,6 +257,7 @@ impl Engine {
             frame,
             protocol,
             attempt: 0,
+            token,
         })
     }
 
@@ -250,7 +270,6 @@ impl Engine {
         attempt: Attempt,
         now: u64,
     ) -> (Option<DeliveryState>, Option<MessageStateEvent>) {
-        self.in_flight.clear(&t.message_id);
         let Some(c) = &t.conversation else {
             // Memory-only: nothing stored, only the result counts.
             let st = match attempt {
@@ -259,6 +278,12 @@ impl Engine {
             };
             return (st, None);
         };
+        if !self.in_flight.release(&t.message_id, t.token) {
+            // A newer attempt took over after this one went stale; only
+            // its result counts.
+            tracing::debug!("Late result for {} ignored", t.message_id);
+            return (None, None);
+        }
         let transport = self.transport_id();
         let policy = RetryPolicy::default();
         let unconfirmable = t.protocol == WireProtocol::V1;
@@ -346,7 +371,7 @@ impl Engine {
                         // No key for this chat right now (forgotten peer): wait.
                         continue;
                     };
-                    self.in_flight.mark(out.message_id, now);
+                    let token = self.in_flight.mark(out.message_id, now);
                     resend = Some(Transmit {
                         conversation: Some(c),
                         message_id: out.message_id,
@@ -355,6 +380,7 @@ impl Engine {
                         frame,
                         protocol,
                         attempt: out.attempts,
+                        token,
                     });
                 }
                 None => {}
@@ -637,5 +663,27 @@ mod tests {
         for _ in 0..1000 {
             assert!((0.0..1.0).contains(&jitter()));
         }
+    }
+
+    #[test]
+    fn a_late_result_does_not_touch_a_newer_attempt() {
+        let mut e = engine("stale", WireProtocol::V2, true);
+        let old = e.enqueue(PEER, &text(), NOW).unwrap();
+        // The first write never reported back; after the in-flight window
+        // the outbox takes over.
+        let later = NOW + IN_FLIGHT_SECS + 1;
+        let new = e
+            .outbox_step(later, Some(ME))
+            .1
+            .expect("resend after stale mark");
+        assert_eq!(
+            e.finish_attempt(&old, Attempt::Unavailable, later),
+            (None, None)
+        );
+        // Still in flight for the newer attempt: no third transmit.
+        assert!(e.outbox_step(later, Some(ME)).1.is_none());
+        let (st, ev) = e.finish_attempt(&new, Attempt::Submitted, later);
+        assert_eq!(st, Some(DeliveryState::Submitted));
+        assert!(ev.is_some());
     }
 }
