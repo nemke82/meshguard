@@ -262,7 +262,9 @@ const state = {
   // Message history (ADR-005): saved on this device, or memory only.
   history: { saved: false, reason: null },
   conversations: [],
-  chat: { conversationId: null, cursor: null, hasMore: false, readOnly: false, gen: 0, late: null },
+  chat: { conversationId: null, cursor: null, hasMore: false, readOnly: false, gen: 0 },
+  // Delivery updates seen while history pages load (one buffer per load).
+  lateBuffers: new Set(),
   passphraseMode: null, // "initiate" or "accept"
   passphraseTargetNode: null,
   pendingPairRequests: [],
@@ -921,7 +923,6 @@ function enterChat(nodeNum, peerName, opts = {}) {
     hasMore: false,
     readOnly,
     gen: state.chat.gen + 1,
-    late: null,
   };
   chatPeerName.textContent = peerName || "Peer";
   screenChat.classList.toggle("read-only", readOnly);
@@ -982,6 +983,34 @@ function chatIntro() {
   );
 }
 
+/** One page of saved messages, with delivery updates that arrived while it
+ *  loaded applied on top. */
+async function fetchPage(conversationId, before) {
+  const late = new Map();
+  state.lateBuffers.add(late);
+  let rows;
+  try {
+    rows = await invoke("get_messages", { conversationId, before, limit: HISTORY_PAGE });
+  } catch (err) {
+    console.error("Could not load messages:", err);
+    return { ok: false };
+  } finally {
+    state.lateBuffers.delete(late);
+  }
+  const messages = rows.map(fromStored);
+  for (const m of messages) {
+    if (!m.mine || m.status === "delivered") continue;
+    if (unmatchedDelivered.delete(m.id)) m.status = "delivered";
+    else if (late.has(m.id)) m.status = late.get(m.id);
+  }
+  return {
+    ok: true,
+    messages,
+    cursor: rows.length ? rows[0].cursor : null,
+    full: rows.length === HISTORY_PAGE,
+  };
+}
+
 async function loadChatMessages(nodeNum) {
   chatIntro();
   const conversationId = state.chat.conversationId;
@@ -991,36 +1020,23 @@ async function loadChatMessages(nodeNum) {
   }
   const gen = state.chat.gen;
   const before = new Set(state.messages[nodeNum] || []);
-  // Delivery updates that arrive while the page loads, applied on top of it.
-  state.chat.late = new Map();
-  let page;
-  try {
-    page = await invoke("get_messages", { conversationId, before: null, limit: HISTORY_PAGE });
-  } catch (err) {
-    console.error("Could not load messages:", err);
-  }
+  const pending = new Set([...before].filter((m) => m.mine && !m.wireId));
+  const page = await fetchPage(conversationId, null);
   if (gen !== state.chat.gen) return; // left or opened another chat meanwhile
-  const late = state.chat.late;
-  state.chat.late = null;
   const current = state.messages[nodeNum] || [];
-  if (!page) {
+  if (!page.ok) {
     // Show what this session has rather than an empty chat.
     chatIntro();
     current.forEach((m) => renderMessage(m));
     return;
   }
-  const stored = page.map(fromStored);
-  for (const m of stored) {
-    if (!m.mine || m.status === "delivered") continue;
-    if (unmatchedDelivered.delete(m.id)) m.status = "delivered";
-    else if (late.has(m.id)) m.status = late.get(m.id);
-  }
+  const stored = page.messages;
   const ids = new Set(stored.map((m) => m.id));
-  // The store has everything received or sent. From memory keep sends still
-  // waiting for their id and whatever arrived while the page loaded.
+  // The store has everything received or sent. From memory keep sends that
+  // were still waiting for their id and whatever arrived while it loaded.
   const live = current.filter(
     (m) =>
-      (!before.has(m) || (m.mine && !m.wireId)) &&
+      (!before.has(m) || pending.has(m)) &&
       !ids.has(m.id) &&
       !(m.wireId && ids.has(m.wireId))
   );
@@ -1029,8 +1045,8 @@ async function loadChatMessages(nodeNum) {
   messagesContainer.style.scrollBehavior = "auto"; // open at the newest, no animation
   state.messages[nodeNum].forEach((m) => renderMessage(m));
   messagesContainer.style.scrollBehavior = "";
-  state.chat.cursor = page.length ? page[0].cursor : null;
-  state.chat.hasMore = page.length === HISTORY_PAGE;
+  state.chat.cursor = page.cursor;
+  state.chat.hasMore = page.full;
   $("#btn-load-earlier").hidden = !state.chat.hasMore;
   markActiveChatRead();
 }
@@ -1041,25 +1057,19 @@ async function loadEarlierMessages() {
   if (!cursor || !conversationId) return;
   const btn = $("#btn-load-earlier");
   btn.disabled = true;
-  let page = [];
-  try {
-    page = await invoke("get_messages", { conversationId, before: cursor, limit: HISTORY_PAGE });
-  } catch (err) {
-    console.error("Could not load earlier messages:", err);
-    btn.disabled = false;
-    return;
-  }
+  const page = await fetchPage(conversationId, cursor);
   if (gen !== state.chat.gen) return;
   btn.disabled = false;
+  if (!page.ok) return;
   const known = new Set((state.messages[nodeNum] || []).map((m) => m.id));
-  const older = page.map(fromStored).filter((m) => !known.has(m.id));
+  const older = page.messages.filter((m) => !known.has(m.id));
   state.messages[nodeNum] = older.concat(state.messages[nodeNum] || []);
   // Keep the view where it was while older bubbles go in above it.
   const fromBottom = messagesContainer.scrollHeight - messagesContainer.scrollTop;
   const anchor = btn.nextSibling.nextSibling; // after the intro line
   for (const m of older) messagesContainer.insertBefore(messageElement(m), anchor);
-  if (page.length) state.chat.cursor = page[0].cursor;
-  state.chat.hasMore = page.length === HISTORY_PAGE;
+  if (page.cursor) state.chat.cursor = page.cursor;
+  state.chat.hasMore = page.full;
   btn.hidden = !state.chat.hasMore;
   messagesContainer.style.scrollBehavior = "auto";
   messagesContainer.scrollTop = messagesContainer.scrollHeight - fromBottom;
@@ -1107,7 +1117,7 @@ btnDeleteHistory.addEventListener("click", async () => {
   if (gen !== state.chat.gen) return; // the user moved on; leave that screen alone
   if (readOnly) {
     await loadMeshData();
-    showScreen(screenMesh);
+    if (gen === state.chat.gen) showScreen(screenMesh);
     return;
   }
   state.chat.cursor = null;
@@ -1428,8 +1438,8 @@ async function setupEventListeners() {
     const { message_id, state: st } = event.payload;
     const status = uiStatus(st);
     if (!status) return;
-    if (state.chat.late && state.chat.late.get(message_id) !== "delivered") {
-      state.chat.late.set(message_id, status);
+    for (const late of state.lateBuffers) {
+      if (late.get(message_id) !== "delivered") late.set(message_id, status);
     }
     for (const list of Object.values(state.messages)) {
       const msg = list.find((m) => m.mine && m.wireId === message_id);
@@ -1446,7 +1456,7 @@ async function setupEventListeners() {
 
   await listen("message-delivered", (event) => {
     const { peer_node, message_id } = event.payload;
-    if (state.chat.late) state.chat.late.set(message_id, "delivered");
+    for (const late of state.lateBuffers) late.set(message_id, "delivered");
     const msg = (state.messages[peer_node] || []).find(
       (m) => m.mine && m.wireId === message_id
     );
