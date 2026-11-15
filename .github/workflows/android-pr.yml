@@ -15,6 +15,10 @@ on:
       - "src-tauri/**"
       - "crates/**"
       - "scripts/patch-android.sh"
+      # Frontend build setup (not ui/src: app code cannot break the APK build)
+      - "ui/package.json"
+      - "ui/package-lock.json"
+      - "ui/vite.config.*"
       - ".github/workflows/android-pr.yml"
   workflow_dispatch:
 
