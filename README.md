@@ -431,7 +431,7 @@ MeshGuard works with any Meshtastic-compatible radio, including:
 | "No session" error | Passphrase hasn't been entered this session. Tap the peer and re-enter it |
 | Peer runs an older MeshGuard | Turn off **MeshGuard 2.0 mode** when pairing, on both sides |
 | "Paired in MeshGuard 2.0 mode" error | The peer sent an old-format request to a 2.0 chat. Remove the peer and pair again if you really want the older format |
-| "Message history is not saved on this device" banner | No vault key yet. On Linux, run a Secret Service keyring (GNOME Keyring, KWallet); on Android, connect to your radio once. Chat still works, but messages are kept only until the app closes |
+| "History is kept only while the app is open" banner | MeshGuard has no vault key to encrypt history with. On Linux, run a Secret Service keyring (GNOME Keyring, KWallet); on Android, connect to your radio once. It also appears if the history file could not be opened. Chat still works for this session |
 | Message stays at ✓ | It was queued for transmission but no confirmation came back yet. The peer may be out of range or on an older version (no ✓✓ there) |
 | "Message too long" | The message is over the byte limit — shorten it (the counter shows bytes left) |
 | Short range | Use Long Range modem preset. Elevate devices. Use external antenna if available |

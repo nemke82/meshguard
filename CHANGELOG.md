@@ -15,8 +15,8 @@ Message history, a resend queue, and the first piece of the Android background s
 - Desktop now remembers chat keys too, sealed with a vault key kept in the OS keyring (Secret Service on Linux, Keychain on macOS).
 
 ### Changed
-- Receiving, sending, pairing and the outbox moved into a new `meshguard-engine` crate with no Tauri dependency, so the Android service can use the same code through JNI.
-- An incoming 2.0 message that cannot be saved is not acknowledged, so the sender sends it again instead of thinking it was delivered.
+- Packet handling (receiving, sending, ACKs, chat requests) and the outbox moved into a new `meshguard-engine` crate with no Tauri dependency, so the Android service can use the same code through JNI.
+- With history on, an incoming 2.0 message that fails to save is not acknowledged, so the sender sends it again instead of thinking it was delivered.
 - A history file that cannot be read with this device's key is set aside (renamed), never deleted.
 
 ### Developer
@@ -54,8 +54,6 @@ MeshGuard 2.0.
 ### Fixed
 - Accepting a chat from a node with an unknown name.
 
-## v2026.03.29
-- Fixed the Bluetooth pairing handshake with Meshtastic radios.
-
-## v2026.03.23 – v2026.03.28
+## v2026.03.23 – v2026.03.29
 - First releases: Bluetooth scanning and PIN pairing, mesh node discovery, passphrase-based encrypted chat (AES-256-GCM, HKDF-SHA256), compact binary wire format, notifications with sounds, Wi-Fi and USB serial connections, Android, Linux and macOS builds.
+- Fixed the Bluetooth pairing handshake with Meshtastic radios and the Android notification build.
