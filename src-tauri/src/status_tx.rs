@@ -80,13 +80,12 @@ impl StatusTx {
 /// is not known yet. An ACK marks them capable (handled by the listener);
 /// older builds drop the probe silently and keep getting the text fallback.
 pub async fn probe_peers(state: &AppState) {
-    let Some(my_num) = *state.my_node_num.lock().await else {
+    let Some(my_num) = state.engine().my_node_num else {
         return;
     };
     let candidates: Vec<u32> = state
+        .engine()
         .config
-        .lock()
-        .await
         .peers
         .iter()
         .filter(|p| {
@@ -96,8 +95,11 @@ pub async fn probe_peers(state: &AppState) {
         .collect();
     for peer in candidates {
         let sealed = {
-            let keys = state.session_keys.lock().await;
-            let Some(key) = keys.get(&peer) else {
+            let engine = state.engine();
+            if engine.keys_owner != Some(my_num) {
+                return;
+            }
+            let Some(key) = engine.keys.get(&peer) else {
                 continue;
             };
             match outbound::seal_caps(
@@ -121,7 +123,8 @@ pub async fn probe_peers(state: &AppState) {
         let now = u64::from(crate::commands::unix_now());
         {
             // One outstanding probe per peer; expired ones may be retried.
-            let mut probes = state.inbound.caps_probes.lock().await;
+            let mut engine = state.engine();
+            let probes = &mut engine.protection.caps_probes;
             probes.retain(|_, (_, at)| now.saturating_sub(*at) < PROBE_EXPIRY_SECS);
             if probes.contains_key(&peer) {
                 continue;
@@ -132,10 +135,9 @@ pub async fn probe_peers(state: &AppState) {
             return;
         }
         state
-            .inbound
+            .engine()
+            .protection
             .caps_probes
-            .lock()
-            .await
             .insert(peer, (id, now));
         match crate::commands::send_as(state, my_num, peer, sealed.frame).await {
             Ok(()) => {
@@ -143,7 +145,7 @@ pub async fn probe_peers(state: &AppState) {
                 tracing::info!("Probed node {peer} for check-in support");
             }
             Err(e) => {
-                state.inbound.caps_probes.lock().await.remove(&peer);
+                state.engine().protection.caps_probes.remove(&peer);
                 tracing::debug!("Probe to {peer} not sent: {e}");
             }
         }

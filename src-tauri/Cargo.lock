@@ -2784,7 +2784,9 @@ dependencies = [
 name = "meshguard-engine"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "meshguard-core",
+ "meshguard-store",
  "meshtastic",
  "serde",
  "serde_json",

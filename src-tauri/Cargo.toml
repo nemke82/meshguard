@@ -47,4 +47,3 @@ mdns-sd = "0.21.6"
 keyring = "4.2.0"
 
 [dev-dependencies]
-rusqlite = { version = "0.41.1", features = ["bundled"] }
