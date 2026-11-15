@@ -190,6 +190,13 @@ const connectProgressText = $("#connect-progress-text");
 const blePin = $("#ble-pin");
 const wifiAddress = $("#wifi-address");
 const btnConnectWifi = $("#btn-connect-wifi");
+const btnScanWifi = $("#btn-scan-wifi");
+const wifiScanStatus = $("#wifi-scan-status");
+const wifiScanResults = $("#wifi-scan-results");
+const savedLinks = $("#saved-links");
+const savedLinksList = $("#saved-links-list");
+const savedLinksStatus = $("#saved-links-status");
+const connectTitle = $("#connect-title");
 const serialPort = $("#serial-port");
 const btnRefreshPorts = $("#btn-refresh-ports");
 const btnConnectSerial = $("#btn-connect-serial");
@@ -260,6 +267,7 @@ const state = {
 function showScreen(screen) {
   document.querySelectorAll(".screen").forEach((s) => s.classList.remove("active"));
   screen.classList.add("active");
+  if (screen === screenConnect) loadSavedLinks();
 }
 
 // ============================================================
@@ -366,27 +374,173 @@ async function connectToDevice(device) {
 // ============================================================
 // WiFi Connection
 // ============================================================
-btnConnectWifi.addEventListener("click", async () => {
-  let addr = wifiAddress.value.trim();
-  if (!addr) { alert("Enter a device IP address"); return; }
-  if (!addr.includes(":")) addr += ":4403";
+function setStatus(el, type, html) {
+  el.className = "scan-status";
+  if (type) el.classList.add(`scan-status-${type}`);
+  el.innerHTML = html;
+}
 
+/** Shared connect flow: progress, then the mesh screen or an error. */
+async function runConnect(label, cmd, args, timeoutMs, statusEl) {
+  hideLinkStatus();
+  setStatus(statusEl, null, "");
   connectProgress.style.display = "flex";
-  connectProgressText.textContent = "Connecting via WiFi to " + addr + "...";
-  btnConnectWifi.disabled = true;
-
+  connectProgressText.textContent = `Connecting to ${label}...`;
   try {
-    await invokeWithTimeout("connect_tcp", { address: addr }, 30000);
+    await invokeWithTimeout(cmd, args, timeoutMs);
     await loadMeshData();
     showScreen(screenMesh);
   } catch (err) {
+    setStatus(statusEl, "error", `<strong>Connection failed.</strong>${escapeHtml(String(err))}`);
+  } finally {
     connectProgress.style.display = "none";
-    alert("WiFi connection failed: " + err);
+  }
+}
+
+let savedLinkIds = new Set();
+
+btnScanWifi.addEventListener("click", async () => {
+  btnScanWifi.disabled = true;
+  btnScanWifi.innerHTML = '<span class="spinner"></span> Scanning network...';
+  wifiScanResults.innerHTML = "";
+  setStatus(wifiScanStatus, "info", "");
+
+  try {
+    const radios = await invokeWithTimeout("scan_wifi_radios", {}, 20000);
+    if (radios.length === 0) {
+      setStatus(
+        wifiScanStatus,
+        "warning",
+        "<strong>No radios found on this network.</strong>Check that the radio has WiFi enabled and is on the same network as this device, or enter its address below."
+      );
+    } else {
+      setStatus(
+        wifiScanStatus,
+        "success",
+        `Found ${radios.length} radio${radios.length > 1 ? "s" : ""} — tap to connect`
+      );
+      radios.forEach(renderWifiRadio);
+    }
+  } catch (err) {
+    setStatus(wifiScanStatus, "error", `<strong>Scan failed.</strong>${escapeHtml(String(err))}`);
   }
 
-  connectProgress.style.display = "none";
+  btnScanWifi.disabled = false;
+  btnScanWifi.innerHTML = `
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+    </svg>
+    Scan Again`;
+});
+
+function nodeId(num) {
+  return "!" + (num >>> 0).toString(16).padStart(8, "0");
+}
+
+function renderWifiRadio(radio) {
+  const saved = radio.node_num != null && savedLinkIds.has("tcp:" + nodeId(radio.node_num));
+  const title = radio.short_name ? `${radio.name} (${radio.short_name})` : radio.name;
+  const card = document.createElement("div");
+  card.className = "scan-card meshtastic";
+  card.innerHTML = `
+    <div class="scan-card-icon">&#x1F4F6;</div>
+    <div class="scan-card-details">
+      <div class="scan-card-name">${escapeHtml(title)}</div>
+      <div class="scan-card-addr">${escapeHtml(radio.address)}</div>
+    </div>
+    <div class="scan-card-meta">
+      <span class="scan-badge">${saved ? "Saved" : "WiFi"}</span>
+    </div>
+  `;
+  card.addEventListener("click", () => {
+    wifiScanResults.innerHTML = "";
+    runConnect(title, "connect_tcp", { address: radio.address }, 30000, wifiScanStatus);
+  });
+  wifiScanResults.appendChild(card);
+}
+
+btnConnectWifi.addEventListener("click", async () => {
+  let addr = wifiAddress.value.trim();
+  if (!addr) {
+    setStatus(wifiScanStatus, "error", "Enter the radio's IP address.");
+    return;
+  }
+  // Add the default port unless one is given (IPv6 needs brackets for that).
+  const hasPort = addr.startsWith("[") ? /\]:\d+$/.test(addr) : /^[^:]+:\d+$/.test(addr);
+  if (!hasPort) addr = addr.includes(":") && !addr.startsWith("[") ? `[${addr}]:4403` : `${addr}:4403`;
+
+  btnConnectWifi.disabled = true;
+  await runConnect(addr, "connect_tcp", { address: addr }, 30000, wifiScanStatus);
   btnConnectWifi.disabled = false;
 });
+
+// ============================================================
+// Saved radios
+// ============================================================
+const LINK_KIND = {
+  ble: { icon: "&#x1F4E1;", label: "Bluetooth" },
+  tcp: { icon: "&#x1F4F6;", label: "WiFi" },
+  serial: { icon: "&#x1F50C;", label: "USB" },
+};
+
+function timeAgo(unixSecs) {
+  if (!unixSecs) return "";
+  const s = Math.max(0, Date.now() / 1000 - unixSecs);
+  if (s < 90) return "just now";
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  return `${Math.round(s / 86400)} d ago`;
+}
+
+function linkAddress(target) {
+  return target.address || target.port || target.name || "";
+}
+
+async function loadSavedLinks() {
+  let links = [];
+  try {
+    links = await invoke("get_saved_links");
+  } catch (err) {
+    console.error("Could not load saved radios:", err);
+  }
+  savedLinkIds = new Set(links.map((l) => l.id));
+  savedLinksList.innerHTML = "";
+  savedLinks.style.display = links.length ? "block" : "none";
+  connectTitle.textContent = links.length ? "Connect Another Device" : "Connect Your Device";
+  links.forEach(renderSavedLink);
+}
+
+function renderSavedLink(link) {
+  const kind = LINK_KIND[link.target.kind] || { icon: "&#x1F4E1;", label: link.target.kind };
+  const when = timeAgo(link.last_connected);
+  const card = document.createElement("div");
+  card.className = "scan-card meshtastic";
+  card.innerHTML = `
+    <div class="scan-card-icon">${kind.icon}</div>
+    <div class="scan-card-details">
+      <div class="scan-card-name">${escapeHtml(link.name)}</div>
+      <div class="scan-card-addr">${escapeHtml(kind.label)} · ${escapeHtml(linkAddress(link.target))}${when ? " · " + escapeHtml(when) : ""}</div>
+    </div>
+    <button type="button" class="saved-link-forget" aria-label="Forget ${escapeHtml(link.name)}" title="Forget">&times;</button>
+  `;
+  card.querySelector(".saved-link-forget").addEventListener("click", async (e) => {
+    e.stopPropagation();
+    if (!confirm(`Forget ${link.name}? MeshGuard will stop connecting to it on start.`)) return;
+    try {
+      await invoke("forget_saved_link", { id: link.id });
+    } catch (err) {
+      setStatus(savedLinksStatus, "error", escapeHtml(String(err)));
+    }
+    loadSavedLinks();
+  });
+  card.addEventListener("click", () => {
+    const pin = parseInt(blePin.value, 10) || 123456;
+    // Bluetooth may need pairing; a moved WiFi radio is looked up first.
+    const timeout = link.target.kind === "ble" ? 90000 : 40000;
+    runConnect(link.name, "connect_saved_link", { id: link.id, pin }, timeout, savedLinksStatus);
+  });
+  savedLinksList.appendChild(card);
+}
 
 // ============================================================
 // USB Serial Connection

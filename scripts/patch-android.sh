@@ -178,6 +178,8 @@ import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+import android.net.nsd.NsdManager
+import android.net.nsd.NsdServiceInfo
 
 @TauriPlugin
 class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
@@ -425,6 +427,154 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
             Log.d(TAG, "BLE scan complete: ${sorted.size} Meshtastic device(s) found")
             invoke.resolve(result)
         }, 5000)
+    }
+
+    // ── discoverWifiRadios — Meshtastic radios on the Wi-Fi (mDNS) ─
+    // NsdManager handles the multicast lock for us. Before Android 14 a
+    // second concurrent resolve fails with FAILURE_ALREADY_ACTIVE, so all
+    // resolves of the plugin (across overlapping scans) go through one queue.
+
+    private val nsdLock = Any()
+    private class ResolveJob(
+        val info: NsdServiceInfo,
+        // False once the scan that queued the job has returned.
+        val isLive: () -> Boolean,
+        val onDone: (NsdServiceInfo?) -> Unit,
+    )
+
+    private val resolveQueue = ArrayDeque<ResolveJob>()
+    private var resolveBusy = false
+
+    private fun enqueueResolve(nsd: NsdManager, job: ResolveJob) {
+        synchronized(nsdLock) { resolveQueue.addLast(job) }
+        pumpResolve(nsd)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun pumpResolve(nsd: NsdManager) {
+        val job = synchronized(nsdLock) {
+            if (resolveBusy) return
+            // Jobs of scans that already returned would only hold up later scans.
+            while (resolveQueue.isNotEmpty() && !resolveQueue.first().isLive()) {
+                resolveQueue.removeFirst()
+            }
+            if (resolveQueue.isEmpty()) return
+            resolveBusy = true
+            resolveQueue.removeFirst()
+        }
+        val info = job.info
+        val finish = { result: NsdServiceInfo? ->
+            synchronized(nsdLock) { resolveBusy = false }
+            try {
+                job.onDone(result)
+            } finally {
+                pumpResolve(nsd)
+            }
+        }
+        try {
+            nsd.resolveService(info, object : NsdManager.ResolveListener {
+                override fun onResolveFailed(failed: NsdServiceInfo, errorCode: Int) {
+                    Log.w(TAG, "Resolve of ${failed.serviceName} failed: $errorCode")
+                    finish(null)
+                }
+
+                override fun onServiceResolved(resolved: NsdServiceInfo) {
+                    finish(resolved)
+                }
+            })
+        } catch (e: Exception) {
+            Log.w(TAG, "Resolve of ${info.serviceName} threw: ${e.message}")
+            finish(null)
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    @Command
+    fun discoverWifiRadios(invoke: Invoke) {
+        val nsd = activity.getSystemService(Context.NSD_SERVICE) as? NsdManager
+        if (nsd == null) {
+            invoke.reject("Network discovery is not available on this phone.")
+            return
+        }
+        val serviceType = invoke.getArgs().getString("serviceType") ?: "_meshtastic._tcp"
+        val timeoutMs = invoke.getArgs().optLong("timeoutMs", 4000L).coerceIn(1000L, 15000L)
+
+        // Per-scan state, guarded by scanLock.
+        val scanLock = Any()
+        val found = mutableMapOf<String, JSONObject>()
+        val seen = mutableSetOf<String>()
+        var finished = false
+
+        fun onResolved(info: NsdServiceInfo?) {
+            if (info == null) return
+            val addresses = if (Build.VERSION.SDK_INT >= 34) {
+                info.hostAddresses
+            } else {
+                listOfNotNull(info.host)
+            }
+            // Prefer IPv4: link-local IPv6 needs a scope we cannot pass on.
+            val host = (addresses.firstOrNull { it is java.net.Inet4Address }
+                ?: addresses.firstOrNull())?.hostAddress ?: return
+            val o = JSONObject()
+            o.put("name", info.serviceName)
+            o.put("host", host)
+            o.put("port", info.port)
+            info.attributes["id"]?.let { o.put("id", String(it, Charsets.UTF_8)) }
+            info.attributes["shortname"]?.let { o.put("shortname", String(it, Charsets.UTF_8)) }
+            synchronized(scanLock) {
+                if (!finished) found[info.serviceName] = o
+            }
+        }
+
+        val discovery = object : NsdManager.DiscoveryListener {
+            override fun onDiscoveryStarted(type: String) {
+                Log.d(TAG, "Wi-Fi discovery started for $type")
+            }
+
+            override fun onServiceFound(info: NsdServiceInfo) {
+                synchronized(scanLock) {
+                    if (finished || !seen.add(info.serviceName)) return
+                }
+                enqueueResolve(nsd, ResolveJob(
+                    info,
+                    isLive = { synchronized(scanLock) { !finished } },
+                    onDone = { resolved -> onResolved(resolved) },
+                ))
+            }
+
+            override fun onServiceLost(info: NsdServiceInfo) {}
+            override fun onDiscoveryStopped(type: String) {}
+
+            override fun onStartDiscoveryFailed(type: String, errorCode: Int) {
+                Log.e(TAG, "Wi-Fi discovery failed to start: $errorCode")
+            }
+
+            override fun onStopDiscoveryFailed(type: String, errorCode: Int) {}
+        }
+
+        try {
+            nsd.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, discovery)
+        } catch (e: Exception) {
+            invoke.reject("Network discovery failed: ${e.message}")
+            return
+        }
+
+        Handler(Looper.getMainLooper()).postDelayed({
+            try {
+                nsd.stopServiceDiscovery(discovery)
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not stop Wi-Fi discovery: ${e.message}")
+            }
+            val services = JSONArray()
+            synchronized(scanLock) {
+                finished = true
+                for (o in found.values) services.put(o)
+            }
+            val result = JSObject()
+            result.put("services", services)
+            Log.d(TAG, "Wi-Fi discovery complete: ${services.length()} radio(s)")
+            invoke.resolve(result)
+        }, timeoutMs)
     }
 
     // ── bond_device — trigger system BLE pairing dialog ─────────

@@ -39,6 +39,14 @@ pub enum LinkTarget {
 }
 
 impl LinkTarget {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Ble { .. } => "ble",
+            Self::Tcp { .. } => "tcp",
+            Self::Serial { .. } => "serial",
+        }
+    }
+
     pub fn label(&self) -> String {
         match self {
             Self::Ble { name, .. } => name.clone(),
@@ -125,12 +133,17 @@ fn connect_params(
         my_position: state.my_position.clone(),
         node_history: state.node_history.clone(),
         path_tests: state.path_tests.clone(),
+        expect_node: None,
     }
 }
 
-/// Connect to `target`; caller holds `connect_lock`.
+/// Connect to `target`; caller holds `connect_lock`. With `expect_node`,
+/// a different radio answering at that address is refused before it can
+/// change any state (DHCP may have given a saved radio's IP to another
+/// device).
 async fn connect_locked(
     target: &LinkTarget,
+    expect_node: Option<u32>,
     pin: u32,
     // false for automatic attempts: never start Bluetooth pairing.
     interactive: bool,
@@ -146,7 +159,8 @@ async fn connect_locked(
     // Open the vault before the listener starts, so remembered keys are in
     // place for the first packet (see key_store::prepare_for_radio).
     let vault = state.vault(app).await;
-    let p = connect_params(app, state, link_gen, vault);
+    let mut p = connect_params(app, state, link_gen, vault);
+    p.expect_node = expect_node;
     let radio = match target {
         LinkTarget::Ble { name, address } => {
             MeshRadio::connect_ble(name, address.clone(), pin, interactive, p).await?
@@ -159,18 +173,19 @@ async fn connect_locked(
     {
         let mut config = state.config.lock().await;
         config.last_link = Some(target.clone());
-        config.last_ble_address = Some(format!(
-            "{}:{}",
-            match target {
-                LinkTarget::Ble { .. } => "ble",
-                LinkTarget::Tcp { .. } => "tcp",
-                LinkTarget::Serial { .. } => "serial",
-            },
-            target.label()
-        ));
-        if let Some(name) = state.my_device_name.lock().await.as_ref() {
+        config.last_ble_address = Some(format!("{}:{}", target.kind(), target.label()));
+        let name = state.my_device_name.lock().await.clone();
+        if let Some(name) = &name {
             config.last_device_name = Some(name.clone());
         }
+        let node_num = *state.my_node_num.lock().await;
+        crate::device_config::remember_link(
+            &mut config,
+            target,
+            name.as_deref(),
+            node_num,
+            chrono::Utc::now().timestamp(),
+        );
         config.save(&state.config_dir)?;
     }
 
@@ -199,7 +214,59 @@ pub async fn connect(
     state.link.reconnect_gen.fetch_add(1, Ordering::SeqCst);
     let _guard = state.link.connect_lock.lock().await;
     state.link.reconnect_gen.fetch_add(1, Ordering::SeqCst);
-    connect_locked(&target, pin.unwrap_or(DEFAULT_BLE_PIN), true, app, state).await
+    connect_locked(
+        &target,
+        None,
+        pin.unwrap_or(DEFAULT_BLE_PIN),
+        true,
+        app,
+        state,
+    )
+    .await
+}
+
+/// The node number saved for `target`, if it is a saved radio.
+async fn saved_node(state: &AppState, target: &LinkTarget) -> Option<u32> {
+    state
+        .config
+        .lock()
+        .await
+        .saved_links
+        .iter()
+        .find(|l| l.target == *target)
+        .and_then(|l| l.node_num)
+}
+
+/// User-initiated connect to a saved radio. Only that radio is accepted at
+/// the saved address; a Wi-Fi radio that moved is looked up by its node
+/// number and tried at its new address, unless the user connected
+/// elsewhere or disconnected during the lookup.
+pub async fn connect_saved(
+    target: LinkTarget,
+    node_num: Option<u32>,
+    pin: Option<u32>,
+    app: &tauri::AppHandle,
+    state: &AppState,
+) -> Result<(), MeshGuardError> {
+    let pin = pin.unwrap_or(DEFAULT_BLE_PIN);
+    state.link.reconnect_gen.fetch_add(1, Ordering::SeqCst);
+    let mine;
+    let first = {
+        let _guard = state.link.connect_lock.lock().await;
+        mine = state.link.reconnect_gen.fetch_add(1, Ordering::SeqCst) + 1;
+        connect_locked(&target, node_num, pin, true, app, state).await
+    };
+    let Err(e) = first else { return Ok(()) };
+    let Some(node) = node_num else { return Err(e) };
+    let Some(moved) = relocate_tcp(app, &target, node).await else {
+        return Err(e);
+    };
+    let _guard = state.link.connect_lock.lock().await;
+    if state.link.reconnect_gen.load(Ordering::SeqCst) != mine {
+        return Err(e);
+    }
+    tracing::info!("{} moved to {}", target.label(), moved.label());
+    connect_locked(&moved, Some(node), pin, true, app, state).await
 }
 
 /// User-initiated disconnect: stops reconnecting and forgets nothing else.
@@ -217,9 +284,11 @@ pub async fn disconnect(state: &AppState) {
 /// Returns false when there is no saved target.
 pub async fn start_reconnect_loop(app: tauri::AppHandle) -> bool {
     let state = app.state::<AppState>();
-    let Some(target) = state.config.lock().await.last_link.clone() else {
+    let Some(mut target) = state.config.lock().await.last_link.clone() else {
         return false;
     };
+    // Fixed for the whole loop: the address may change, the radio may not.
+    let node_num = saved_node(&state, &target).await;
     let my_loop = state.link.reconnect_gen.fetch_add(1, Ordering::SeqCst) + 1;
     let app_for_loop = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -244,7 +313,16 @@ pub async fn start_reconnect_loop(app: tauri::AppHandle) -> bool {
                 if state.link.reconnect_gen.load(Ordering::SeqCst) != my_loop {
                     return;
                 }
-                match connect_locked(&target, DEFAULT_BLE_PIN, false, &app_for_loop, &state).await {
+                match connect_locked(
+                    &target,
+                    node_num,
+                    DEFAULT_BLE_PIN,
+                    false,
+                    &app_for_loop,
+                    &state,
+                )
+                .await
+                {
                     Ok(()) => {
                         tracing::info!("Reconnected to {} (attempt {attempt})", target.label());
                         let _ = app_for_loop.emit("reconnected", target.label());
@@ -268,11 +346,42 @@ pub async fn start_reconnect_loop(app: tauri::AppHandle) -> bool {
                     }
                 }
             }
+            // A Wi-Fi radio may have a new IP: if it answers elsewhere on the
+            // network, try that address right away (the loop-top check still
+            // honours cancellation; the same address is never retried early).
+            if let Some(node) = node_num {
+                if let Some(moved) = relocate_tcp(&app_for_loop, &target, node).await {
+                    tracing::info!("{} moved to {}", target.label(), moved.label());
+                    target = moved;
+                    continue;
+                }
+            }
             tokio::time::sleep(delay).await;
             delay = (delay * 2).min(MAX_RETRY);
         }
     });
     true
+}
+
+/// How long a relocation lookup listens for the radio.
+const RELOCATE_SCAN: Duration = Duration::from_secs(3);
+
+/// If `target` is a Wi-Fi link, look for radio `node_num` on the network
+/// and return its new address. `None` when it is not a Wi-Fi link or the
+/// radio did not answer at a different address.
+pub async fn relocate_tcp(
+    app: &tauri::AppHandle,
+    target: &LinkTarget,
+    node_num: u32,
+) -> Option<LinkTarget> {
+    let LinkTarget::Tcp { address } = target else {
+        return None;
+    };
+    let radios = crate::discovery::scan(app, RELOCATE_SCAN).await.ok()?;
+    radios
+        .into_iter()
+        .find(|r| r.node_num == Some(node_num) && r.address != *address)
+        .map(|r| LinkTarget::Tcp { address: r.address })
 }
 
 /// Called by a radio listener when its link ends.

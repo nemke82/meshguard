@@ -104,6 +104,79 @@ pub fn default_status_presets() -> Vec<StatusPreset> {
     ]
 }
 
+/// How many radios the connect screen remembers.
+pub const MAX_SAVED_LINKS: usize = 12;
+
+/// A radio we connected to before, shown under "Saved radios".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedLink {
+    /// Stable key: transport kind + node number (`tcp:!a1b2c3d4`). A Wi-Fi
+    /// radio that gets a new IP from DHCP keeps its entry.
+    pub id: String,
+    pub target: crate::link::LinkTarget,
+    /// The radio's own name as it reported it (long name).
+    pub name: String,
+    #[serde(default)]
+    pub node_num: Option<u32>,
+    /// Unix seconds of the last successful connect.
+    pub last_connected: i64,
+}
+
+pub fn saved_link_id(target: &crate::link::LinkTarget, node_num: Option<u32>) -> String {
+    match node_num {
+        Some(n) => format!("{}:!{n:08x}", target.kind()),
+        None => format!("{}:{}", target.kind(), target.label()),
+    }
+}
+
+/// Record a successful connect: update the radio's entry (new address,
+/// name, time) or add it, newest first, capped at [`MAX_SAVED_LINKS`].
+pub fn remember_link(
+    config: &mut AppConfig,
+    target: &crate::link::LinkTarget,
+    name: Option<&str>,
+    node_num: Option<u32>,
+    now: i64,
+) {
+    let id = saved_link_id(target, node_num);
+    let old = config.saved_links.iter().position(|l| l.id == id);
+    let old_name = old.map(|i| config.saved_links.remove(i).name);
+    // Another entry for the same address belonged to whatever radio had it
+    // before; keep it unless it was only known by that address.
+    config
+        .saved_links
+        .retain(|l| !(l.target == *target && l.node_num.is_none()));
+    let name = name
+        .map(str::to_owned)
+        .or(old_name)
+        .unwrap_or_else(|| target.label());
+    config.saved_links.insert(
+        0,
+        SavedLink {
+            id,
+            target: target.clone(),
+            name,
+            node_num,
+            last_connected: now,
+        },
+    );
+    config.saved_links.truncate(MAX_SAVED_LINKS);
+}
+
+/// Remove a saved radio. Forgetting the auto-connect radio also stops the
+/// app from connecting to it on start. Returns whether anything was removed.
+pub fn forget_link(config: &mut AppConfig, id: &str) -> bool {
+    let Some(i) = config.saved_links.iter().position(|l| l.id == id) else {
+        return false;
+    };
+    let removed = config.saved_links.remove(i);
+    if config.last_link.as_ref() == Some(&removed.target) {
+        config.last_link = None;
+        config.last_ble_address = None;
+    }
+    true
+}
+
 /// Persisted app configuration — saved to disk.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -126,6 +199,10 @@ pub struct AppConfig {
     /// Paired peers — each is a separate P2P conversation.
     #[serde(default)]
     pub peers: Vec<PeerConfig>,
+
+    /// Radios connected to before, newest first.
+    #[serde(default)]
+    pub saved_links: Vec<SavedLink>,
 }
 
 impl Default for AppConfig {
@@ -136,6 +213,7 @@ impl Default for AppConfig {
             last_link: None,
             status_presets: default_status_presets(),
             peers: Vec::new(),
+            saved_links: Vec::new(),
         }
     }
 }
@@ -143,9 +221,25 @@ impl Default for AppConfig {
 impl AppConfig {
     pub fn load(config_dir: &std::path::Path) -> Self {
         let path = config_dir.join("meshguard.json");
-        match std::fs::read_to_string(&path) {
+        let mut config: Self = match std::fs::read_to_string(&path) {
             Ok(data) => serde_json::from_str(&data).unwrap_or_default(),
             Err(_) => Self::default(),
+        };
+        config.seed_saved_links();
+        config
+    }
+
+    /// Configs from before saved radios only know the last link: list it.
+    fn seed_saved_links(&mut self) {
+        if !self.saved_links.is_empty() {
+            return;
+        }
+        if let Some(target) = self.last_link.clone() {
+            let name = match &target {
+                crate::link::LinkTarget::Ble { name, .. } => Some(name.clone()),
+                _ => self.last_device_name.clone(),
+            };
+            remember_link(self, &target, name.as_deref(), None, 0);
         }
     }
 
@@ -163,6 +257,94 @@ impl AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::link::LinkTarget;
+
+    fn tcp(addr: &str) -> LinkTarget {
+        LinkTarget::Tcp {
+            address: addr.into(),
+        }
+    }
+
+    #[test]
+    fn new_ip_updates_the_same_radio() {
+        let mut cfg = AppConfig::default();
+        remember_link(
+            &mut cfg,
+            &tcp("10.0.0.5:4403"),
+            Some("Base"),
+            Some(0xa1b2),
+            1,
+        );
+        remember_link(
+            &mut cfg,
+            &tcp("10.0.0.9:4403"),
+            Some("Base"),
+            Some(0xa1b2),
+            2,
+        );
+        assert_eq!(cfg.saved_links.len(), 1);
+        assert_eq!(cfg.saved_links[0].id, "tcp:!0000a1b2");
+        assert_eq!(cfg.saved_links[0].target, tcp("10.0.0.9:4403"));
+        assert_eq!(cfg.saved_links[0].last_connected, 2);
+    }
+
+    #[test]
+    fn newest_first_and_capped() {
+        let mut cfg = AppConfig::default();
+        for n in 0..(MAX_SAVED_LINKS as u32 + 3) {
+            remember_link(
+                &mut cfg,
+                &tcp(&format!("10.0.0.{n}:4403")),
+                None,
+                Some(n),
+                n as i64,
+            );
+        }
+        assert_eq!(cfg.saved_links.len(), MAX_SAVED_LINKS);
+        assert_eq!(
+            cfg.saved_links[0].node_num,
+            Some(MAX_SAVED_LINKS as u32 + 2)
+        );
+    }
+
+    #[test]
+    fn same_radio_over_two_transports_is_two_entries() {
+        let mut cfg = AppConfig::default();
+        let ble = LinkTarget::Ble {
+            name: "Base".into(),
+            address: Some("AA".into()),
+        };
+        remember_link(&mut cfg, &ble, Some("Base"), Some(7), 1);
+        remember_link(&mut cfg, &tcp("10.0.0.5:4403"), Some("Base"), Some(7), 2);
+        assert_eq!(cfg.saved_links.len(), 2);
+    }
+
+    #[test]
+    fn seeded_entry_is_replaced_once_node_is_known() {
+        let mut cfg: AppConfig = serde_json::from_str(
+            r#"{"last_link":{"kind":"tcp","address":"10.0.0.5:4403"},"last_device_name":"Base"}"#,
+        )
+        .unwrap();
+        cfg.seed_saved_links();
+        assert_eq!(cfg.saved_links[0].id, "tcp:10.0.0.5:4403");
+        assert_eq!(cfg.saved_links[0].name, "Base");
+        remember_link(&mut cfg, &tcp("10.0.0.5:4403"), Some("Base"), Some(9), 5);
+        assert_eq!(cfg.saved_links.len(), 1);
+        assert_eq!(cfg.saved_links[0].id, "tcp:!00000009");
+    }
+
+    #[test]
+    fn forgetting_the_auto_connect_radio_clears_it() {
+        let mut cfg = AppConfig {
+            last_link: Some(tcp("10.0.0.5:4403")),
+            ..Default::default()
+        };
+        remember_link(&mut cfg, &tcp("10.0.0.5:4403"), None, Some(9), 1);
+        assert!(forget_link(&mut cfg, "tcp:!00000009"));
+        assert!(cfg.last_link.is_none());
+        assert!(cfg.saved_links.is_empty());
+        assert!(!forget_link(&mut cfg, "tcp:!00000009"));
+    }
 
     #[test]
     fn pre_2_0_config_loads_as_v1() {
