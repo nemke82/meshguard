@@ -205,6 +205,11 @@ const btnDisconnect = $("#btn-disconnect");
 const btnRefreshNodes = $("#btn-refresh-nodes");
 const myDeviceLabel = $("#my-device-label");
 const meshNodesList = $("#mesh-nodes-list");
+const btnToggleNodes = $("#btn-toggle-nodes");
+const nodesPanel = $("#nodes-panel");
+const nodesSearch = $("#nodes-search");
+const nodesCount = $("#nodes-count");
+const nodesMore = $("#nodes-more");
 const activeChatsSection = $("#active-chats-section");
 const activeChatsList = $("#active-chats-list");
 
@@ -280,6 +285,8 @@ function showScreen(screen) {
   document.querySelectorAll(".screen").forEach((s) => s.classList.remove("active"));
   screen.classList.add("active");
   if (screen === screenConnect) loadSavedLinks();
+  // The node list is not redrawn while another screen is shown.
+  if (screen === screenMesh && !nodesPanel.hidden) renderMeshNodes();
 }
 
 // ============================================================
@@ -628,21 +635,87 @@ async function loadMeshData() {
   }
 }
 
+// The node finder is closed by default: a busy mesh lists hundreds of nodes,
+// and rebuilding all of them on every packet made the app slow. When open,
+// it shows at most NODE_RENDER_LIMIT matches.
+const NODE_RENDER_LIMIT = 50;
+
+function nodesOpen() {
+  return !nodesPanel.hidden && screenMesh.classList.contains("active");
+}
+
+function setNodesOpen(open) {
+  nodesPanel.hidden = !open;
+  btnToggleNodes.setAttribute("aria-expanded", String(open));
+  if (open) {
+    renderMeshNodes();
+  } else {
+    // Free the cards; they are rebuilt from state when opened again.
+    meshNodesList.replaceChildren();
+    nodesSearch.value = "";
+  }
+}
+
+btnToggleNodes.addEventListener("click", () => setNodesOpen(nodesPanel.hidden));
+
+let nodesSearchTimer = null;
+nodesSearch.addEventListener("input", () => {
+  clearTimeout(nodesSearchTimer);
+  nodesSearchTimer = setTimeout(renderMeshNodes, 150);
+});
+
+// One listener for all cards instead of two per card.
+meshNodesList.addEventListener("click", (e) => {
+  const card = e.target.closest(".mesh-node-card");
+  if (!card) return;
+  const nodeNum = Number(card.dataset.node);
+  if (e.target.closest(".btn-node-info")) {
+    openDiagnostics(nodeNum);
+    return;
+  }
+  const node = state.meshNodes.find((n) => n.node_num === nodeNum);
+  if (node) onNodeTap(node);
+});
+
+function nodeMatches(node, q) {
+  if (!q) return true;
+  const hex = hex8(node.node_num);
+  const id = q.startsWith("!") ? q.slice(1) : q;
+  return (
+    (node.long_name || "").toLowerCase().includes(q) ||
+    (node.short_name || "").toLowerCase().includes(q) ||
+    (id.length > 0 && hex.includes(id))
+  );
+}
+
+function renderNodesCount() {
+  const n = state.meshNodes.length;
+  const online = state.meshNodes.filter(isOnline).length;
+  nodesCount.textContent = n
+    ? `${n} node${n === 1 ? "" : "s"}, ${online} online`
+    : "No nodes heard yet";
+}
+
 function renderMeshNodes() {
-  meshNodesList.innerHTML = "";
+  renderNodesCount();
+  if (!nodesOpen()) return;
 
   if (state.meshNodes.length === 0) {
     meshNodesList.innerHTML =
       '<div class="empty-state">No devices found on the mesh yet. Other Meshtastic devices will appear here as they are discovered.</div>';
+    nodesMore.hidden = true;
     return;
   }
 
-  const sorted = [...state.meshNodes].sort(
-    (a, b) => b.last_heard - a.last_heard
-  );
+  const q = nodesSearch.value.trim().toLowerCase();
+  const peerNums = new Set(state.peers.map((p) => p.node_num));
+  const matches = state.meshNodes.filter((n) => nodeMatches(n, q));
+  matches.sort((a, b) => b.last_heard - a.last_heard);
+  const shown = matches.slice(0, NODE_RENDER_LIMIT);
 
-  for (const node of sorted) {
-    const isPeer = state.peers.some((p) => p.node_num === node.node_num);
+  const frag = document.createDocumentFragment();
+  for (const node of shown) {
+    const isPeer = peerNums.has(node.node_num);
     const online = isOnline(node);
     const signal = formatSignal(node);
     const card = document.createElement("div");
@@ -664,12 +737,21 @@ function renderMeshNodes() {
         ${isPeer ? '<span class="peer-badge">Paired</span>' : ""}
       </div>
     `;
-    card.addEventListener("click", () => onNodeTap(node));
-    card.querySelector(".btn-node-info").addEventListener("click", (e) => {
-      e.stopPropagation();
-      openDiagnostics(node.node_num);
-    });
-    meshNodesList.appendChild(card);
+    card.dataset.node = String(node.node_num);
+    frag.appendChild(card);
+  }
+  if (shown.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = "No node matches that search.";
+    frag.appendChild(empty);
+  }
+  meshNodesList.replaceChildren(frag);
+
+  const hidden = matches.length - shown.length;
+  nodesMore.hidden = hidden <= 0;
+  if (hidden > 0) {
+    nodesMore.textContent = `Showing the ${shown.length} heard most recently. Search to find the other ${hidden}.`;
   }
 }
 

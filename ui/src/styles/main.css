@@ -1732,3 +1732,84 @@ input[type="range"]::-moz-range-thumb {
 #screen-chat.read-only .quick-bar {
   display: none;
 }
+
+/* ── Mesh node finder (closed by default) ─────────────── */
+
+.nodes-section {
+  margin-top: 24px;
+}
+
+.nodes-toggle {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 14px 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.nodes-toggle:hover {
+  border-color: var(--border-light);
+}
+
+.nodes-toggle-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.nodes-toggle-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.nodes-toggle-sub {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.nodes-chevron {
+  flex-shrink: 0;
+  color: var(--text-secondary);
+  transition: transform var(--transition);
+}
+
+.nodes-toggle[aria-expanded="true"] .nodes-chevron {
+  transform: rotate(90deg);
+}
+
+.nodes-panel {
+  margin-top: 12px;
+}
+
+.nodes-search {
+  width: 100%;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 14px;
+  outline: none;
+}
+
+.nodes-search:focus {
+  border-color: var(--accent-dim);
+}
+
+.nodes-more {
+  padding: 12px 4px 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-align: center;
+}
