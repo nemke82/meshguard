@@ -31,7 +31,7 @@ fn now_secs() -> u64 {
 }
 
 /// Open the store on first use (once the vault key is available).
-async fn ensure_open(app: &tauri::AppHandle) {
+pub async fn ensure_open(app: &tauri::AppHandle) {
     let state = app.state::<AppState>();
     if !matches!(state.engine().history, Slot::Closed) {
         return;
@@ -120,13 +120,8 @@ async fn transmit(
     now: u64,
 ) -> (Attempt, Option<DeliveryState>) {
     let state = app.state::<AppState>();
-    // Checked right before the hand-over: sends to a contact blocked or
-    // removed since this was sealed are not transmitted.
-    if !state.engine().still_sendable(t) {
-        return (Attempt::Unavailable, None);
-    }
     let attempt = if live_radio(&state).await == Some(t.my_node) {
-        classify(&crate::commands::send_as(&state, t.my_node, t.to, t.frame.clone()).await)
+        classify(&crate::commands::send_transmit(&state, t).await)
     } else {
         Attempt::Unavailable
     };

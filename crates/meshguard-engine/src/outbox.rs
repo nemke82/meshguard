@@ -194,18 +194,31 @@ impl Engine {
     /// Cancel everything queued for `peer` (blocked or removed): attempts
     /// already prepared become stale, and queued messages leave the outbox
     /// as failed (they stay in the history). Returns the state changes.
-    pub fn cancel_sends_to(&mut self, peer: u32) -> Vec<MessageStateEvent> {
+    ///
+    /// Fails when the queued messages could not be cancelled (history not
+    /// opened yet, or a storage error): the caller must then not go on as
+    /// if they were, since they would be sent after a re-pairing.
+    pub fn cancel_sends_to(&mut self, peer: u32) -> Result<Vec<MessageStateEvent>, MeshGuardError> {
         *self.send_generations.entry(peer).or_default() += 1;
-        let cancelled = self
-            .with_store(|s| s.cancel_outbound_to(peer))
-            .unwrap_or_default();
+        let cancelled = match &mut self.history {
+            Slot::Open(store) => store.cancel_outbound_to(peer).map_err(|e| {
+                MeshGuardError::Io(format!("Queued messages could not be cancelled: {e}"))
+            })?,
+            // Memory-only history has no outbox.
+            Slot::Off(_) => Vec::new(),
+            Slot::Closed => {
+                return Err(MeshGuardError::Io(
+                    "Message history is not open yet; try again".into(),
+                ))
+            }
+        };
         if !cancelled.is_empty() {
             tracing::info!("Cancelled {} queued message(s) to {peer}", cancelled.len());
         }
-        cancelled
+        Ok(cancelled
             .into_iter()
             .map(|(c, id)| MessageStateEvent::new(&c, &id, DeliveryState::Failed))
-            .collect()
+            .collect())
     }
 
     /// The radio messages are sent from: the one the chat keys belong to
@@ -604,7 +617,7 @@ mod tests {
         let prepared = e.enqueue(PEER, &text(), NOW).unwrap();
         assert!(e.still_sendable(&prepared));
 
-        let ev = e.cancel_sends_to(PEER);
+        let ev = e.cancel_sends_to(PEER).unwrap();
         assert_eq!(ev.len(), 2);
         assert!(ev.iter().all(|e| e.state == "failed"));
         // The attempt sealed before the cancel must not be handed over, and
