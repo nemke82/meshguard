@@ -166,6 +166,8 @@ jobs:
         run: cargo test
 
       - name: Broker integration (local Mosquitto, TLS + ACL)
+        env:
+          MG_CONTAINER: docker
         run: ../../dev/mqtt/run-tests.sh
 
   frontend:

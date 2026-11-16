@@ -17,7 +17,9 @@ IMAGE="docker.io/library/eclipse-mosquitto:2.0.20"
 PORT="${MG_MQTT_PORT:-18883}"
 NAME="meshguard-mqtt-test-$$"
 
-if command -v podman >/dev/null 2>&1; then RUN=podman
+# MG_CONTAINER=docker|podman picks the runtime (CI uses docker).
+if [ -n "${MG_CONTAINER:-}" ]; then RUN="$MG_CONTAINER"
+elif command -v podman >/dev/null 2>&1; then RUN=podman
 elif command -v docker >/dev/null 2>&1; then RUN=docker
 else echo "podman or docker is required" >&2; exit 1; fi
 
