@@ -1171,11 +1171,66 @@ async fn run_actions(ctx: &ListenerCtx, actions: Vec<Action>, now: u64) {
     }
 }
 
+/// The UI refreshes its node list on "mesh-nodes-updated". On a busy mesh
+/// almost every packet changes a node, so send it at most this often.
+const NODES_UPDATED_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+struct NodesThrottle {
+    last: Option<std::time::Instant>,
+    /// A delayed emit is already scheduled; it will carry this change too.
+    scheduled: bool,
+}
+
+static NODES_THROTTLE: std::sync::Mutex<NodesThrottle> = std::sync::Mutex::new(NodesThrottle {
+    last: None,
+    scheduled: false,
+});
+
+/// Emit "mesh-nodes-updated" now, or once at the end of the current interval
+/// if one was sent less than `NODES_UPDATED_INTERVAL` ago. The last change is
+/// never dropped.
+fn emit_nodes_updated(app: &tauri::AppHandle) {
+    let now = std::time::Instant::now();
+    let wait = {
+        let mut t = NODES_THROTTLE.lock().unwrap_or_else(|e| e.into_inner());
+        if t.scheduled {
+            return;
+        }
+        match t.last {
+            Some(last) if now.duration_since(last) < NODES_UPDATED_INTERVAL => {
+                t.scheduled = true;
+                NODES_UPDATED_INTERVAL - now.duration_since(last)
+            }
+            _ => {
+                t.last = Some(now);
+                std::time::Duration::ZERO
+            }
+        }
+    };
+    if wait.is_zero() {
+        let _ = app.emit("mesh-nodes-updated", ());
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(wait).await;
+        {
+            let mut t = NODES_THROTTLE.lock().unwrap_or_else(|e| e.into_inner());
+            t.scheduled = false;
+            t.last = Some(std::time::Instant::now());
+        }
+        let _ = app.emit("mesh-nodes-updated", ());
+    });
+}
+
 /// Send an engine event to the UI.
 pub fn emit_event(app: &tauri::AppHandle, event: Event) {
     let name = event.name();
     let _ = match event {
-        Event::NodesUpdated => app.emit(name, ()),
+        Event::NodesUpdated => {
+            emit_nodes_updated(app);
+            Ok(())
+        }
         Event::IncomingMessage(e) => app.emit(name, e),
         Event::IncomingStatus(e) => app.emit(name, e),
         Event::PeerProtocol(e) => app.emit(name, e),

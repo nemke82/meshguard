@@ -183,12 +183,28 @@
             </div>
           </div>
 
-          <div id="mesh-nodes-list" class="mesh-nodes-list"></div>
-
           <!-- Active chats -->
           <div id="active-chats-section" style="display:none;">
             <h2 class="section-title section-title-spaced">Chats</h2>
             <div id="active-chats-list" class="mesh-nodes-list"></div>
+          </div>
+
+          <!-- All mesh nodes: closed by default, a busy mesh lists hundreds -->
+          <div class="nodes-section">
+            <button type="button" id="btn-toggle-nodes" class="nodes-toggle" aria-expanded="false" aria-controls="nodes-panel">
+              <span class="nodes-toggle-text">
+                <span class="nodes-toggle-title">Find a node on the mesh</span>
+                <span class="nodes-toggle-sub" id="nodes-count">Start a chat with a passphrase</span>
+              </span>
+              <svg class="nodes-chevron" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <polyline points="9 18 15 12 9 6"/>
+              </svg>
+            </button>
+            <div id="nodes-panel" class="nodes-panel" hidden>
+              <input type="search" id="nodes-search" class="nodes-search" placeholder="Search by name or node ID" autocomplete="off" spellcheck="false" aria-label="Search nodes">
+              <div id="mesh-nodes-list" class="mesh-nodes-list"></div>
+              <div id="nodes-more" class="nodes-more" hidden></div>
+            </div>
           </div>
         </div>
       </div>
