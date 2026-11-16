@@ -820,8 +820,16 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
         }
         gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
 
-        Log.d(TAG, "GATT ready — fromradio and toradio found")
         linkUp = true
+        // The link may have dropped during discovery or the MTU wait; that
+        // callback queued STATE_DISCONNECTED. Checked after setting linkUp,
+        // so a drop racing with this line still leaves linkUp false.
+        if (connectQueue.peek() == BluetoothProfile.STATE_DISCONNECTED) {
+            closeGatt()
+            invoke.reject("GATT connection lost during setup")
+            return
+        }
+        Log.d(TAG, "GATT ready — fromradio and toradio found")
         val result = JSObject()
         result.put("success", true)
         result.put("session", session)
