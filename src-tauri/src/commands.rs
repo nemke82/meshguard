@@ -284,18 +284,6 @@ pub(crate) async fn send_transmit(
     radio.send_private_app(t.frame.clone(), t.to).await
 }
 
-/// Cancel queued sends to `peer` under the radio gate (see
-/// [`send_transmit`]), with the history open.
-async fn cancel_sends(
-    state: &AppState,
-    app: &tauri::AppHandle,
-    peer: u32,
-) -> Result<Vec<crate::history::MessageStateEvent>, MeshGuardError> {
-    crate::history::ensure_open(app).await;
-    let _gate = state.radio.lock().await;
-    state.engine().cancel_sends_to(peer)
-}
-
 fn key_copy(key: &crate::crypto::SessionKey) -> crate::crypto::SessionKey {
     crate::crypto::SessionKey::from_bytes(*key.to_bytes())
 }
@@ -622,17 +610,31 @@ pub async fn remove_peer(
     state: State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), MeshGuardError> {
-    // First: nothing queued for a removed contact may be sent later (e.g.
-    // to whoever pairs as this node next). If that fails, nothing changes.
-    let cancelled = cancel_sends(&state, &app_handle, peer_node_num).await?;
-    state.engine().keys.remove(&peer_node_num);
+    crate::history::ensure_open(&app_handle).await;
+    // The radio lock is the gate shared with outbox sends (send_transmit):
+    // nothing sealed before this point is handed to the radio afterwards.
+    let _gate = state.radio.lock().await;
     crate::key_store::remove_peer(&state.config_dir, peer_node_num)?;
-    {
+    // One engine critical section: no message can be queued for the peer
+    // between the cancellation and the removal of its key.
+    let cancelled = {
         let mut engine = state.engine();
-        let config = &mut engine.config;
-        config.peers.retain(|p| p.node_num != peer_node_num);
-        config.save(&state.config_dir)?;
-    }
+        let prev_config = engine.config.clone();
+        let prev_key = engine.keys.remove(&peer_node_num);
+        // Nothing queued for a removed contact is sent later (e.g. to
+        // whoever pairs as this node next). The barrier is saved with the
+        // removal.
+        let cancelled = engine.cancel_sends_to(peer_node_num, unix_now().into());
+        engine.config.peers.retain(|p| p.node_num != peer_node_num);
+        if let Err(e) = engine.config.save(&state.config_dir) {
+            engine.config = prev_config;
+            if let Some(k) = prev_key {
+                engine.keys.insert(peer_node_num, k);
+            }
+            return Err(e);
+        }
+        cancelled
+    };
     for e in cancelled {
         crate::history::emit_state(&app_handle, Some(e));
     }
@@ -662,10 +664,10 @@ pub async fn block_node(
     // Serialized with pairing: a pairing in progress cannot re-add the
     // contact or its key after the block.
     let _pairing = PAIRING.lock().await;
-    // First: nothing queued for the node may be sent any more. If that
-    // fails, the block is not made (the user can try again).
-    let cancelled = cancel_sends(&state, &app_handle, node_num).await?;
-    let blocked = {
+    crate::history::ensure_open(&app_handle).await;
+    // Gate shared with outbox sends (see send_transmit).
+    let _gate = state.radio.lock().await;
+    let (blocked, cancelled) = {
         let mut engine = state.engine();
         let name = engine
             .peer_title(node_num)
@@ -676,6 +678,9 @@ pub async fn block_node(
         let prev_key = engine.keys.get(&node_num).map(key_copy);
         let prev_request = engine.pending_pair_requests.get(&node_num).cloned();
         engine.block_node(node_num, name, chrono::Utc::now().timestamp());
+        // Same critical section: nothing queued for the node is sent any
+        // more; the barrier is saved with the block.
+        let cancelled = engine.cancel_sends_to(node_num, unix_now().into());
         if let Err(e) = engine.config.save(&state.config_dir) {
             engine.config = prev_config;
             if let Some(key) = prev_key {
@@ -686,7 +691,7 @@ pub async fn block_node(
             }
             return Err(e);
         }
-        engine.config.blocked.clone()
+        (engine.config.blocked.clone(), cancelled)
     };
     for e in cancelled {
         crate::history::emit_state(&app_handle, Some(e));

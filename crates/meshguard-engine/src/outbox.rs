@@ -191,34 +191,46 @@ impl Engine {
         self.send_generation(t.to) == t.generation
     }
 
-    /// Cancel everything queued for `peer` (blocked or removed): attempts
-    /// already prepared become stale, and queued messages leave the outbox
-    /// as failed (they stay in the history). Returns the state changes.
+    /// Cancel everything queued for `peer` (blocked or removed), in the
+    /// same engine critical section as the block/removal itself:
+    /// * attempts already prepared become stale (send generation),
+    /// * a durable barrier is set in the config (the caller saves it with
+    ///   the block/removal): queued messages created before `now` are never
+    ///   sent, even if the history could not be cleaned up right now,
+    /// * queued messages leave the outbox as failed, if the history is
+    ///   open (they stay in the history).
     ///
-    /// Fails when the queued messages could not be cancelled (history not
-    /// opened yet, or a storage error): the caller must then not go on as
-    /// if they were, since they would be sent after a re-pairing.
-    pub fn cancel_sends_to(&mut self, peer: u32) -> Result<Vec<MessageStateEvent>, MeshGuardError> {
+    /// Returns the state changes for the UI.
+    pub fn cancel_sends_to(&mut self, peer: u32, now: u64) -> Vec<MessageStateEvent> {
         *self.send_generations.entry(peer).or_default() += 1;
+        // Strictly later than anything queued so far (seconds resolution).
+        let barrier = now + 1;
+        let entry = self.config.send_barriers.entry(peer).or_default();
+        *entry = (*entry).max(barrier);
         let cancelled = match &mut self.history {
-            Slot::Open(store) => store.cancel_outbound_to(peer).map_err(|e| {
-                MeshGuardError::Io(format!("Queued messages could not be cancelled: {e}"))
-            })?,
-            // Memory-only history has no outbox.
-            Slot::Off(_) => Vec::new(),
-            Slot::Closed => {
-                return Err(MeshGuardError::Io(
-                    "Message history is not open yet; try again".into(),
-                ))
-            }
+            Slot::Open(store) => store.cancel_outbound_to(peer).unwrap_or_else(|e| {
+                // The barrier still stops them; outbox_step retires them.
+                tracing::warn!("Queued messages to {peer} not cancelled yet: {e}");
+                Vec::new()
+            }),
+            _ => Vec::new(),
         };
         if !cancelled.is_empty() {
             tracing::info!("Cancelled {} queued message(s) to {peer}", cancelled.len());
         }
-        Ok(cancelled
+        cancelled
             .into_iter()
             .map(|(c, id)| MessageStateEvent::new(&c, &id, DeliveryState::Failed))
-            .collect())
+            .collect()
+    }
+
+    /// Whether a queued message to `peer` created at `created_at` is behind
+    /// the peer's send barrier.
+    fn behind_barrier(&self, peer: u32, created_at: u64) -> bool {
+        self.config
+            .send_barriers
+            .get(&peer)
+            .is_some_and(|b| created_at < *b)
     }
 
     /// The radio messages are sent from: the one the chat keys belong to
@@ -385,6 +397,17 @@ impl Engine {
             };
             let mut out = item.outbound;
             if self.in_flight.contains(&out.message_id, now) {
+                continue;
+            }
+            if self.behind_barrier(peer, item.created_at) {
+                // Queued before the contact was blocked or removed.
+                out.state = DeliveryState::Failed;
+                if self
+                    .with_store(|s| s.settle_unconfirmed(&c, &out))
+                    .is_some()
+                {
+                    events.push(MessageStateEvent::new(&c, &out.message_id, out.state));
+                }
                 continue;
             }
             match out.due_action(now) {
@@ -617,7 +640,7 @@ mod tests {
         let prepared = e.enqueue(PEER, &text(), NOW).unwrap();
         assert!(e.still_sendable(&prepared));
 
-        let ev = e.cancel_sends_to(PEER).unwrap();
+        let ev = e.cancel_sends_to(PEER, NOW);
         assert_eq!(ev.len(), 2);
         assert!(ev.iter().all(|e| e.state == "failed"));
         // The attempt sealed before the cancel must not be handed over, and
@@ -639,6 +662,29 @@ mod tests {
             e.record_peer_ack(ME, PEER, first.message_id).unwrap().state,
             "peer_ack"
         );
+    }
+
+    #[test]
+    fn the_barrier_stops_messages_the_store_could_not_cancel() {
+        let mut e = engine("barrier", WireProtocol::V2, true);
+        let t = e.enqueue(PEER, &text(), NOW).unwrap();
+        e.finish_attempt(&t, Attempt::Submitted, NOW);
+        // As if the store had been unavailable when the contact was removed:
+        // only the barrier and the generation are in place.
+        e.config.send_barriers.insert(PEER, NOW + 1);
+        e.keys.insert(PEER, SessionKey::from_bytes([8; 32]));
+        let (ev, tx) = e.outbox_step(NOW + 3600, Some(ME));
+        assert!(tx.is_none(), "never resent");
+        assert_eq!(ev.len(), 1);
+        assert_eq!(ev[0].state, "failed");
+        // Retired: nothing left to do.
+        assert!(e.outbox_step(NOW + 7200, Some(ME)).0.is_empty());
+        // Messages written after the barrier go out normally.
+        let fresh = e.enqueue(PEER, &text(), NOW + 10).unwrap();
+        e.finish_attempt(&fresh, Attempt::Submitted, NOW + 10);
+        let later = NOW + 10 + 61;
+        e.outbox_step(later, Some(ME));
+        assert!(e.outbox_step(later + 120, Some(ME)).1.is_some());
     }
 
     #[test]

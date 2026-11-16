@@ -228,6 +228,13 @@ pub struct AppConfig {
     /// Version of the terms of use the user accepted (0: none yet).
     #[serde(default)]
     pub terms_accepted: u32,
+
+    /// Per node: queued messages created before this time (unix seconds)
+    /// are never sent (the contact was blocked or removed). Kept with the
+    /// block/removal itself, so it holds even if the history could not be
+    /// cleaned up at that moment.
+    #[serde(default)]
+    pub send_barriers: std::collections::BTreeMap<u32, u64>,
 }
 
 impl Default for AppConfig {
@@ -241,6 +248,7 @@ impl Default for AppConfig {
             saved_links: Vec::new(),
             blocked: Vec::new(),
             terms_accepted: 0,
+            send_barriers: Default::default(),
         }
     }
 }
