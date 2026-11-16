@@ -9,6 +9,8 @@ Versions are dates (`vYYYY.MM.DD`). Each release on [GitHub Releases](https://gi
 - **Block a node.** From the chat, a chat request or the node's details. A blocked node is removed as a contact, and its messages, chat requests, check-ins, SOS alerts and QR pairing requests are ignored. **Settings → Blocked nodes** lists them with **Unblock**.
 - **Report a node.** From the chat or the node's details: opens a public report form on GitHub with the node filled in. Nothing is sent until you submit it, and messages are never copied into it.
 
+- **Internet relay (Private MQTT), experimental.** Off by default. With your own MQTT broker (TLS and an account per person required), chats with paired contacts can continue over the internet when you are out of radio range. Turn it on in **Settings → Internet relay**, then tap the globe in a chat to offer it; your contact accepts. Messages are the same end-to-end encrypted packets as on LoRa; the broker sees only metadata. ☁ means *sent to broker*, ✓✓ still means delivered. LoRa keeps working whatever the broker does. See [ADR-006](docs/adr/006-private-mqtt-relay.md) and [the broker guide](docs/relay-broker.md).
+
 ### Changed
 - "Notification Settings" is now **Settings**.
 

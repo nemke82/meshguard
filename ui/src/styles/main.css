@@ -1961,3 +1961,63 @@ html.qr-scanning #app {
   border-color: rgba(255, 71, 87, 0.4);
   background: rgba(255, 71, 87, 0.1);
 }
+
+/* ── Internet relay (Private MQTT) ─────────────────────── */
+#relay-overlay .modal-card {
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.relay-explain {
+  margin: 0 0 8px;
+}
+
+.relay-status {
+  font-size: 13px;
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--bg-input);
+  color: var(--text-secondary);
+}
+
+.relay-status.ok {
+  color: var(--accent);
+  background: var(--accent-glow);
+}
+
+.relay-status.bad {
+  color: var(--danger);
+  background: rgba(255, 71, 87, 0.1);
+}
+
+.relay-user-row {
+  display: flex;
+  gap: 8px;
+}
+
+.relay-user-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+#relay-ca {
+  width: 100%;
+  margin-top: 6px;
+  font-family: monospace;
+  font-size: 12px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+}
+
+#btn-relay-chat.relay-on {
+  color: var(--accent);
+}
+
+#btn-relay-chat.relay-pending {
+  color: var(--warning);
+}

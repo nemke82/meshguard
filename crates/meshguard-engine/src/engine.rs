@@ -52,6 +52,13 @@ pub struct Protection {
     /// Outstanding feature probes: peer node -> (probe id, sent at). An ACK
     /// for the id proves the peer understands the newer message types.
     pub caps_probes: HashMap<u32, (MessageId, u64)>,
+    /// Answering a peer's request for our `Caps`: once per node per hour.
+    pub caps_reply_per_node: Cooldown<u32>,
+    /// ACK allowance per message for relay copies (in memory), separate
+    /// from the radio's (ADR-006 §6).
+    pub relay_acks: DedupCache,
+    /// ACK budget of the relay: burst 20, then one per second.
+    pub relay_ack_budget: TokenBucket,
 }
 
 impl Protection {
@@ -66,6 +73,9 @@ impl Protection {
             // Burst of 3, then one per minute.
             pair_notify_global: TokenBucket::new(3, 60),
             caps_probes: HashMap::new(),
+            caps_reply_per_node: Cooldown::new(3600, 256),
+            relay_acks: policy.new_dedup_cache(DEDUP_CAPACITY),
+            relay_ack_budget: TokenBucket::new(20, 1),
         }
     }
 }
@@ -92,6 +102,14 @@ pub struct Engine {
     pub history: Slot,
     /// Outgoing messages being transmitted right now.
     pub(crate) in_flight: crate::outbox::InFlight,
+    /// Set while handling a frame on a retiring relay topic.
+    pub(crate) relay_controls_only: bool,
+    /// Attempts per route of messages being sent (in memory).
+    pub(crate) route_counts: HashMap<MessageId, crate::outbox::RouteCounts>,
+    /// Private MQTT relay state (sealed in `relay_secrets.json`).
+    pub relay: crate::relay::RelayBook,
+    /// The vault key, once known (seals the relay book).
+    pub(crate) vault: Option<SessionKey>,
 }
 
 impl Engine {
@@ -110,6 +128,10 @@ impl Engine {
             my_device_name: None,
             history: Slot::Closed,
             in_flight: Default::default(),
+            relay_controls_only: false,
+            route_counts: HashMap::new(),
+            relay: Default::default(),
+            vault: None,
         }
     }
 
@@ -244,6 +266,10 @@ impl Engine {
     pub fn open_history(&mut self, vault: Option<&SessionKey>) {
         if !matches!(self.history, Slot::Closed) {
             return;
+        }
+        if let Some(v) = vault {
+            self.vault = Some(SessionKey::from_bytes(*v.to_bytes()));
+            self.load_relay();
         }
         self.history = match vault {
             Some(v) => open_store(&self.config_dir, v),

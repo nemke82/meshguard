@@ -173,7 +173,12 @@ pub extern "system" fn Java_com_meshguard_app_CoreBridge_enqueueReply<'l>(
         }
         let now = now_secs();
         let mut e = lock_engine(&engine);
-        match e.enqueue(peer as u32, &Content::Text(text), now) {
+        match e.enqueue(
+            peer as u32,
+            &Content::Text(text),
+            now,
+            meshguard_engine::outbox::Routes::default(),
+        ) {
             Ok(t) if t.conversation.is_none() => json!({
                 "ok": false,
                 "error": "Message history is not open yet, so the reply cannot be saved. Open MeshGuard once.",

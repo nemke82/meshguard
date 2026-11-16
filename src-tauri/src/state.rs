@@ -70,6 +70,9 @@ pub struct AppState {
     /// Local vault key protecting remembered chat keys; opened lazily and
     /// retried after a failure.
     vault: Mutex<Option<Arc<SessionKey>>>,
+
+    /// Private MQTT relay (ADR-006), off unless set up.
+    pub relay: crate::relay::RelayManager,
 }
 
 impl AppState {
@@ -99,6 +102,7 @@ impl AppState {
             path_tests: Arc::new(Mutex::new(crate::diagnostics::PathTests::default())),
             status_tx: Mutex::new(crate::status_tx::StatusTx::default()),
             vault: Mutex::new(None),
+            relay: Default::default(),
         }
     }
 }

@@ -77,7 +77,8 @@ pub async fn record_peer_ack(
 
 // ── Outgoing ──────────────────────────────────────────────────
 
-use meshguard_engine::outbox::{Attempt, Transmit};
+use meshguard_engine::outbox::{Attempt, Routes, Transmit};
+use meshguard_engine::receive::Route;
 pub use meshguard_engine::outbox::{Content, MessageStateEvent};
 
 pub fn emit_state(app: &tauri::AppHandle, event: Option<MessageStateEvent>) {
@@ -88,6 +89,8 @@ pub fn emit_state(app: &tauri::AppHandle, event: Option<MessageStateEvent>) {
 
 /// Result of [`send`]: the message is stored (or not) and in this state.
 pub struct SendOutcome {
+    /// "relay" when the attempt went to the MQTT broker.
+    pub via: Option<&'static str>,
     pub message_id: MessageId,
     /// `DeliveryState::as_str()`.
     pub state: &'static str,
@@ -113,17 +116,27 @@ fn classify(r: &Result<(), MeshGuardError>) -> Attempt {
     }
 }
 
-/// Transmit `t` if its radio is connected, and record the result.
+/// What can carry messages right now.
+async fn routes(state: &AppState) -> Routes {
+    Routes {
+        radio: live_radio(state).await,
+        relay: state.relay.connected().await,
+    }
+}
+
+/// Transmit `t` on its route (radio or relay) and record the result.
 async fn transmit(
     app: &tauri::AppHandle,
     t: &Transmit,
     now: u64,
 ) -> (Attempt, Option<DeliveryState>) {
     let state = app.state::<AppState>();
-    let attempt = if live_radio(&state).await == Some(t.my_node) {
-        classify(&crate::commands::send_transmit(&state, t).await)
-    } else {
-        Attempt::Unavailable
+    let attempt = match t.route {
+        Route::Relay => crate::relay::publish(app, t, now).await,
+        Route::Radio if live_radio(&state).await == Some(t.my_node) => {
+            classify(&crate::commands::send_transmit(&state, t).await)
+        }
+        Route::Radio => Attempt::Unavailable,
     };
     let (st, event) = state.engine().finish_attempt(t, attempt, now);
     emit_state(app, event);
@@ -140,13 +153,13 @@ pub async fn send(
 ) -> Result<SendOutcome, MeshGuardError> {
     ensure_open(app).await;
     let now = now_secs();
-    let t = app
-        .state::<AppState>()
-        .engine()
-        .enqueue(peer, &content, now)?;
+    let state = app.state::<AppState>();
+    let routes = routes(&state).await;
+    let t = state.engine().enqueue(peer, &content, now, routes)?;
     let (attempt, st) = transmit(app, &t, now).await;
     if t.conversation.is_some() {
         return Ok(SendOutcome {
+            via: (t.route == Route::Relay && attempt == Attempt::Submitted).then_some("relay"),
             message_id: t.message_id,
             // Deleted meanwhile: report what was attempted.
             state: st.unwrap_or(DeliveryState::Queued).as_str(),
@@ -157,6 +170,7 @@ pub async fn send(
     // Memory-only history: as before, only an accepted write succeeds.
     match attempt {
         Attempt::Submitted => Ok(SendOutcome {
+            via: (t.route == Route::Relay).then_some("relay"),
             message_id: t.message_id,
             state: DeliveryState::Submitted.as_str(),
             stored: false,
@@ -187,11 +201,13 @@ async fn outbox_tick(app: &tauri::AppHandle) {
     ensure_open(app).await;
     let state = app.state::<AppState>();
     let now = now_secs();
-    let live = live_radio(&state).await;
-    let (events, resend) = state.engine().outbox_step(now, live);
+    crate::relay::sync_topics(app).await;
+    let routes = routes(&state).await;
+    let (events, resend) = state.engine().outbox_step(now, routes);
     for e in events {
         emit_state(app, Some(e));
     }
+    send_relay_controls(app, now).await;
     if let Some(t) = resend {
         let (attempt, _) = transmit(app, &t, now).await;
         tracing::info!(
@@ -204,6 +220,25 @@ async fn outbox_tick(app: &tauri::AppHandle) {
                 Attempt::Unavailable => "radio unavailable",
             }
         );
+    }
+}
+
+/// Send the relay control messages that are due (ADR-006 §4): over the
+/// radio they were sealed for when it is there (at most one per tick,
+/// shared airtime), otherwise over the relay to contacts it is already
+/// active with (accept retries, revokes).
+async fn send_relay_controls(app: &tauri::AppHandle, now: u64) {
+    let state = app.state::<AppState>();
+    let live = live_radio(&state).await;
+    let due = state.engine().relay_due_controls(now);
+    if let Some(c) = due.iter().find(|c| Some(c.my_node) == live) {
+        if let Err(e) = crate::commands::send_control(&state, c, now).await {
+            tracing::info!("Relay control to {} not sent: {e}", c.peer);
+        }
+        return;
+    }
+    for c in &due {
+        crate::relay::publish_control(app, c, now).await;
     }
 }
 
@@ -311,6 +346,9 @@ pub struct MessageView {
     pub stored_at: u64,
     /// Outgoing: delivery state; incoming: "received" / "read".
     pub state: String,
+    /// "relay" when the last attempt of a queued message went to the MQTT
+    /// broker (`submitted` then means *sent to broker*).
+    pub via: Option<&'static str>,
     pub cursor: CursorView,
 }
 
@@ -349,6 +387,7 @@ pub async fn get_messages(
                 created_at: m.created_at,
                 stored_at: m.stored_at,
                 state: m.state,
+                via: (m.last_transport.as_deref() == Some("mqtt")).then_some("relay"),
                 cursor: CursorView {
                     stored_at: m.cursor.stored_at,
                     seq: m.cursor.seq,

@@ -1162,7 +1162,7 @@ fn spawn_listener(mut listener: meshtastic::packet::PacketReceiver, ctx: Listene
 async fn run_actions(ctx: &ListenerCtx, actions: Vec<Action>, now: u64) {
     for action in actions {
         match action {
-            Action::SendAck { to, frame } => send_ack(ctx, to, frame).await,
+            Action::SendAck { to, frame, .. } => send_ack(ctx, to, frame).await,
             Action::Emit(event) => emit_event(&ctx.app_handle, event),
             Action::Notify { title, body, node } => {
                 #[cfg(target_os = "android")]
@@ -1192,6 +1192,20 @@ async fn run_actions(ctx: &ListenerCtx, actions: Vec<Action>, now: u64) {
                 let more = lock_engine(&ctx.engine).note_pair_request(from, payload, now);
                 Box::pin(run_actions(ctx, more, now)).await;
             }
+            Action::AnnounceCaps { peer } => {
+                let app = ctx.app_handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    use tauri::Manager;
+                    let state = app.state::<crate::state::AppState>();
+                    crate::status_tx::announce_caps(&state, peer).await;
+                });
+            }
+            Action::RelayTopicsChanged => {
+                let app = ctx.app_handle.clone();
+                tauri::async_runtime::spawn(async move { crate::relay::sync_topics(&app).await });
+            }
+            // Control messages go out with the outbox loop.
+            Action::RelayControlsDue => {}
             Action::ProbePeers => {
                 let app = ctx.app_handle.clone();
                 tauri::async_runtime::spawn(async move {
@@ -1256,6 +1270,14 @@ fn emit_nodes_updated(app: &tauri::AppHandle) {
     });
 }
 
+/// Post a system notification (Android only).
+pub fn notify(app: &tauri::AppHandle, title: &str, body: &str, node: u32) {
+    #[cfg(target_os = "android")]
+    show_android_notification(app, title, body, node);
+    #[cfg(not(target_os = "android"))]
+    let _ = (app, title, body, node);
+}
+
 /// Send an engine event to the UI.
 pub fn emit_event(app: &tauri::AppHandle, event: Event) {
     let name = event.name();
@@ -1268,6 +1290,7 @@ pub fn emit_event(app: &tauri::AppHandle, event: Event) {
         Event::IncomingStatus(e) => app.emit(name, e),
         Event::PeerProtocol(e) => app.emit(name, e),
         Event::PairRequest(e) | Event::PairAccepted(e) => app.emit(name, e),
+        Event::RelayChanged(e) => app.emit(name, e),
     };
 }
 

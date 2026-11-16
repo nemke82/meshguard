@@ -37,6 +37,7 @@ graph LR
 - **Message history** — conversations are saved on the device, encrypted, and kept until you delete them; a chat list shows the last message and unread count
 - **Unsent messages are kept and retried** — a message written while the radio is away waits in an outbox and goes out when the radio is back; ✓✓ ends the retries
 - **Mesh diagnostics** — signal history (SNR/RSSI) and path tests per node
+- **Internet relay (Private MQTT, experimental, off by default)** — with your own MQTT broker, chats with paired contacts continue over the internet when you are out of radio range; same end-to-end encrypted packets, the broker sees only metadata. See [docs/relay-broker.md](docs/relay-broker.md)
 - **Compact binary protocol** — messages fit within Meshtastic's ~228-byte LoRa payload limit, checked in bytes before sending
 - **Notification sounds** — audible alert + popup toast for incoming messages, with custom sound support
 - **Cross-platform** — Android, Linux (deb/rpm/AppImage), macOS
