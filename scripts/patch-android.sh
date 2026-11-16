@@ -234,6 +234,7 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
     private val servicesQueue = LinkedBlockingQueue<Int>(1)
     private val readQueue = LinkedBlockingQueue<ByteArray>(1)
     private val writeQueue = LinkedBlockingQueue<Int>(1)
+    private val mtuQueue = LinkedBlockingQueue<Int>(1)
 
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
@@ -249,6 +250,12 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
             if (isRetired(gatt)) return
             Log.d(TAG, "Services discovered: status=$status")
             servicesQueue.offer(status)
+        }
+
+        override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+            if (isRetired(gatt)) return
+            Log.d(TAG, "MTU changed: $mtu (status=$status)")
+            mtuQueue.offer(if (status == BluetoothGatt.GATT_SUCCESS) mtu else -1)
         }
 
         override fun onCharacteristicRead(
@@ -798,6 +805,21 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
             return
         }
 
+        // Speed up the config download (every node in the radio's NodeDB is
+        // one FromRadio read). At the default 23-byte MTU each packet larger
+        // than 22 bytes needs several long-read round trips; a large MTU
+        // fetches it in one read. A short connection interval shortens each
+        // round trip; Rust relaxes it again once the config is loaded
+        // (setLinkPriority). Both are best effort: older radios still work.
+        mtuQueue.clear()
+        if (gatt.requestMtu(517)) {
+            val mtu = mtuQueue.poll(5, TimeUnit.SECONDS)
+            Log.d(TAG, "Negotiated MTU: ${mtu ?: "timeout"}")
+        } else {
+            Log.w(TAG, "MTU request not started; using the default MTU")
+        }
+        gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+
         Log.d(TAG, "GATT ready — fromradio and toradio found")
         linkUp = true
         val result = JSObject()
@@ -915,6 +937,22 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
         } catch (e: Exception) {
             invoke.reject("unwrapSecret failed: ${e.javaClass.simpleName}")
         }
+    }
+
+    // ── Connection interval ─────────────────────────────────────
+
+    @SuppressLint("MissingPermission")
+    @Command
+    fun setLinkPriority(invoke: Invoke) {
+        val gatt = bluetoothGatt
+        if (gatt != null && linkUp && sessionMatches(invoke)) {
+            val high = invoke.getArgs().optBoolean("high", false)
+            gatt.requestConnectionPriority(
+                if (high) BluetoothGatt.CONNECTION_PRIORITY_HIGH
+                else BluetoothGatt.CONNECTION_PRIORITY_BALANCED
+            )
+        }
+        invoke.resolve()
     }
 
     // ── Background service (ADR-001 §6 gate) ────────────────────
