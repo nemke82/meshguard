@@ -2161,7 +2161,11 @@ async function ensureTermsAccepted() {
   }
   if (accepted) return;
   const overlay = $("#terms-overlay");
+  const app = $("#app");
+  // Nothing behind the terms can be focused or used until they are accepted.
+  app.inert = true;
   overlay.style.display = "flex";
+  $("#terms-accept").focus();
   await new Promise((resolve) => {
     $("#terms-accept").addEventListener(
       "click",
@@ -2172,6 +2176,7 @@ async function ensureTermsAccepted() {
           console.error("Could not save terms acceptance:", err);
         }
         overlay.style.display = "none";
+        app.inert = false;
         resolve();
       },
       { once: true }

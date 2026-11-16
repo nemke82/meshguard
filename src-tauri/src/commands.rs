@@ -614,17 +614,37 @@ pub async fn block_node(
     node_num: u32,
     state: State<'_, AppState>,
 ) -> Result<Vec<BlockedNode>, MeshGuardError> {
+    // Serialized with pairing: a pairing in progress cannot re-add the
+    // contact or its key after the block.
+    let _pairing = PAIRING.lock().await;
     let blocked = {
         let mut engine = state.engine();
         let name = engine
             .peer_title(node_num)
             .or_else(|| engine.node_name(node_num))
             .unwrap_or_else(|| format!("!{node_num:08x}"));
+        // Restored if the block cannot be saved.
+        let prev_config = engine.config.clone();
+        let prev_key = engine.keys.get(&node_num).map(key_copy);
+        let prev_request = engine.pending_pair_requests.get(&node_num).cloned();
         engine.block_node(node_num, name, chrono::Utc::now().timestamp());
-        engine.config.save(&state.config_dir)?;
+        if let Err(e) = engine.config.save(&state.config_dir) {
+            engine.config = prev_config;
+            if let Some(key) = prev_key {
+                engine.keys.insert(node_num, key);
+            }
+            if let Some(req) = prev_request {
+                engine.pending_pair_requests.insert(node_num, req);
+            }
+            return Err(e);
+        }
         engine.config.blocked.clone()
     };
-    crate::key_store::remove_peer(&state.config_dir, node_num)?;
+    // The block is saved; a remembered key left behind is never used for a
+    // blocked node, so this is not an error for the user.
+    if let Err(e) = crate::key_store::remove_peer(&state.config_dir, node_num) {
+        tracing::warn!("Blocked node {node_num}, but its remembered key was not removed: {e}");
+    }
     tracing::info!("Blocked node {node_num}");
     Ok(blocked)
 }
@@ -636,8 +656,12 @@ pub async fn unblock_node(
     state: State<'_, AppState>,
 ) -> Result<Vec<BlockedNode>, MeshGuardError> {
     let mut engine = state.engine();
+    let prev = engine.config.blocked.clone();
     if engine.unblock_node(node_num) {
-        engine.config.save(&state.config_dir)?;
+        if let Err(e) = engine.config.save(&state.config_dir) {
+            engine.config.blocked = prev; // still blocked, as the UI shows
+            return Err(e);
+        }
     }
     Ok(engine.config.blocked.clone())
 }
@@ -656,8 +680,12 @@ pub async fn terms_accepted(state: State<'_, AppState>) -> Result<bool, MeshGuar
 #[tauri::command]
 pub async fn accept_terms(state: State<'_, AppState>) -> Result<(), MeshGuardError> {
     let mut engine = state.engine();
+    let prev = engine.config.terms_accepted;
     engine.config.terms_accepted = crate::device_config::TERMS_VERSION;
-    engine.config.save(&state.config_dir)?;
+    if let Err(e) = engine.config.save(&state.config_dir) {
+        engine.config.terms_accepted = prev;
+        return Err(e);
+    }
     Ok(())
 }
 
@@ -1091,6 +1119,11 @@ pub(crate) async fn try_accept_qr(app: &tauri::AppHandle, from_node: u32, frame:
     };
     if offer.offer.code().node != my_num || from_node == my_num {
         return false; // offer from another radio, or a loop
+    }
+    // Blocked after this frame was received (the listener filters earlier
+    // ones): ignore it.
+    if state.engine().config.is_blocked(from_node) {
+        return true;
     }
     let Ok(request_key) = offer.offer.code().request_key(from_node) else {
         return false;

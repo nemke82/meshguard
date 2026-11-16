@@ -448,6 +448,10 @@ impl Engine {
     /// to rate limits, tell the user. Rate limiting stops unknown nodes on
     /// a public channel from flooding the user with notifications.
     pub fn note_pair_request(&mut self, from_node: u32, payload: Vec<u8>, now: u64) -> Vec<Action> {
+        // Blocked between receiving the frame and handling it.
+        if self.config.is_blocked(from_node) {
+            return Vec::new();
+        }
         self.pending_pair_requests.insert(from_node, payload);
         let allowed = self
             .protection
