@@ -234,21 +234,32 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
     private val servicesQueue = LinkedBlockingQueue<Int>(1)
     private val readQueue = LinkedBlockingQueue<ByteArray>(1)
     private val writeQueue = LinkedBlockingQueue<Int>(1)
+    private val mtuQueue = LinkedBlockingQueue<Int>(1)
+    private val linkLock = Any()
 
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             if (isRetired(gatt)) return
             Log.d(TAG, "GATT state: $newState (status=$status)")
-            if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                linkUp = false
+            // Under linkLock so connectDevice's ready check cannot interleave.
+            synchronized(linkLock) {
+                if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                    linkUp = false
+                }
+                connectQueue.offer(newState)
             }
-            connectQueue.offer(newState)
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             if (isRetired(gatt)) return
             Log.d(TAG, "Services discovered: status=$status")
             servicesQueue.offer(status)
+        }
+
+        override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+            if (isRetired(gatt)) return
+            Log.d(TAG, "MTU changed: $mtu (status=$status)")
+            mtuQueue.offer(if (status == BluetoothGatt.GATT_SUCCESS) mtu else -1)
         }
 
         override fun onCharacteristicRead(
@@ -798,8 +809,35 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
             return
         }
 
+        // Speed up the config download (every node in the radio's NodeDB is
+        // one FromRadio read). At the default 23-byte MTU each packet larger
+        // than 22 bytes needs several long-read round trips; a large MTU
+        // fetches it in one read. A short connection interval shortens each
+        // round trip; Rust relaxes it again once the config is loaded
+        // (setLinkPriority). Both are best effort: older radios still work.
+        mtuQueue.clear()
+        if (gatt.requestMtu(517)) {
+            val mtu = mtuQueue.poll(5, TimeUnit.SECONDS)
+            Log.d(TAG, "Negotiated MTU: ${mtu ?: "timeout"}")
+        } else {
+            Log.w(TAG, "MTU request not started; using the default MTU")
+        }
+        gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+
+        // The link may have dropped during discovery or the MTU wait; that
+        // callback queued STATE_DISCONNECTED. Check and mark ready atomically
+        // with respect to the callback.
+        val lost = synchronized(linkLock) {
+            val dropped = connectQueue.peek() == BluetoothProfile.STATE_DISCONNECTED
+            if (!dropped) linkUp = true
+            dropped
+        }
+        if (lost) {
+            closeGatt()
+            invoke.reject("GATT connection lost during setup")
+            return
+        }
         Log.d(TAG, "GATT ready — fromradio and toradio found")
-        linkUp = true
         val result = JSObject()
         result.put("success", true)
         result.put("session", session)
@@ -915,6 +953,22 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
         } catch (e: Exception) {
             invoke.reject("unwrapSecret failed: ${e.javaClass.simpleName}")
         }
+    }
+
+    // ── Connection interval ─────────────────────────────────────
+
+    @SuppressLint("MissingPermission")
+    @Command
+    fun setLinkPriority(invoke: Invoke) {
+        val gatt = bluetoothGatt
+        if (gatt != null && linkUp && sessionMatches(invoke)) {
+            val high = invoke.getArgs().optBoolean("high", false)
+            gatt.requestConnectionPriority(
+                if (high) BluetoothGatt.CONNECTION_PRIORITY_HIGH
+                else BluetoothGatt.CONNECTION_PRIORITY_BALANCED
+            )
+        }
+        invoke.resolve()
     }
 
     // ── Back on the first screen: behave like Home ──────────────

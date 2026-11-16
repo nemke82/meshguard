@@ -492,7 +492,7 @@ async fn build_android_ble_stream(
     address: &str,
     pin: u32,
     allow_bond: bool,
-) -> Result<StreamHandle<DuplexStream>, MeshGuardError> {
+) -> Result<(StreamHandle<DuplexStream>, i64), MeshGuardError> {
     use base64::Engine;
     use tauri::Manager;
 
@@ -641,10 +641,33 @@ async fn build_android_ble_stream(
         Ok::<(), meshtastic::errors::Error>(())
     });
 
-    Ok(StreamHandle {
-        stream: client,
-        join_handle: Some(handle),
+    Ok((
+        StreamHandle {
+            stream: client,
+            join_handle: Some(handle),
+        },
+        session,
+    ))
+}
+
+/// The config download is done: leave the fast BLE connection interval
+/// requested by `connectDevice`, which costs the radio's battery. Only
+/// touches the GATT connection of `session`.
+#[cfg(target_os = "android")]
+async fn relax_android_ble_link(app_handle: &tauri::AppHandle, session: i64) {
+    let app = app_handle.clone();
+    let res = tokio::task::spawn_blocking(move || {
+        use tauri::Manager;
+        let state = app.state::<crate::ble_plugin::BlePluginState<tauri::Wry>>();
+        state.0.run_mobile_plugin::<serde_json::Value>(
+            "setLinkPriority",
+            serde_json::json!({ "high": false, "session": session }),
+        )
     })
+    .await;
+    if let Ok(Err(e)) = res {
+        tracing::debug!("BLE link priority not changed: {e}");
+    }
 }
 
 // ── PacketRouter ──────────────────────────────────────────────
@@ -881,20 +904,23 @@ impl MeshRadio {
     ) -> Result<Self, MeshGuardError> {
         emit_connection_state(&p.app_handle, "connecting");
 
-        let ble_stream = {
+        // `android_session`: the GATT session, to relax the link after config.
+        let (ble_stream, android_session) = {
             #[cfg(target_os = "android")]
             {
                 let address = ble_address.ok_or_else(|| {
                     MeshGuardError::Ble("Device address required for Android BLE".into())
                 })?;
-                build_android_ble_stream(&p.app_handle, &address, pin, allow_bond).await?
+                let (stream, session) =
+                    build_android_ble_stream(&p.app_handle, &address, pin, allow_bond).await?;
+                (stream, Some(session))
             }
             #[cfg(not(target_os = "android"))]
             {
                 // Desktop pairing uses the PIN agent, never an interactive dialog.
                 let _ = (ble_address, allow_bond);
                 stop_any_active_scan().await?;
-                build_polling_ble_stream(ble_name, pin).await?
+                (build_polling_ble_stream(ble_name, pin).await?, None::<i64>)
             }
         };
 
@@ -909,6 +935,13 @@ impl MeshRadio {
 
         let (node_num, configured_api) =
             run_config_and_listen(configured_api, &mut decoded_listener, &p).await?;
+
+        #[cfg(target_os = "android")]
+        if let Some(session) = android_session {
+            relax_android_ble_link(&p.app_handle, session).await;
+        }
+        #[cfg(not(target_os = "android"))]
+        let _ = android_session;
 
         crate::key_store::prepare_for_radio(&p, node_num).await;
         spawn_listener(decoded_listener, ListenerCtx::new(&p, node_num));
