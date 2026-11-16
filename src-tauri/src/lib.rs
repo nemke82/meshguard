@@ -26,9 +26,6 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(ble_plugin::init());
-    // Camera QR scanning for offline pairing (Android/iOS only).
-    #[cfg(mobile)]
-    let builder = builder.plugin(tauri_plugin_barcode_scanner::init());
 
     builder
         .setup(|app| {

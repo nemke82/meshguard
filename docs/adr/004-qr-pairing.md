@@ -37,10 +37,12 @@ known yet or changed.
 7. Pairing operations (passphrase, QR scan, QR accept) run one at a time,
    and saving a contact is transactional, so a failure never leaves a
    half-paired contact or a lost previous key.
-6. **Camera** use is only to read the code (Tauri barcode-scanner plugin,
-   mobile only), with the **bundled** ML Kit model, so scanning works
-   offline and without Google Play Services. No image is stored. Typing
-   the code is always possible.
+6. **Camera** use is only to read the code, mobile only. The page opens the
+   camera itself (`getUserMedia`; the WebView asks for the permission) and
+   decodes frames with jsQR, so scanning works offline, without Google Play
+   Services, and without a native camera view. No image is stored. Typing
+   the code is always possible. (Until 2026-11-16 this used the Tauri
+   barcode-scanner plugin, which closed the app on some phones.)
 
 ## Consequences
 

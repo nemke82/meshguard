@@ -12,6 +12,9 @@ Versions are dates (`vYYYY.MM.DD`). Each release on [GitHub Releases](https://gi
 ### Changed
 - "Notification Settings" is now **Settings**.
 
+### Fixed
+- **Scan code no longer closes the app (Android).** The camera now runs inside the app page, which decodes the QR code itself. The native scanner plugin it replaces closed the app on some phones. Cancel, Type code and Back work as before.
+
 ## v2026.11.16
 
 Message history, a resend queue, and the first piece of the Android background service.

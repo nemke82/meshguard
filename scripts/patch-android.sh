@@ -34,30 +34,20 @@ else
   echo "  -> BLE permissions already present"
 fi
 
+# Camera for scanning pairing QR codes. The page scans by itself
+# (getUserMedia + jsQR); the WebView asks for this permission when the
+# camera is opened. Not required: phones without a camera type the code.
+if ! grep -q "android.permission.CAMERA" "$MANIFEST"; then
+  sed -i 's|<application|<uses-permission android:name="android.permission.CAMERA" />\
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />\
+    \n    <application|' "$MANIFEST"
+  echo "  -> Camera permission added"
+fi
+
 # Keep peer records and settings out of Android cloud backups.
 if ! grep -q 'android:allowBackup' "$MANIFEST"; then
   sed -i 's|<application|<application android:allowBackup="false"|' "$MANIFEST"
   echo "  -> Auto Backup disabled"
-fi
-
-# Use the bundled ML Kit barcode model instead of the Play Services one
-# that the barcode-scanner plugin pulls in: the latter downloads its model
-# on first use (fails offline) and needs Google Play Services, which many
-# privacy-focused phones do not have. Same API, larger APK.
-APP_GRADLE="$ANDROID_DIR/app/build.gradle.kts"
-if [ -f "$APP_GRADLE" ] && ! grep -q "com.google.mlkit:barcode-scanning:" "$APP_GRADLE"; then
-  cat >> "$APP_GRADLE" << 'GRADLE'
-
-// Add the bundled model next to the plugin's Play Services artifact. Do not
-// exclude play-services-mlkit-barcode-scanning: it holds the shared API
-// classes (BarcodeScanning, BarcodeScanner, ...) and the bundled artifact
-// depends on it itself. With the bundled AAR present, ML Kit uses its
-// embedded models and never downloads one.
-dependencies {
-    implementation("com.google.mlkit:barcode-scanning:17.3.0")
-}
-GRADLE
-  echo "  -> Bundled ML Kit barcode model"
 fi
 
 # ── 2. MainActivity — runtime permission request ─────────────────
