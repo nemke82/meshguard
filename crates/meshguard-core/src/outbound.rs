@@ -21,6 +21,9 @@ pub const PAIRING_TTL_MINS: u16 = 30;
 pub const STATUS_TTL_MINS: u16 = 60;
 /// SOS and "need help" stay valid longer, so a late relay still delivers.
 pub const URGENT_STATUS_TTL_MINS: u16 = 6 * 60;
+/// Lifetime of relay control messages (offer/accept/revoke), in minutes.
+/// Retries reuse the id and stay within it (ADR-006 §4).
+pub const RELAY_CONTROL_TTL_MINS: u16 = 24 * 60;
 
 /// Wire protocol spoken with a peer. Pins both send and minimum receive
 /// version (ADR-003 §3).
@@ -191,18 +194,78 @@ pub fn seal_caps(
     now: u32,
     budget: usize,
 ) -> Result<Sealed, SealError> {
+    seal_caps_body(
+        crate::status::encode_caps(features),
+        key,
+        me,
+        peer,
+        now,
+        budget,
+    )
+}
+
+/// Like [`seal_caps`], also asking the peer to announce its features back
+/// (ADR-006 §4).
+pub fn seal_caps_request(
+    features: u32,
+    key: &SessionKey,
+    me: &PeerIdentity,
+    peer: &PeerIdentity,
+    now: u32,
+    budget: usize,
+) -> Result<Sealed, SealError> {
+    seal_caps_body(
+        crate::status::encode_caps_request(features),
+        key,
+        me,
+        peer,
+        now,
+        budget,
+    )
+}
+
+fn seal_caps_body(
+    body: Vec<u8>,
+    key: &SessionKey,
+    me: &PeerIdentity,
+    peer: &PeerIdentity,
+    now: u32,
+    budget: usize,
+) -> Result<Sealed, SealError> {
     let env = EnvelopeV2 {
         message_type: MessageType::Caps,
         message_id: MessageId::random(),
         created_at: now,
         ttl_mins: STATUS_TTL_MINS,
-        body: crate::status::encode_caps(features),
+        body,
     };
     let frame = env.seal(key, &aad_context(me, peer), budget)?;
     Ok(Sealed {
         frame,
         message_id: Some(env.message_id),
     })
+}
+
+/// Seal a relay control message (always v2) under `message_id`, which a
+/// retry reuses so the receiver deduplicates it; `created_at` is the first
+/// attempt's time, so retries stay within the original TTL.
+pub fn seal_relay(
+    control: &crate::relay::RelayControl,
+    message_id: MessageId,
+    key: &SessionKey,
+    me: &PeerIdentity,
+    peer: &PeerIdentity,
+    created_at: u32,
+    budget: usize,
+) -> Result<Vec<u8>, SealError> {
+    let env = EnvelopeV2 {
+        message_type: control.message_type(),
+        message_id,
+        created_at,
+        ttl_mins: RELAY_CONTROL_TTL_MINS,
+        body: control.encode().map_err(|_| SealError::InvalidBody)?,
+    };
+    env.seal(key, &aad_context(me, peer), budget)
 }
 
 /// Seal an application ACK for `acked`, from `me` to `peer` (always v2).

@@ -20,14 +20,30 @@ pub const FEATURE_STATUS: u32 = 1 << 0;
 /// Features this build supports (announced in `Caps`).
 pub const SUPPORTED_FEATURES: u32 = FEATURE_STATUS;
 
+/// `Caps` flag: "please send your `Caps` back" (ADR-006 §4). Older builds
+/// ignore the trailing byte.
+pub const CAPS_REPLY: u8 = 0x01;
+
 /// Encode a `Caps` body. Longer bodies are allowed for future fields.
 pub fn encode_caps(features: u32) -> Vec<u8> {
     features.to_be_bytes().to_vec()
 }
 
+/// Encode a `Caps` body that asks the peer to announce its own features.
+pub fn encode_caps_request(features: u32) -> Vec<u8> {
+    let mut b = encode_caps(features);
+    b.push(CAPS_REPLY);
+    b
+}
+
 /// Decode a `Caps` body (extra trailing bytes are ignored).
 pub fn decode_caps(body: &[u8]) -> Option<u32> {
     Some(u32::from_be_bytes(body.get(..4)?.try_into().ok()?))
+}
+
+/// Whether a `Caps` body asks for the receiver's `Caps` in return.
+pub fn caps_reply_requested(body: &[u8]) -> bool {
+    body.get(4).is_some_and(|f| f & CAPS_REPLY != 0)
 }
 
 const HAS_LOCATION: u8 = 0x01;

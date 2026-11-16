@@ -164,7 +164,10 @@ impl SimPeer {
                 MessageType::PairRequest
                 | MessageType::PairAccept
                 | MessageType::Status
-                | MessageType::Caps => {}
+                | MessageType::Caps
+                | MessageType::RelayOffer
+                | MessageType::RelayAccept
+                | MessageType::RelayRevoke => {}
             }
         }
     }

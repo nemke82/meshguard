@@ -384,7 +384,7 @@ impl Engine {
                 })));
                 self.ack(from_node, ack, now, actions);
             }
-            Inbound::Caps { features, ack } => {
+            Inbound::Caps { features, ack, .. } => {
                 tracing::info!("Node {from_node} announced features {features:#x}");
                 self.mark_features(from_node, features & SUPPORTED_FEATURES);
                 self.ack(from_node, ack, now, actions);
@@ -428,6 +428,11 @@ impl Engine {
                 tracing::info!(
                     "Pair request ({version:?}) from node {from_node} — already have key"
                 );
+            }
+            Inbound::Relay { .. } => {
+                // This build does not announce FEATURE_RELAY yet, so peers do
+                // not send these; ignored unacknowledged (ADR-006 P2).
+                tracing::info!("Relay control message from {from_node} ignored");
             }
             Inbound::Dropped(reason) => {
                 tracing::info!("Dropped frame from {from_node}: {reason:?}");
