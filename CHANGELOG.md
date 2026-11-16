@@ -7,6 +7,7 @@ Versions are dates (`vYYYY.MM.DD`). Each release on [GitHub Releases](https://gi
 ### Added
 - **Terms of use.** The app shows the terms once before first use (no threats, harassment, sexual content involving minors, spam, impersonation, false SOS, or anything illegal). Full text at [meshguard.net/terms](https://www.meshguard.net/terms).
 - **Block a node.** From the chat, a chat request or the node's details. A blocked node is removed as a contact, and its messages, chat requests, check-ins, SOS alerts and QR pairing requests are ignored. **Settings → Blocked nodes** lists them with **Unblock**.
+- **Report a node.** From the chat or the node's details: opens a public report form on GitHub with the node filled in. Nothing is sent until you submit it, and messages are never copied into it.
 
 ### Changed
 - "Notification Settings" is now **Settings**.

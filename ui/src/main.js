@@ -2134,6 +2134,43 @@ async function unblockNode(nodeNum) {
   if (state.meshNodes.length) renderMeshNodes();
 }
 
+// Reports go to a public GitHub issue form (there is no MeshGuard server).
+// Only the node is filled in; the user writes the rest, so no message text
+// leaves the device unless they choose to type it.
+const REPORT_URL = "https://github.com/nemke82/meshguard/issues/new";
+
+function reportNode(nodeNum, name) {
+  if (nodeNum == null) return;
+  const id = "!" + (nodeNum >>> 0).toString(16).padStart(8, "0");
+  const label = name && name !== id ? `${name} (${id})` : id;
+  if (
+    !confirm(
+      `Report ${label}?\n\nThis opens a report form on GitHub in your browser. Reports are public: ` +
+        "do not include your name, location or private messages. The developers cannot read messages or ban a radio. " +
+        "To stop this node reaching you, block it. For threats or illegal content, contact your local police."
+    )
+  )
+    return;
+  const params = new URLSearchParams({
+    template: "abuse-report.yml",
+    title: `Report: node ${id}`,
+    node: label,
+  });
+  const url = `${REPORT_URL}?${params}`;
+  const shell = window.__TAURI__ && window.__TAURI__.shell;
+  if (shell && shell.open) {
+    shell.open(url).catch((err) => alert("Could not open the report form: " + err));
+  } else {
+    window.open(url, "_blank", "noopener");
+  }
+}
+
+$("#btn-report-chat").addEventListener("click", () =>
+  reportNode(state.activePeerNodeNum, chatPeerName.textContent)
+);
+
+$("#diag-report").addEventListener("click", () => reportNode(diag.node, $("#diag-title").textContent));
+
 $("#btn-block-chat").addEventListener("click", () =>
   blockNode(state.activePeerNodeNum, chatPeerName.textContent)
 );
@@ -2143,7 +2180,7 @@ $("#diag-block").addEventListener("click", async () => {
   if (nodeNum == null) return;
   if (isBlocked(nodeNum)) {
     await unblockNode(nodeNum);
-    $("#diag-block").textContent = "Block this node";
+    $("#diag-block").textContent = "Block";
   } else {
     await blockNode(nodeNum, $("#diag-title").textContent);
   }
@@ -2280,7 +2317,7 @@ async function openDiagnostics(nodeNum) {
   ].join("");
   $("#diag-path").textContent = "Sends a Meshtastic traceroute and shows each hop with its SNR.";
   $("#diag-run-path").disabled = false;
-  $("#diag-block").textContent = isBlocked(nodeNum) ? "Unblock this node" : "Block this node";
+  $("#diag-block").textContent = isBlocked(nodeNum) ? "Unblock" : "Block";
   diagOverlay.style.display = "flex";
   $("#diag-chart").textContent = "Loading…";
   try {

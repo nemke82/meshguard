@@ -1,0 +1,49 @@
+name: Report abuse
+description: Report a Meshtastic node that sent abusive or illegal content through MeshGuard.
+title: "Report: node "
+labels: ["abuse-report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **This report is public.** Anyone can read it. Do not include your own name, phone number, location, or private messages you do not want published.
+
+        MeshGuard has no server. The developers cannot read messages, identify who owns a radio, or ban a radio from the mesh. Reports help us track abuse and improve the app's protections.
+
+        - To stop the node reaching you, **block it** in the app (chat header, chat request, or node details).
+        - For threats, child sexual abuse material or other illegal content, **contact your local police**. Do not post illegal content here.
+  - type: input
+    id: node
+    attributes:
+      label: Node
+      description: The node number (for example !abcd1234) and name shown in MeshGuard.
+    validations:
+      required: true
+  - type: dropdown
+    id: category
+    attributes:
+      label: What kind of abuse?
+      options:
+        - Threats or harassment
+        - Hate speech
+        - Sexual content
+        - Spam or scam
+        - Impersonation
+        - False SOS or help alerts
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: What happened?
+      description: Describe it in your own words. Do not paste illegal content.
+    validations:
+      required: true
+  - type: checkboxes
+    id: public
+    attributes:
+      label: Confirmation
+      options:
+        - label: I understand this report is public and contains no personal information I want to keep private.
+          required: true
