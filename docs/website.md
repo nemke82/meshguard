@@ -24,6 +24,7 @@ The header and footer are repeated in every page. When you change the navigation
 - Light by default. Dark is opt-in: the moon button saves `meshguard-theme = dark` in local storage. `js/theme.js` runs in `<head>` before the page paints, so there is no flash of the wrong theme.
 - Colours are tokens at the top of `css/site.css` (`--color-bg`, `--color-surface`, `--color-primary`, `--color-text`, `--color-border`, `--color-muted`, and a few more). Dark mode only redefines the tokens under `:root[data-theme="dark"]`.
 - Text contrast meets WCAG AA in both themes. `--color-primary-on-soft` exists because the brand green is just under 4.5:1 on the soft green background.
+- Brand: the shield-and-nodes mark from the media starter pack. It is inline in the header and footer, and `favicon.svg`, `favicon-32.png` and `apple-touch-icon.png` are built from it. `og-image.jpg` (1200×630) is the link preview. The source SVGs, including the horizontal and white logos, are in `brand/`.
 - Fonts: DM Sans for text, JetBrains Mono for codes, commands and node IDs (Google Fonts, as noted in the privacy policy).
 - No tracking, no third-party scripts. The pages work without JavaScript; the menu then wraps under the logo.
 - Status badges always carry text (Available, New, In development, Planned), never colour alone.
@@ -42,7 +43,7 @@ The Android **IzzyOnDroid** listing is not live yet, so the site does not link t
 
 ## Guide images
 
-The guide uses generated app illustrations from the updated media starter pack (`media/guide/*.webp`, 640 px wide, about 40 KB each). They are **not captures of the release**: the UI, labels and some values differ from the real app. Each one is captioned with an *Illustration* tag and "Not a screenshot of the app". Where the picture contradicts the app, the caption gives the correct fact. The guide text is the source of truth.
+The guide (and, for pairing and delivery, How It Works) uses generated app illustrations from the updated media starter pack (`media/guide/*.webp`, 640 px wide, about 40 KB each). They are **not captures of the release**: the UI, labels and some values differ from the real app. Each one is captioned with an *Illustration* tag and "Not a screenshot of the app". Where the picture contradicts the app, the caption gives the correct fact. The guide text is the source of truth.
 
 | Image | Step | Known differences, corrected in the caption |
 |-------|------|------|

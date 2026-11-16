@@ -13,19 +13,26 @@
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://meshguard.net/how-it-works">
   <meta property="og:site_name" content="MeshGuard">
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23087f5b' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 2L2 7l10 5 10-5-10-5z'/%3E%3Cpath d='M2 17l10 5 10-5'/%3E%3Cpath d='M2 12l10 5 10-5'/%3E%3C/svg%3E">
-  <script src="/js/theme.js?v=2026.11.16d"></script>
+  <meta property="og:image" content="https://meshguard.net/og-image.jpg">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="MeshGuard logo: private messaging beyond the internet">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <script src="/js/theme.js?v=2026.11.16e"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/css/site.css?v=2026.11.16d">
+  <link rel="stylesheet" href="/css/site.css?v=2026.11.16e">
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
   <header class="site-header">
     <div class="container">
       <nav class="nav" aria-label="Main">
-        <a class="brand" href="/"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>MeshGuard</a>
+        <a class="brand" href="/"><svg class="brand-mark" width="26" height="30" viewBox="44 19 168 225" aria-hidden="true" focusable="false"><path d="M128 23 208 55v64c0 59-34 100-80 121-46-21-80-62-80-121V55z" fill="#087F5B"/><path d="M85 151 110 106 146 133 174 93" fill="none" stroke="#fff" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/><circle cx="85" cy="151" r="12" fill="#fff"/><circle cx="110" cy="106" r="12" fill="#fff"/><circle cx="146" cy="133" r="12" fill="#fff"/><circle cx="174" cy="93" r="12" fill="#fff"/></svg>MeshGuard</a>
         <ul class="nav-menu" id="nav-menu">
           <li><a href="/how-it-works" aria-current="page">How It Works</a></li>
           <li><a href="/getting-started">Getting Started</a></li>
@@ -119,6 +126,16 @@
             <p>Your radio also encrypts packets with its channel key. Everyone on the same channel shares that key, and the default channel key is publicly known. It keeps casual listeners out, but it is not what keeps your conversation private &mdash; MeshGuard&rsquo;s own encryption does that.</p>
           </div>
         </div>
+        <div class="shot-pair">
+          <figure class="shot shot-img">
+            <img src="/media/guide/04-contact-invite-qr.webp" width="640" height="1138" alt="Illustration: phone A showing a pairing QR code under Add a family member" loading="lazy" decoding="async">
+            <figcaption><span class="mock-tag">Illustration</span> Not a screenshot of the app, so details may differ. The QR code is a non-working demo.</figcaption>
+          </figure>
+          <figure class="shot shot-img">
+            <img src="/media/guide/05-scan-contact-qr.webp" width="640" height="1138" alt="Illustration: phone B pointing its camera at phone A&rsquo;s QR code" loading="lazy" decoding="async">
+            <figcaption><span class="mock-tag">Illustration</span> Not a screenshot of the app, so details may differ. Scanning in person is how the conversation key is shared; it never goes over the air.</figcaption>
+          </figure>
+        </div>
         <div class="note"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg><div><p><strong>What others can still see.</strong> Like any radio transmission, Meshtastic packets reveal metadata to radios in range: node numbers, when a packet was sent, its size and signal strength. MeshGuard hides what you say, not that your radio is transmitting. It does not make you anonymous.</p></div></div>
       </div>
     </section>
@@ -133,6 +150,10 @@
           <li><span class="sym" aria-hidden="true">&#10003;&#10003;</span><div><strong>Delivered</strong><br>Your contact&rsquo;s MeshGuard received and decrypted it, and sent back an encrypted confirmation. Only in MeshGuard 2.0 mode.</div></li>
           <li><span class="sym" aria-hidden="true">&#9888;</span><div><strong>Not delivered</strong><br>MeshGuard stopped trying: no confirmation came back after its last attempt, or the message reached the end of its lifetime.</div></li>
         </ul>
+        <figure class="shot shot-img">
+            <img src="/media/guide/07-message-delivery-ack.webp" width="640" height="1138" alt="Illustration: a conversation with sent and received messages and their delivery marks" loading="lazy" decoding="async">
+            <figcaption><span class="mock-tag">Illustration</span> Not a screenshot of the app, so details may differ. The app marks delivery with &#10003; and &#10003;&#10003;.</figcaption>
+          </figure>
         <p>A message can stay at one tick for a while: the confirmation has to travel back over the same mesh. See <a href="/faq#delivery">the FAQ</a> for what to check.</p>
       </div>
     </section>
@@ -163,7 +184,7 @@
     <div class="container">
       <div class="footer-grid">
         <div class="footer-about">
-          <a class="brand" href="/"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>MeshGuard</a>
+          <a class="brand" href="/"><svg class="brand-mark" width="26" height="30" viewBox="44 19 168 225" aria-hidden="true" focusable="false"><path d="M128 23 208 55v64c0 59-34 100-80 121-46-21-80-62-80-121V55z" fill="#087F5B"/><path d="M85 151 110 106 146 133 174 93" fill="none" stroke="#fff" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/><circle cx="85" cy="151" r="12" fill="#fff"/><circle cx="110" cy="106" r="12" fill="#fff"/><circle cx="146" cy="133" r="12" fill="#fff"/><circle cx="174" cy="93" r="12" fill="#fff"/></svg>MeshGuard</a>
           <p>Free, open-source, privacy-first messaging for Meshtastic LoRa radios. No account, no servers.</p>
         </div>
         <div>
@@ -201,6 +222,6 @@
     </div>
   </footer>
 
-  <script src="/js/site.js?v=2026.11.16d" defer></script>
+  <script src="/js/site.js?v=2026.11.16e" defer></script>
 </body>
 </html>
