@@ -34,6 +34,53 @@
     });
   }
 
+  // Decorative animations: silent loops that play only while on screen. They
+  // stay paused for visitors who ask for reduced motion or to save data, and
+  // the button pauses or plays them (WCAG 2.2.2).
+  var reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var saveData = !!(navigator.connection && navigator.connection.saveData);
+  Array.prototype.forEach.call(document.querySelectorAll(".media-video"), function (fig) {
+    var video = fig.querySelector("video");
+    var btn = fig.querySelector(".video-toggle");
+    if (!video || !btn) return;
+    var label = btn.getAttribute("aria-label").replace(/^Play /, "");
+    var wanted = !(reduce || saveData);
+    var visible = false;
+
+    function sync() {
+      var playing = !video.paused;
+      fig.classList.toggle("is-playing", playing);
+      btn.setAttribute("aria-label", (playing ? "Pause " : "Play ") + label);
+    }
+    function update() {
+      if (wanted && visible) {
+        var p = video.play();
+        if (p && p.catch) p.catch(function () {});
+      } else if (!video.paused) {
+        video.pause();
+      }
+    }
+
+    video.addEventListener("play", sync);
+    video.addEventListener("pause", sync);
+    btn.hidden = false;
+    btn.addEventListener("click", function () {
+      wanted = video.paused;
+      if (wanted) visible = true;
+      update();
+    });
+
+    if ("IntersectionObserver" in window) {
+      new IntersectionObserver(function (entries) {
+        visible = entries[0].isIntersecting;
+        update();
+      }, { threshold: 0.25 }).observe(video);
+    } else {
+      visible = true;
+      update();
+    }
+  });
+
   // Mobile menu
   var menuBtn = document.getElementById("menu-toggle");
   var menu = document.getElementById("nav-menu");

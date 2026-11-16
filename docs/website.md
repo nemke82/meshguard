@@ -55,7 +55,22 @@ The guide shows labelled placeholders (`.shot` figures) where real screenshots g
 | `getting-started/d-conversation.png` | A conversation with two messages and ✓✓ |
 | `getting-started/e-checkin.png` | Check-in buttons, and the diagnostics sheet |
 
-The home page has no app screenshot yet; it uses the radio-path illustration instead. Add a real one beside it once captured.
+The home page has no app screenshot yet. Add a real one once captured.
+
+The SVG "screenshots" and feature cards in the 16 November 2026 media starter pack are not used: the screenshots are labelled frames that say a real capture is required, and the feature cards bake text into the image. Real captures replace the placeholders above.
+
+## Animations
+
+Two short HeyGen clips sit in `media/`. Both are decorative, never shown as app behaviour, and captioned as illustrations.
+
+| File | Where | What it shows |
+|------|-------|---------------|
+| `media/hero.mp4`, `media/hero-poster.jpg` | Home hero | A phone and a radio on a ridge, linked to a second pair |
+| `media/how.mp4`, `media/how-poster.jpg` | How It Works, beside the message path | A message hopping between radios over terrain |
+
+- Re-encoded from the HeyGen downloads: audio removed, 1280 px wide, H.264, `+faststart` (about 1.8 MB and 0.4 MB). Keep new clips that small.
+- Copy the `<figure class="media-video">` markup from `index.html`: `muted loop playsinline preload="none"`, `aria-hidden` on the `<video>`, a poster, a caption, and the pause button.
+- `js/site.js` plays a clip only while it is on screen. It stays paused (poster only) for visitors with reduced motion or Data Saver on, and without JavaScript. The button pauses or plays it (WCAG 2.2.2).
 
 ## Videos
 
