@@ -602,6 +602,10 @@ main {
   cursor: pointer;
 }
 
+.video-toggle[hidden] {
+  display: none;
+}
+
 .video-toggle:hover {
   background: rgba(10, 20, 17, 0.88);
 }
