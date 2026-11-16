@@ -1977,23 +1977,111 @@ $("#btn-scan-qr").addEventListener("click", async () => {
     openCodeEntry("This device has no camera scanner. Type the code shown on the other phone.");
     return;
   }
+  // Reserved before the first await: a second tap must not start another scan.
+  if (qrScan.active) return;
+  qrScan.active = true;
+  qrScan.cancelled = false;
+  qrScan.typeInstead = false;
+  let content = null;
   try {
     const perm = await invoke("plugin:barcode-scanner|request_permissions");
     if (perm && perm.camera && perm.camera !== "granted") {
       openCodeEntry("Camera permission was denied. You can type the code instead.");
       return;
     }
+    if (qrScan.cancelled) return; // Back while the permission dialog was up
+    // Windowed: the camera is drawn behind the page and our own controls
+    // (Cancel, Type code) stay on top. The full-screen mode covered the app
+    // with no way out but Back, which closed the app.
+    setScanUi(true);
     const result = await invoke("plugin:barcode-scanner|scan", {
-      windowed: false,
+      windowed: true,
       formats: ["QR_CODE"],
     });
-    const content = result && result.content;
-    if (content) await pairWithCode(content);
+    content = result && result.content;
   } catch (err) {
-    console.error("Scan failed:", err);
-    openCodeEntry("Scanning did not work (" + err + "). You can type the code instead.");
+    if (!qrScan.cancelled) {
+      console.error("Scan failed:", err);
+      openCodeEntry("Scanning did not work (" + err + "). You can type the code instead.");
+    }
+  } finally {
+    setScanUi(false);
   }
+  if (content) await pairWithCode(content);
+  else if (qrScan.typeInstead) openCodeEntry();
 });
+
+const qrScan = { active: false, cancelled: false, typeInstead: false };
+
+function setScanUi(on) {
+  qrScan.active = on;
+  document.documentElement.classList.toggle("qr-scanning", on);
+  $("#scan-ui").hidden = !on;
+}
+
+/** Stop the camera; the pending scan then rejects with "cancelled". */
+async function cancelScan(typeInstead = false) {
+  if (!qrScan.active) return;
+  qrScan.cancelled = true;
+  qrScan.typeInstead = typeInstead;
+  try {
+    await invoke("plugin:barcode-scanner|cancel");
+  } catch (err) {
+    console.error("Cancel scan failed:", err);
+    setScanUi(false);
+  }
+}
+
+$("#scan-ui-cancel").addEventListener("click", () => cancelScan());
+$("#scan-ui-type").addEventListener("click", () => cancelScan(true));
+
+// ============================================================
+// Android Back button
+// ============================================================
+// Without a listener, Tauri finishes the activity on Back, so Back on the QR
+// code, the camera or any sheet closed the whole app. Back now closes what
+// is on top, and on the first screen sends the app to the background.
+const BACK_CLOSERS = [
+  ["#sos-alert", "#sos-dismiss"],
+  ["#code-overlay", "#code-cancel"],
+  ["#qr-overlay", "#qr-done"],
+  ["#diag-overlay", "#diag-close"],
+  ["#presets-overlay", "#presets-close"],
+  ["#notif-settings-overlay", "#notif-settings-close"],
+];
+
+function handleBack() {
+  if (qrScan.active) {
+    cancelScan();
+    return;
+  }
+  for (const [overlay, closer] of BACK_CLOSERS) {
+    const el = $(overlay);
+    if (el && el.style.display !== "none") {
+      $(closer).click();
+      return;
+    }
+  }
+  if (screenChat.classList.contains("active")) {
+    btnBackMeshChat.click();
+    return;
+  }
+  if (screenPassphrase.classList.contains("active")) {
+    btnBackMesh.click();
+    return;
+  }
+  invoke("move_to_background").catch((err) => console.error("Back:", err));
+}
+
+async function setupBackButton() {
+  const app = window.__TAURI__ && window.__TAURI__.app;
+  if (!isMobile || !app || !app.onBackButtonPress) return;
+  try {
+    await app.onBackButtonPress(() => handleBack());
+  } catch (err) {
+    console.error("Back button handler not registered:", err);
+  }
+}
 
 // ============================================================
 // Mesh diagnostics
@@ -2170,6 +2258,7 @@ $("#diag-close").addEventListener("click", () => {
 // Init
 // ============================================================
 async function init() {
+  await setupBackButton();
   await setupEventListeners();
   await loadPresets();
 

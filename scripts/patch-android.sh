@@ -971,6 +971,14 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
         invoke.resolve()
     }
 
+    // ── Back on the first screen: behave like Home ──────────────
+
+    @Command
+    fun moveToBackground(invoke: Invoke) {
+        activity.runOnUiThread { activity.moveTaskToBack(true) }
+        invoke.resolve()
+    }
+
     // ── Background service (ADR-001 §6 gate) ────────────────────
 
     @Command
