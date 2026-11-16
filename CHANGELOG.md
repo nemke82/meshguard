@@ -19,6 +19,12 @@ Message history, a resend queue, and the first piece of the Android background s
 - With history on, an incoming 2.0 message that fails to save is not acknowledged, so the sender sends it again instead of thinking it was delivered.
 - A history file that cannot be read with this device's key is set aside (renamed), never deleted.
 
+### Fixed
+- **QR pairing no longer closes the app (Android).** The Back button now closes whatever is on top (the QR code, the camera, a sheet or the chat) instead of the whole app. On the first screen it sends the app to the background, so reopening is instant and the radio stays connected.
+- **Scanning a code has its own controls.** The camera shows **Cancel** and **Type code** buttons; before, the only way out was Back.
+- **"Loading mesh configuration" is much faster over Bluetooth (Android).** The app now asks the radio for large Bluetooth packets and a short connection interval while it loads the node list, then returns to the normal interval to save the radio's battery.
+- A Bluetooth connection that drops while it is being set up is reported as failed instead of looking connected.
+
 ### Developer
 - The Android build runs on pull requests that touch Rust, Kotlin or the Android patch script.
 - Kotlin sources live in `android/kotlin/` and are copied in by `scripts/patch-android.sh`.
