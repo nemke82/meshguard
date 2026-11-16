@@ -1813,3 +1813,62 @@ input[type="range"]::-moz-range-thumb {
   color: var(--text-secondary);
   text-align: center;
 }
+
+/* ── Camera QR scan ────────────────────────────────────── */
+/* While scanning, the native camera preview is behind the WebView: make the
+   page transparent and show only the scan controls. */
+html.qr-scanning,
+html.qr-scanning body {
+  background: transparent !important;
+}
+
+html.qr-scanning #app {
+  visibility: hidden;
+}
+
+.scan-ui {
+  position: fixed;
+  inset: 0;
+  z-index: 9500;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.scan-ui[hidden] {
+  display: none;
+}
+
+.scan-ui-top,
+.scan-ui-bottom {
+  width: 100%;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  text-align: center;
+}
+
+.scan-ui-top {
+  padding: calc(env(safe-area-inset-top, 0px) + 20px) 16px 16px;
+  font-size: 15px;
+}
+
+.scan-ui-frame {
+  width: min(70vw, 280px);
+  aspect-ratio: 1;
+  border: 3px solid rgba(255, 255, 255, 0.9);
+  border-radius: 16px;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.35);
+}
+
+.scan-ui-bottom {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  padding: 16px 16px calc(env(safe-area-inset-bottom, 0px) + 20px);
+}
+
+.scan-ui-bottom .btn {
+  flex: 1;
+  max-width: 180px;
+}

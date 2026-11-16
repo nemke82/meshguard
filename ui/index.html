@@ -462,6 +462,17 @@
         </div>
       </div>
     </div>
+
+    <!-- Camera QR scan: the camera preview is drawn behind the (transparent)
+         page, and these controls sit on top of it. -->
+    <div id="scan-ui" class="scan-ui" hidden>
+      <div class="scan-ui-top">Point the camera at the code on the other phone</div>
+      <div class="scan-ui-frame" aria-hidden="true"></div>
+      <div class="scan-ui-bottom">
+        <button type="button" id="scan-ui-type" class="btn btn-secondary">Type code</button>
+        <button type="button" id="scan-ui-cancel" class="btn btn-primary">Cancel</button>
+      </div>
+    </div>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>

@@ -618,6 +618,28 @@ pub async fn auto_connect(app_handle: tauri::AppHandle) -> Result<bool, MeshGuar
     Ok(link::start_reconnect_loop(app_handle).await)
 }
 
+/// Android Back on the app's first screen: send the app to the background
+/// like the Home button. The activity stays alive, so returning is instant
+/// and keeps the radio link. (Without a Back handler Tauri finishes the
+/// activity, which looked like the app exiting.) No-op on desktop.
+#[tauri::command]
+pub async fn move_to_background(
+    #[allow(unused_variables)] app_handle: tauri::AppHandle,
+) -> Result<(), MeshGuardError> {
+    #[cfg(target_os = "android")]
+    {
+        use tauri::Manager;
+        let state = app_handle
+            .try_state::<crate::ble_plugin::BlePluginState<tauri::Wry>>()
+            .ok_or_else(|| MeshGuardError::Ble("Android plugin not initialized".into()))?;
+        state
+            .0
+            .run_mobile_plugin::<serde_json::Value>("moveToBackground", ())
+            .map_err(|e| MeshGuardError::Protocol(e.to_string()))?;
+    }
+    Ok(())
+}
+
 /// Start or stop the Android background service (ADR-001 §6 gate test).
 #[tauri::command]
 pub async fn set_background_service(
