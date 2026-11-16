@@ -69,6 +69,8 @@
         <li><strong>Chat keys</strong> — the encryption key for each paired chat, so you don't have to pair again. Each key is encrypted with a random device key. On Android that device key is itself encrypted by a key in the Android Keystore, which never leaves the Keystore and is held in secure hardware where the phone provides it; on Linux and macOS it is kept in your operating system's keyring (Secret Service, Keychain). Removing a peer deletes its key.</li>
         <li><strong>Message history</strong> — the messages, check-ins and SOS alerts you send and receive, with their time and delivery status, so a conversation is still there after you close the app, and unsent messages can be retried when your radio is back. Message text and contact names are encrypted on the device with a key derived from the same device key; the time, node numbers and delivery status are stored unencrypted so the app can sort and retry messages. History is kept until you delete the conversation. It is never uploaded. If the device has no Keystore or keyring available, history is kept in memory only while the app runs.</li>
         <li><strong>Duplicate-protection records</strong> — message IDs and timestamps used to detect replayed or relayed copies. They never contain message text.</li>
+        <li><strong>Blocked nodes</strong> — the node number and name of each node you blocked, and when.</li>
+        <li><strong>Terms of use</strong> — which version of the <a href="/terms">terms of use</a> you accepted.</li>
         <li><strong>Notification settings</strong>, including a custom sound if you choose one.</li>
       </ul>
       <p>Your passphrase is never saved to storage and never transmitted; it is used only to derive the encryption key. MeshGuard opts out of Android cloud backup, and uninstalling the app removes everything it stored on the device. On desktop, removing the app's data folder removes the history; the device key stays in your keyring until you delete it there.</p>
@@ -136,6 +138,7 @@
             <li><a href="https://github.com/nemke82/meshguard/blob/main/CHANGELOG.md" rel="noopener">Changelog</a></li>
             <li><a href="https://github.com/nemke82/meshguard/issues" rel="noopener">Report an issue</a></li>
             <li><a href="/privacy">Privacy policy</a></li>
+            <li><a href="/terms">Terms of use</a></li>
           </ul>
         </div>
       </div>

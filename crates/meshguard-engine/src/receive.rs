@@ -181,7 +181,9 @@ impl Engine {
         if seen.nodes_changed {
             actions.push(Action::Emit(Event::NodesUpdated));
         }
-        if packet.from != my_node && packet.from != 0 {
+        // Blocked nodes stay on the mesh list (they relay our packets), but
+        // their messages, chat requests and check-ins are dropped unread.
+        if packet.from != my_node && packet.from != 0 && !self.config.is_blocked(packet.from) {
             self.on_private_app(packet, my_node, now, &mut actions);
         }
         actions
@@ -747,6 +749,34 @@ mod tests {
         // Same node again right away: kept, but no second notification.
         assert!(e.note_pair_request(from, payload, NOW + 1).is_empty());
         assert!(e.pending_pair_requests.contains_key(&0x33));
+    }
+
+    #[test]
+    fn blocked_nodes_are_ignored_and_unblocking_restores_requests() {
+        let mut e = engine("block", WireProtocol::V2, false);
+        let request = packet(0x33, vec![9; 40]);
+        assert!(e.block_node(0x33, "Spam".into(), NOW as i64));
+        assert!(!e.block_node(0x33, "Spam".into(), NOW as i64));
+        let a = e.on_mesh_packet(&request, ME, NOW);
+        assert!(!a.iter().any(|a| matches!(a, Action::Undecryptable { .. })));
+        assert!(e.unblock_node(0x33));
+        let a = e.on_mesh_packet(&request, ME, NOW);
+        assert!(a.iter().any(|a| matches!(a, Action::Undecryptable { .. })));
+    }
+
+    #[test]
+    fn blocking_a_contact_forgets_it_and_drops_its_messages() {
+        let mut e = engine("block-peer", WireProtocol::V2, false);
+        e.pending_pair_requests.insert(PEER, vec![1]);
+        assert!(e.block_node(PEER, "Alice".into(), NOW as i64));
+        assert!(e.config.peers.is_empty());
+        assert!(!e.keys.contains_key(&PEER));
+        assert!(e.pending_pair_requests.is_empty());
+        let p = packet(PEER, frame(WireVersion::V2, OutPayload::Text("hi")));
+        let a = e.on_mesh_packet(&p, ME, NOW);
+        assert!(incoming(&a).is_empty());
+        assert_eq!(acks(&a), 0);
+        assert!(!a.iter().any(|a| matches!(a, Action::Undecryptable { .. })));
     }
 
     #[test]

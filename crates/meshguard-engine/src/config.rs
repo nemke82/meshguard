@@ -177,6 +177,23 @@ pub fn forget_link(config: &mut AppConfig, id: &str) -> bool {
     true
 }
 
+/// Version of the in-app terms of use. Raise it when the terms change in a
+/// way users must accept again.
+pub const TERMS_VERSION: u32 = 1;
+
+/// A node the user blocked: its MeshGuard messages, chat requests, check-ins
+/// and QR pair requests are ignored (Play UGC policy).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlockedNode {
+    pub node_num: u32,
+    /// Name at the time of blocking, for the blocked list.
+    #[serde(default)]
+    pub name: String,
+    /// Unix seconds.
+    #[serde(default)]
+    pub blocked_at: i64,
+}
+
 /// Persisted app configuration — saved to disk.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -203,6 +220,14 @@ pub struct AppConfig {
     /// Radios connected to before, newest first.
     #[serde(default)]
     pub saved_links: Vec<SavedLink>,
+
+    /// Nodes whose MeshGuard traffic is ignored.
+    #[serde(default)]
+    pub blocked: Vec<BlockedNode>,
+
+    /// Version of the terms of use the user accepted (0: none yet).
+    #[serde(default)]
+    pub terms_accepted: u32,
 }
 
 impl Default for AppConfig {
@@ -214,11 +239,22 @@ impl Default for AppConfig {
             status_presets: default_status_presets(),
             peers: Vec::new(),
             saved_links: Vec::new(),
+            blocked: Vec::new(),
+            terms_accepted: 0,
         }
     }
 }
 
 impl AppConfig {
+    pub fn is_blocked(&self, node: u32) -> bool {
+        self.blocked.iter().any(|b| b.node_num == node)
+    }
+
+    /// Whether the current terms of use were accepted.
+    pub fn terms_current(&self) -> bool {
+        self.terms_accepted >= TERMS_VERSION
+    }
+
     pub fn load(config_dir: &std::path::Path) -> Self {
         let path = config_dir.join("meshguard.json");
         let mut config: Self = match std::fs::read_to_string(&path) {

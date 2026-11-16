@@ -735,6 +735,7 @@ function renderMeshNodes() {
         <button type="button" class="btn-node-info" title="Diagnostics" aria-label="Diagnostics">i</button>
         ${online ? '<span class="online-dot" title="Heard in the last 2 hours"></span>' : '<span class="offline-dot"></span>'}
         ${isPeer ? '<span class="peer-badge">Paired</span>' : ""}
+        ${isBlocked(node.node_num) ? '<span class="peer-badge blocked-badge">Blocked</span>' : ""}
       </div>
     `;
     card.dataset.node = String(node.node_num);
@@ -862,6 +863,10 @@ function renderActiveChats() {
 }
 
 async function onNodeTap(node) {
+  if (isBlocked(node.node_num)) {
+    if (confirm(`${nodeDisplayName(node)} is blocked. Unblock it?`)) await unblockNode(node.node_num);
+    return;
+  }
   const existingPeer = state.peers.find((p) => p.node_num === node.node_num);
   if (existingPeer) {
     await openExistingChat(existingPeer);
@@ -978,6 +983,11 @@ formPassphrase.addEventListener("submit", async (e) => {
 // ============================================================
 // Pair Request Handling
 // ============================================================
+$("#btn-block-pair").addEventListener("click", () => {
+  const req = state.bannerPairRequest;
+  if (req) blockNode(req.from_node, req.from_name || lookupNodeName(req.from_node));
+});
+
 btnAcceptPair.addEventListener("click", () => {
   // Accept exactly the request the banner shows.
   const req = state.bannerPairRequest;
@@ -1558,6 +1568,7 @@ async function setupEventListeners() {
 
   await listen("pair-request", (event) => {
     const data = event.payload;
+    if (isBlocked(data.from_node)) return; // blocked a moment ago
     state.pendingPairRequests = state.pendingPairRequests.filter(
       (r) => r.from_node !== data.from_node
     );
@@ -1590,6 +1601,7 @@ const btnNotifSettings = $("#btn-notif-settings");
 const notifSettingsClose = $("#notif-settings-close");
 
 btnNotifSettings.addEventListener("click", () => {
+  loadBlocked();
   notifSoundEnabled.checked = NotificationSound.settings.enabled;
   notifVolume.value = Math.round(NotificationSound.settings.volume * 100);
   notifTone.value = NotificationSound.settings.tone;
@@ -2036,6 +2048,138 @@ $("#scan-ui-cancel").addEventListener("click", () => cancelScan());
 $("#scan-ui-type").addEventListener("click", () => cancelScan(true));
 
 // ============================================================
+// Blocking (Play UGC policy)
+// ============================================================
+// A blocked node stays on the mesh list, but the backend ignores its
+// messages, chat requests, check-ins and QR pair requests.
+state.blocked = [];
+
+function isBlocked(nodeNum) {
+  return state.blocked.some((b) => b.node_num === nodeNum);
+}
+
+async function loadBlocked() {
+  try {
+    state.blocked = (await invoke("list_blocked")) || [];
+  } catch (err) {
+    console.error("Could not load blocked nodes:", err);
+  }
+  renderBlockedList();
+}
+
+function renderBlockedList() {
+  const list = $("#blocked-list");
+  list.innerHTML = "";
+  if (!state.blocked.length) {
+    const li = document.createElement("li");
+    li.className = "empty";
+    li.textContent = "No blocked nodes.";
+    list.appendChild(li);
+    return;
+  }
+  for (const b of state.blocked) {
+    const li = document.createElement("li");
+    const name = document.createElement("span");
+    name.className = "blocked-name";
+    name.textContent = `${b.name} (!${(b.node_num >>> 0).toString(16).padStart(8, "0")})`;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn btn-secondary btn-sm";
+    btn.textContent = "Unblock";
+    btn.addEventListener("click", () => unblockNode(b.node_num));
+    li.append(name, btn);
+    list.appendChild(li);
+  }
+}
+
+async function blockNode(nodeNum, name) {
+  if (nodeNum == null) return false;
+  const label = name || lookupNodeName(nodeNum);
+  if (
+    !confirm(
+      `Block ${label}? Its messages, chat requests and check-ins will be ignored and the contact is removed. ` +
+        "Message history stays until you delete it. You can unblock it in Settings."
+    )
+  )
+    return false;
+  try {
+    state.blocked = (await invoke("block_node", { nodeNum })) || [];
+  } catch (err) {
+    alert("Could not block: " + err);
+    return false;
+  }
+  state.peers = state.peers.filter((p) => p.node_num !== nodeNum);
+  state.pendingPairRequests = state.pendingPairRequests.filter((r) => r.from_node !== nodeNum);
+  renderBlockedList();
+  if (diagOverlay.style.display !== "none" && diag.node === nodeNum) $("#diag-close").click();
+  if (screenChat.classList.contains("active") && state.activePeerNodeNum === nodeNum) {
+    await loadMeshData();
+    showScreen(screenMesh);
+  } else {
+    await loadMeshData();
+  }
+  showPendingPairBanner();
+  Toast.show({ sender: "MeshGuard", text: `${label} is blocked` });
+  return true;
+}
+
+async function unblockNode(nodeNum) {
+  try {
+    state.blocked = (await invoke("unblock_node", { nodeNum })) || [];
+  } catch (err) {
+    alert("Could not unblock: " + err);
+    return;
+  }
+  renderBlockedList();
+  if (state.meshNodes.length) renderMeshNodes();
+}
+
+$("#btn-block-chat").addEventListener("click", () =>
+  blockNode(state.activePeerNodeNum, chatPeerName.textContent)
+);
+
+$("#diag-block").addEventListener("click", async () => {
+  const nodeNum = diag.node;
+  if (nodeNum == null) return;
+  if (isBlocked(nodeNum)) {
+    await unblockNode(nodeNum);
+    $("#diag-block").textContent = "Block this node";
+  } else {
+    await blockNode(nodeNum, $("#diag-title").textContent);
+  }
+});
+
+// ============================================================
+// Terms of use (accepted once, before first use)
+// ============================================================
+async function ensureTermsAccepted() {
+  let accepted = false;
+  try {
+    accepted = await invoke("terms_accepted");
+  } catch (err) {
+    console.error("Could not read terms status:", err);
+  }
+  if (accepted) return;
+  const overlay = $("#terms-overlay");
+  overlay.style.display = "flex";
+  await new Promise((resolve) => {
+    $("#terms-accept").addEventListener(
+      "click",
+      async () => {
+        try {
+          await invoke("accept_terms");
+        } catch (err) {
+          console.error("Could not save terms acceptance:", err);
+        }
+        overlay.style.display = "none";
+        resolve();
+      },
+      { once: true }
+    );
+  });
+}
+
+// ============================================================
 // Android Back button
 // ============================================================
 // Without a listener, Tauri finishes the activity on Back, so Back on the QR
@@ -2131,6 +2275,7 @@ async function openDiagnostics(nodeNum) {
   ].join("");
   $("#diag-path").textContent = "Sends a Meshtastic traceroute and shows each hop with its SNR.";
   $("#diag-run-path").disabled = false;
+  $("#diag-block").textContent = isBlocked(nodeNum) ? "Unblock this node" : "Block this node";
   diagOverlay.style.display = "flex";
   $("#diag-chart").textContent = "Loading…";
   try {
@@ -2259,6 +2404,8 @@ $("#diag-close").addEventListener("click", () => {
 // ============================================================
 async function init() {
   await setupBackButton();
+  await ensureTermsAccepted();
+  await loadBlocked();
   await setupEventListeners();
   await loadPresets();
 
@@ -2378,13 +2525,14 @@ setInterval(() => {
   if (state.meshNodes.length) renderMeshNodes();
 }, 60_000);
 
-// Open the privacy policy in the system browser (the webview must not
-// navigate away from the app).
-document.getElementById("link-privacy")?.addEventListener("click", (e) => {
+// Open web links (privacy policy, terms) in the system browser: the webview
+// must not navigate away from the app.
+document.addEventListener("click", (e) => {
+  const a = e.target.closest && e.target.closest('a[target="_blank"]');
+  if (!a) return;
   e.preventDefault();
-  const url = e.currentTarget.href;
   const shell = window.__TAURI__ && window.__TAURI__.shell;
   if (shell && shell.open) {
-    shell.open(url).catch((err) => console.error("Could not open link:", err));
+    shell.open(a.href).catch((err) => console.error("Could not open link:", err));
   }
 });

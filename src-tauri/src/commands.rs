@@ -9,7 +9,7 @@ use meshguard_core::v1::V1Payload;
 use meshguard_core::PeerIdentity;
 
 use crate::crypto;
-use crate::device_config::{PeerConfig, StatusPreset, WireProtocol};
+use crate::device_config::{BlockedNode, PeerConfig, StatusPreset, WireProtocol};
 use crate::error::MeshGuardError;
 use crate::link::{self, LinkTarget};
 use crate::mesh_radio::{ScannedBleDevice, SerialPortInfo};
@@ -353,6 +353,7 @@ pub async fn start_chat(
     state: State<'_, AppState>,
 ) -> Result<PeerConfig, MeshGuardError> {
     let _pairing = PAIRING.lock().await;
+    refuse_blocked(&state, peer_node_num)?;
     let protocol = protocol.unwrap_or_default();
     let (my_num, my_name) = my_identity(&state).await?;
 
@@ -394,6 +395,7 @@ pub async fn accept_chat(
     state: State<'_, AppState>,
 ) -> Result<PeerConfig, MeshGuardError> {
     let _pairing = PAIRING.lock().await;
+    refuse_blocked(&state, peer_node_num)?;
     let (my_num, my_name) = my_identity(&state).await?;
 
     let peer_name = peer_long_name(&state, peer_node_num).await?;
@@ -590,6 +592,72 @@ pub async fn remove_peer(
     let config = &mut engine.config;
     config.peers.retain(|p| p.node_num != peer_node_num);
     config.save(&state.config_dir)?;
+    Ok(())
+}
+
+// ── Blocking and terms of use (Play UGC policy) ───────────────
+
+fn refuse_blocked(state: &AppState, node: u32) -> Result<(), MeshGuardError> {
+    if state.engine().config.is_blocked(node) {
+        return Err(MeshGuardError::Protocol(
+            "This node is blocked. Unblock it under Settings → Blocked nodes first.".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Block a node: remove the contact and its remembered key, and ignore its
+/// messages, chat requests and check-ins. Message history stays until the
+/// user deletes it. Returns the blocked list.
+#[tauri::command]
+pub async fn block_node(
+    node_num: u32,
+    state: State<'_, AppState>,
+) -> Result<Vec<BlockedNode>, MeshGuardError> {
+    let blocked = {
+        let mut engine = state.engine();
+        let name = engine
+            .peer_title(node_num)
+            .or_else(|| engine.node_name(node_num))
+            .unwrap_or_else(|| format!("!{node_num:08x}"));
+        engine.block_node(node_num, name, chrono::Utc::now().timestamp());
+        engine.config.save(&state.config_dir)?;
+        engine.config.blocked.clone()
+    };
+    crate::key_store::remove_peer(&state.config_dir, node_num)?;
+    tracing::info!("Blocked node {node_num}");
+    Ok(blocked)
+}
+
+/// Unblock a node. Returns the blocked list.
+#[tauri::command]
+pub async fn unblock_node(
+    node_num: u32,
+    state: State<'_, AppState>,
+) -> Result<Vec<BlockedNode>, MeshGuardError> {
+    let mut engine = state.engine();
+    if engine.unblock_node(node_num) {
+        engine.config.save(&state.config_dir)?;
+    }
+    Ok(engine.config.blocked.clone())
+}
+
+#[tauri::command]
+pub async fn list_blocked(state: State<'_, AppState>) -> Result<Vec<BlockedNode>, MeshGuardError> {
+    Ok(state.engine().config.blocked.clone())
+}
+
+/// Whether the current terms of use were accepted.
+#[tauri::command]
+pub async fn terms_accepted(state: State<'_, AppState>) -> Result<bool, MeshGuardError> {
+    Ok(state.engine().config.terms_current())
+}
+
+#[tauri::command]
+pub async fn accept_terms(state: State<'_, AppState>) -> Result<(), MeshGuardError> {
+    let mut engine = state.engine();
+    engine.config.terms_accepted = crate::device_config::TERMS_VERSION;
+    engine.config.save(&state.config_dir)?;
     Ok(())
 }
 
@@ -925,6 +993,7 @@ pub async fn pair_with_code(
 ) -> Result<PeerConfig, MeshGuardError> {
     let _pairing = PAIRING.lock().await;
     let code = meshguard_core::qrpair::PairCode::parse(&code)?;
+    refuse_blocked(&state, code.node)?;
     let (my_num, my_name) = my_identity(&state).await?;
     if code.node == my_num {
         return Err(MeshGuardError::Protocol(
