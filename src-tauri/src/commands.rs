@@ -622,9 +622,9 @@ pub async fn remove_peer(
         let prev_config = engine.config.clone();
         let prev_key = engine.keys.remove(&peer_node_num);
         // Nothing queued for a removed contact is sent later (e.g. to
-        // whoever pairs as this node next). The barrier is saved with the
-        // removal.
-        let cancelled = engine.cancel_sends_to(peer_node_num, unix_now().into());
+        // whoever pairs as this node next). The raised send generation is
+        // saved with the removal.
+        let cancelled = engine.cancel_sends_to(peer_node_num);
         engine.config.peers.retain(|p| p.node_num != peer_node_num);
         if let Err(e) = engine.config.save(&state.config_dir) {
             engine.config = prev_config;
@@ -679,8 +679,8 @@ pub async fn block_node(
         let prev_request = engine.pending_pair_requests.get(&node_num).cloned();
         engine.block_node(node_num, name, chrono::Utc::now().timestamp());
         // Same critical section: nothing queued for the node is sent any
-        // more; the barrier is saved with the block.
-        let cancelled = engine.cancel_sends_to(node_num, unix_now().into());
+        // more; the raised send generation is saved with the block.
+        let cancelled = engine.cancel_sends_to(node_num);
         if let Err(e) = engine.config.save(&state.config_dir) {
             engine.config = prev_config;
             if let Some(key) = prev_key {

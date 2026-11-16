@@ -92,8 +92,6 @@ pub struct Engine {
     pub history: Slot,
     /// Outgoing messages being transmitted right now.
     pub(crate) in_flight: crate::outbox::InFlight,
-    /// Per-peer send generation, bumped when its sends are cancelled.
-    pub(crate) send_generations: HashMap<u32, u64>,
 }
 
 impl Engine {
@@ -112,7 +110,6 @@ impl Engine {
             my_device_name: None,
             history: Slot::Closed,
             in_flight: Default::default(),
-            send_generations: HashMap::new(),
         }
     }
 

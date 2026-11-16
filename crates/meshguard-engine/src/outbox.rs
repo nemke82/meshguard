@@ -182,7 +182,11 @@ impl InFlight {
 impl Engine {
     /// Current send generation of `peer` (see [`Transmit::generation`]).
     pub fn send_generation(&self, peer: u32) -> u64 {
-        self.send_generations.get(&peer).copied().unwrap_or(0)
+        self.config
+            .send_generations
+            .get(&peer)
+            .copied()
+            .unwrap_or(0)
     }
 
     /// Whether `t` may still be transmitted: its peer's sends were not
@@ -193,23 +197,20 @@ impl Engine {
 
     /// Cancel everything queued for `peer` (blocked or removed), in the
     /// same engine critical section as the block/removal itself:
-    /// * attempts already prepared become stale (send generation),
-    /// * a durable barrier is set in the config (the caller saves it with
-    ///   the block/removal): queued messages created before `now` are never
-    ///   sent, even if the history could not be cleaned up right now,
+    /// * the peer's send generation is raised in the config (the caller
+    ///   saves it with the block/removal): attempts already prepared and
+    ///   queued rows of an older generation are never sent, even if the
+    ///   history could not be cleaned up right now,
     /// * queued messages leave the outbox as failed, if the history is
     ///   open (they stay in the history).
     ///
     /// Returns the state changes for the UI.
-    pub fn cancel_sends_to(&mut self, peer: u32, now: u64) -> Vec<MessageStateEvent> {
-        *self.send_generations.entry(peer).or_default() += 1;
-        // Strictly later than anything queued so far (seconds resolution).
-        let barrier = now + 1;
-        let entry = self.config.send_barriers.entry(peer).or_default();
-        *entry = (*entry).max(barrier);
+    pub fn cancel_sends_to(&mut self, peer: u32) -> Vec<MessageStateEvent> {
+        *self.config.send_generations.entry(peer).or_default() += 1;
         let cancelled = match &mut self.history {
             Slot::Open(store) => store.cancel_outbound_to(peer).unwrap_or_else(|e| {
-                // The barrier still stops them; outbox_step retires them.
+                // Their older generation still stops them; outbox_step
+                // retires them.
                 tracing::warn!("Queued messages to {peer} not cancelled yet: {e}");
                 Vec::new()
             }),
@@ -222,15 +223,6 @@ impl Engine {
             .into_iter()
             .map(|(c, id)| MessageStateEvent::new(&c, &id, DeliveryState::Failed))
             .collect()
-    }
-
-    /// Whether a queued message to `peer` created at `created_at` is behind
-    /// the peer's send barrier.
-    fn behind_barrier(&self, peer: u32, created_at: u64) -> bool {
-        self.config
-            .send_barriers
-            .get(&peer)
-            .is_some_and(|b| created_at < *b)
     }
 
     /// The radio messages are sent from: the one the chat keys belong to
@@ -289,6 +281,7 @@ impl Engine {
         let my_node = self.sending_node().ok_or(MeshGuardError::NotConnected)?;
         let (protocol, capable) = self.peer_wire(peer);
         let message_id = MessageId::random();
+        let generation = self.send_generation(peer);
         let ttl = u64::from(outbound::ttl_mins(content.payload(protocol, capable))) * 60;
         let out = OutboundMessage::queued(message_id, now, now + ttl);
         let (frame, protocol) = self.seal_for(my_node, peer, content, message_id, now)?;
@@ -297,7 +290,7 @@ impl Engine {
         let (kind, body) = (content.kind(), content.body()?);
         let conversation = self.with_store(|s| {
             let c = s.upsert_conversation(my_node, peer, title.as_deref())?;
-            s.insert_outgoing(&c, kind, &body, now, &out)?;
+            s.insert_outgoing(&c, kind, &body, now, &out, generation)?;
             Ok(c)
         });
         // The outbox must not send it too while the caller does.
@@ -315,7 +308,7 @@ impl Engine {
             protocol,
             attempt: 0,
             token,
-            generation: self.send_generation(peer),
+            generation,
         })
     }
 
@@ -399,7 +392,7 @@ impl Engine {
             if self.in_flight.contains(&out.message_id, now) {
                 continue;
             }
-            if self.behind_barrier(peer, item.created_at) {
+            if item.send_generation < self.send_generation(peer) {
                 // Queued before the contact was blocked or removed.
                 out.state = DeliveryState::Failed;
                 if self
@@ -640,7 +633,7 @@ mod tests {
         let prepared = e.enqueue(PEER, &text(), NOW).unwrap();
         assert!(e.still_sendable(&prepared));
 
-        let ev = e.cancel_sends_to(PEER, NOW);
+        let ev = e.cancel_sends_to(PEER);
         assert_eq!(ev.len(), 2);
         assert!(ev.iter().all(|e| e.state == "failed"));
         // The attempt sealed before the cancel must not be handed over, and
@@ -670,8 +663,8 @@ mod tests {
         let t = e.enqueue(PEER, &text(), NOW).unwrap();
         e.finish_attempt(&t, Attempt::Submitted, NOW);
         // As if the store had been unavailable when the contact was removed:
-        // only the barrier and the generation are in place.
-        e.config.send_barriers.insert(PEER, NOW + 1);
+        // only the raised generation is in place.
+        e.config.send_generations.insert(PEER, 1);
         e.keys.insert(PEER, SessionKey::from_bytes([8; 32]));
         let (ev, tx) = e.outbox_step(NOW + 3600, Some(ME));
         assert!(tx.is_none(), "never resent");
@@ -679,10 +672,12 @@ mod tests {
         assert_eq!(ev[0].state, "failed");
         // Retired: nothing left to do.
         assert!(e.outbox_step(NOW + 7200, Some(ME)).0.is_empty());
-        // Messages written after the barrier go out normally.
-        let fresh = e.enqueue(PEER, &text(), NOW + 10).unwrap();
-        e.finish_attempt(&fresh, Attempt::Submitted, NOW + 10);
-        let later = NOW + 10 + 61;
+        // Messages queued after it go out normally, even in the same second
+        // and whatever the clock says.
+        let fresh = e.enqueue(PEER, &text(), NOW - 100).unwrap();
+        assert_eq!(fresh.generation, 1);
+        e.finish_attempt(&fresh, Attempt::Submitted, NOW - 100);
+        let later = NOW - 100 + 61;
         e.outbox_step(later, Some(ME));
         assert!(e.outbox_step(later + 120, Some(ME)).1.is_some());
     }
