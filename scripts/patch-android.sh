@@ -37,12 +37,19 @@ fi
 # Camera for scanning pairing QR codes. The page scans by itself
 # (getUserMedia + jsQR); the WebView asks for this permission when the
 # camera is opened. Not required: phones without a camera type the code.
+# CAMERA implies rear camera and autofocus features; declare them optional
+# explicitly so Google Play does not hide the app from phones without them.
 if ! grep -q "android.permission.CAMERA" "$MANIFEST"; then
   sed -i 's|<application|<uses-permission android:name="android.permission.CAMERA" />\
-    <uses-feature android:name="android.hardware.camera.any" android:required="false" />\
     \n    <application|' "$MANIFEST"
   echo "  -> Camera permission added"
 fi
+for feature in android.hardware.camera android.hardware.camera.autofocus android.hardware.camera.any; do
+  if ! grep -q "uses-feature android:name=\"$feature\"" "$MANIFEST"; then
+    sed -i "s|<application|<uses-feature android:name=\"$feature\" android:required=\"false\" />\\
+    <application|" "$MANIFEST"
+  fi
+done
 
 # Keep peer records and settings out of Android cloud backups.
 if ! grep -q 'android:allowBackup' "$MANIFEST"; then

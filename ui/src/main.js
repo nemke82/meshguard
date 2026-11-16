@@ -1990,7 +1990,12 @@ const isMobile = /Android|iPhone|iPad/i.test(navigator.userAgent);
 // is shown in a <video> and frames are decoded with jsQR. The WebView asks
 // for the camera permission itself. No native camera view, so nothing
 // outside the page can take the app down.
-const qrScan = { active: false, cancelled: false, stream: null, timer: null, done: null };
+//
+// Each scan is an *attempt* with its own id, camera stream, timer and
+// result. Cancelling ends the current attempt at once; a stale attempt
+// (its camera arriving after Cancel) only ever releases its own stream.
+const qrScan = { active: false, attempt: 0, cleanup: null, finish: null };
+let scanAttempts = 0;
 
 $("#btn-scan-qr").addEventListener("click", async () => {
   if (!isMobile || !navigator.mediaDevices?.getUserMedia) {
@@ -1999,14 +2004,15 @@ $("#btn-scan-qr").addEventListener("click", async () => {
   }
   // Reserved before the first await: a second tap must not start another scan.
   if (qrScan.active) return;
-  qrScan.cancelled = false;
+  const id = ++scanAttempts;
+  qrScan.attempt = id;
   setScanUi(true);
   let result;
   try {
-    result = await scanQr();
+    result = await scanQr(id);
   } catch (err) {
-    stopScan();
-    if (qrScan.cancelled) return;
+    if (qrScan.attempt !== id) return; // cancelled meanwhile
+    endScan(id);
     console.error("Scan failed:", err);
     const denied = err && (err.name === "NotAllowedError" || err.name === "SecurityError");
     openCodeEntry(
@@ -2016,32 +2022,44 @@ $("#btn-scan-qr").addEventListener("click", async () => {
     );
     return;
   }
-  stopScan();
-  if (result.code) await pairWithCode(result.code);
-  else if (result.typeInstead) openCodeEntry();
+  if (qrScan.attempt !== id) return; // cancelled: cancelScan handled it
+  endScan(id);
+  if (result && result.code) await pairWithCode(result.code);
 });
 
-/** Open the camera and resolve with `{code}` when a MeshGuard pairing code
- * is seen, or `{typeInstead}` when the user leaves the scanner. */
-async function scanQr() {
+/** Run scan attempt `id`: open the camera and resolve with `{code}` once a
+ * MeshGuard pairing code is seen. Resolves `{}` if the attempt was
+ * cancelled meanwhile (its camera is released). */
+async function scanQr(id) {
+  const owned = () => qrScan.active && qrScan.attempt === id;
   const stream = await navigator.mediaDevices.getUserMedia({
     video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 } },
     audio: false,
   });
-  if (qrScan.cancelled || !qrScan.active) {
-    stream.getTracks().forEach((t) => t.stop());
-    return { typeInstead: false };
-  }
-  qrScan.stream = stream;
   const video = $("#scan-video");
+  let timer = null;
+  const release = () => {
+    clearTimeout(timer);
+    stream.getTracks().forEach((t) => t.stop());
+    if (video.srcObject === stream) video.srcObject = null;
+  };
+  if (!owned()) {
+    release();
+    return {};
+  }
+  qrScan.cleanup = release;
   video.srcObject = stream;
   await video.play().catch(() => {});
+  if (!owned()) {
+    release();
+    return {};
+  }
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   return new Promise((resolve) => {
-    qrScan.done = resolve;
+    qrScan.finish = resolve;
     const tick = () => {
-      if (!qrScan.active) return;
+      if (!owned()) return;
       const w = video.videoWidth;
       const h = video.videoHeight;
       if (w && h) {
@@ -2053,33 +2071,28 @@ async function scanQr() {
         const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const found = jsQR(img.data, img.width, img.height, { inversionAttempts: "attemptBoth" });
         if (found && found.data && found.data.startsWith("meshguard:")) {
-          finishScan({ code: found.data });
+          resolve({ code: found.data });
           return;
         }
       }
-      qrScan.timer = setTimeout(tick, 150);
+      timer = setTimeout(tick, 150);
     };
     tick();
   });
 }
 
-function finishScan(result) {
-  const done = qrScan.done;
-  qrScan.done = null;
-  if (done) done(result);
-}
-
-/** Release the camera and hide the scanner. */
-function stopScan() {
-  clearTimeout(qrScan.timer);
-  qrScan.timer = null;
-  if (qrScan.stream) {
-    qrScan.stream.getTracks().forEach((t) => t.stop());
-    qrScan.stream = null;
-  }
-  const video = $("#scan-video");
-  if (video) video.srcObject = null;
+/** End scan attempt `id` (if it is still the current one): release its
+ * camera and hide the scanner. */
+function endScan(id) {
+  if (qrScan.attempt !== id) return;
+  const cleanup = qrScan.cleanup;
+  const finish = qrScan.finish;
+  qrScan.cleanup = null;
+  qrScan.finish = null;
+  qrScan.attempt = 0;
   setScanUi(false);
+  if (cleanup) cleanup();
+  if (finish) finish({});
 }
 
 function setScanUi(on) {
@@ -2088,18 +2101,12 @@ function setScanUi(on) {
   $("#scan-ui").hidden = !on;
 }
 
-/** Leave the scanner (Cancel, Type code or Back). */
-async function cancelScan(typeInstead = false) {
+/** Leave the scanner (Cancel, Type code or Back), also while the camera or
+ * its permission dialog is still opening. */
+function cancelScan(typeInstead = false) {
   if (!qrScan.active) return;
-  qrScan.cancelled = !typeInstead;
-  if (qrScan.done) {
-    finishScan({ typeInstead });
-  } else {
-    // Still waiting for the camera or its permission dialog.
-    qrScan.cancelled = true;
-    stopScan();
-    if (typeInstead) openCodeEntry();
-  }
+  endScan(qrScan.attempt);
+  if (typeInstead) openCodeEntry();
 }
 
 $("#scan-ui-cancel").addEventListener("click", () => cancelScan());
