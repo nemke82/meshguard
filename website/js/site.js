@@ -37,14 +37,29 @@
   // Decorative animations: silent loops that play only while on screen. They
   // stay paused for visitors who ask for reduced motion or to save data, and
   // the button pauses or plays them (WCAG 2.2.2).
-  var reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  var saveData = !!(navigator.connection && navigator.connection.saveData);
+  // A press of the button wins over the preferences until the page reloads.
+  var reduceMq = window.matchMedia("(prefers-reduced-motion: reduce)");
+  var conn = navigator.connection;
+  function autoplayAllowed() {
+    return !reduceMq.matches && !(conn && conn.saveData);
+  }
+  var clips = [];
+  function onPreferenceChange() {
+    clips.forEach(function (c) {
+      c.preferenceChanged();
+    });
+  }
+  if (reduceMq.addEventListener) reduceMq.addEventListener("change", onPreferenceChange);
+  else if (reduceMq.addListener) reduceMq.addListener(onPreferenceChange);
+  if (conn && conn.addEventListener) conn.addEventListener("change", onPreferenceChange);
+
   Array.prototype.forEach.call(document.querySelectorAll(".media-video"), function (fig) {
     var video = fig.querySelector("video");
     var btn = fig.querySelector(".video-toggle");
     if (!video || !btn) return;
     var label = btn.getAttribute("aria-label").replace(/^Play /, "");
-    var wanted = !(reduce || saveData);
+    var chosen = null; // null until the visitor presses the button
+    var wanted = autoplayAllowed();
     var visible = false;
 
     function sync() {
@@ -65,9 +80,16 @@
     video.addEventListener("pause", sync);
     btn.hidden = false;
     btn.addEventListener("click", function () {
-      wanted = video.paused;
+      wanted = chosen = video.paused;
       if (wanted) visible = true;
       update();
+    });
+    clips.push({
+      preferenceChanged: function () {
+        if (chosen !== null) return;
+        wanted = autoplayAllowed();
+        update();
+      },
     });
 
     if ("IntersectionObserver" in window) {
