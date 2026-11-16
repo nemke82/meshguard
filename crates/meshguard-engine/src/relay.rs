@@ -126,6 +126,10 @@ impl ContactRelay {
 pub struct PendingControl {
     pub my_node: u32,
     pub peer: u32,
+    /// For a revoke of an active relay: the topic it can still be published
+    /// on over the relay after the contact's routing state is gone.
+    #[serde(default)]
+    pub topic: Option<String>,
     /// Send generation of the peer when queued (stamped by the engine).
     #[serde(default)]
     pub gen: Option<u64>,
@@ -317,6 +321,7 @@ impl RelayBook {
         self.outgoing.push(PendingControl {
             my_node,
             peer,
+            topic: None,
             gen: None,
             message_id: MessageId::random().to_hex(),
             control,
@@ -485,6 +490,11 @@ impl RelayBook {
         let Some(c) = self.contact(my_node, peer).cloned() else {
             return false;
         };
+        // Captured before the state goes: the revoke can still be sent
+        // over the relay (MQTT-only contacts).
+        let out_topic = me
+            .and_then(|m| self.topics_of(my_node, peer, m))
+            .map(|(_, out)| out);
         self.end(my_node, peer, me);
         let until = now + tombstone_secs();
         let mut confirms = vec![c.secret().clone()];
@@ -505,9 +515,42 @@ impl RelayBook {
                     },
                     now,
                 );
+                if let Some(p) = self.outgoing.last_mut() {
+                    p.topic = out_topic.clone();
+                }
             }
         }
         true
+    }
+
+    /// Remove the relay altogether (settings removed): every contact of
+    /// every local radio ends. Those of radio `owner` are told (revoke, if a
+    /// transport for them comes up); others are only forgotten. The broker
+    /// password is wiped.
+    pub fn remove_all(&mut self, owner: Option<u32>, me: Option<&RelayIdentity>, now: u64) {
+        let keys: Vec<(u32, u32)> = self
+            .contacts
+            .keys()
+            .filter_map(|k| parse_contact_key(k))
+            .collect();
+        for (my_node, peer) in keys {
+            if Some(my_node) == owner {
+                self.disable(my_node, peer, me, now);
+            } else if let Some(c) = self.contacts.get(&contact_key(my_node, peer)).cloned() {
+                self.end(my_node, peer, me);
+                let until = now + tombstone_secs();
+                self.tombstone_secret(c.secret(), until);
+                if let ContactRelay::Active {
+                    rotation: Some(r), ..
+                } = &c
+                {
+                    self.tombstone_secret(r.secret(), until);
+                }
+            }
+        }
+        // Controls of other radios cannot be sent any more.
+        self.outgoing.retain(|p| Some(p.my_node) == owner);
+        self.password = None;
     }
 
     /// Forget everything about `peer` without telling it (blocked or
@@ -919,6 +962,18 @@ impl crate::Engine {
         self.update_relay(|b| b.disable(my_node, peer, me.as_ref(), now))
     }
 
+    /// Remove the relay settings' secrets: every contact ends (ADR-006 §7).
+    pub fn relay_remove_all(&mut self, now: u64) -> Result<(), MeshGuardError> {
+        let me = self.relay_identity();
+        let owner = self.keys_owner;
+        self.update_relay(|b| b.remove_all(owner, me.as_ref(), now))
+    }
+
+    /// Whether an ACK prepared for `peer` with `reply` may still go out.
+    pub fn relay_reply_valid(&self, peer: u32, reply: &RelayReply) -> bool {
+        !self.config.is_blocked(peer) && self.send_generation(peer) == reply.generation
+    }
+
     /// Blocked or removed: forget the relay with `peer` without telling it.
     /// Kept in memory even if saving fails (logged), so it stops now.
     pub fn relay_forget(&mut self, peer: u32, now: u64) -> bool {
@@ -987,6 +1042,7 @@ impl crate::Engine {
                     peer: p.peer,
                     message_id: p.message_id,
                     frame,
+                    topic: p.topic,
                 })
             })
             .collect()
@@ -1086,6 +1142,18 @@ pub struct ControlTransmit {
     pub peer: u32,
     pub message_id: String,
     pub frame: Vec<u8>,
+    /// Relay topic kept for a revoke whose routing state is gone.
+    pub topic: Option<String>,
+}
+
+/// Where an ACK for a relay frame goes, captured when the frame arrived
+/// (the contact's routing state may change while handling it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayReply {
+    pub topic: String,
+    /// The peer's send generation then; the ACK is dropped if it changed
+    /// (blocked or removed meanwhile).
+    pub generation: u64,
 }
 
 // ── Sealing ────────────────────────────────────────────────────
@@ -1478,6 +1546,30 @@ mod tests {
             let data = format!("{{\"version\":1,\"blob\":\"{blob}\"}}");
             assert!(open_book(&vault, data.as_bytes()).is_err(), "{blob}");
         }
+    }
+
+    #[test]
+    fn removing_the_relay_revokes_ours_and_forgets_other_radios() {
+        let (mut a, mut b) = (RelayBook::default(), RelayBook::default());
+        a.enable(A, B, Some(&ua()), NOW).unwrap();
+        pump(&mut a, A, &ua(), &mut b, B, &ub(), NOW);
+        b.accept(B, A, Some(&ub()), NOW).unwrap();
+        pump(&mut b, B, &ub(), &mut a, A, &ua(), NOW);
+        let (_, out) = a.topics_of(A, B, &ua()).unwrap();
+        // An entry of another local radio.
+        a.enable(0x99, B, Some(&ua()), NOW).unwrap();
+        a.password = Some("pw".into());
+        a.remove_all(Some(A), Some(&ua()), NOW);
+        assert!(a.contacts.is_empty() && a.password.is_none());
+        let revokes: Vec<_> = a.outgoing.iter().collect();
+        assert_eq!(revokes.len(), 1);
+        assert!(matches!(revokes[0].control, StoredControl::Revoke { .. }));
+        assert_eq!(revokes[0].my_node, A);
+        assert_eq!(
+            revokes[0].topic.as_deref(),
+            Some(out.as_str()),
+            "sendable over MQTT"
+        );
     }
 
     #[test]

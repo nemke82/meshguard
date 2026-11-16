@@ -43,6 +43,8 @@ pub enum Action {
         to: u32,
         frame: Vec<u8>,
         route: Route,
+        /// For `Route::Relay`: where to publish it (captured on arrival).
+        reply: Option<crate::relay::RelayReply>,
     },
     /// Tell the UI.
     Emit(Event),
@@ -584,6 +586,7 @@ impl Engine {
             Err(e) => {
                 tracing::warn!("Relay message from {from_node} not saved ({e}); not acknowledged");
                 self.protection.dedup.forget(sender, &message_id);
+                self.protection.relay_acks.forget(sender, &message_id);
                 return;
             }
         };
@@ -591,6 +594,7 @@ impl Engine {
             tracing::warn!("Could not persist dedup cache: {e}");
             // The change is saved and idempotent; a retry is applied again.
             self.protection.dedup.forget(sender, &message_id);
+            self.protection.relay_acks.forget(sender, &message_id);
             return;
         }
         tracing::info!("Relay message from {from_node}: {outcome:?}");
@@ -694,7 +698,12 @@ impl Engine {
             tracing::info!("ACK to {to} skipped: {route:?} budget exhausted");
             return;
         }
-        actions.push(Action::SendAck { to, frame, route });
+        actions.push(Action::SendAck {
+            to,
+            frame,
+            route,
+            reply: None,
+        });
     }
 
     /// A frame from the private MQTT relay (ADR-006 §6). Accepted only on
@@ -722,7 +731,25 @@ impl Engine {
             tracing::info!("Relay frame from {peer} dropped");
             return actions;
         }
+        // Captured before handling: a revoke ends the routing state, but
+        // its ACK must still reach the peer.
+        let reply = self
+            .relay_outbound_topic(peer)
+            .map(|topic| crate::relay::RelayReply {
+                topic,
+                generation: self.send_generation(peer),
+            });
         self.on_frame(peer, payload, my_node, Route::Relay, now, &mut actions);
+        for a in &mut actions {
+            if let Action::SendAck {
+                route: Route::Relay,
+                reply: r,
+                ..
+            } = a
+            {
+                *r = reply.clone();
+            }
+        }
         actions
     }
 
@@ -778,6 +805,7 @@ impl Engine {
                     return Some(None);
                 };
                 self.protection.dedup.forget(sender, id);
+                self.protection.relay_acks.forget(sender, id);
                 tracing::warn!("Dropped a message until it can be saved; the sender will retry");
                 return None;
             }
@@ -792,6 +820,7 @@ impl Engine {
             // unACKed; the sender's retry delivers it (the history ignores
             // the copy).
             self.protection.dedup.forget(sender, id);
+            self.protection.relay_acks.forget(sender, id);
             return None;
         }
         Some(conversation)

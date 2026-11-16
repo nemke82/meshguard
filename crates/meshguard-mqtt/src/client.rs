@@ -427,13 +427,26 @@ impl RelayClient {
 
     /// Disconnect and stop.
     pub async fn stop(self) {
+        self.shutdown().await;
+    }
+
+    /// Disconnect and stop, through a shared reference: the connection
+    /// tasks are aborted, so no further publish, reconnect or delivery
+    /// happens, whoever else still holds this client.
+    pub async fn shutdown(&self) {
         let client = lock(&self.shared.conn).as_ref().map(|(_, c)| c.clone());
         if let Some(c) = client {
             let _ = tokio::time::timeout(Duration::from_secs(2), c.disconnect()).await;
         }
+        for t in &self.tasks {
+            t.abort();
+        }
+        {
+            let mut slot = lock(&self.shared.slot);
+            *lock(&self.shared.conn) = None;
+            slot.finish(Err(PublishError::Unavailable));
+        }
         self.shared.set_status(RelayStatus::Stopped);
-        lock(&self.shared.slot).finish(Err(PublishError::Unavailable));
-        // Drop runs next and aborts the tasks.
     }
 }
 

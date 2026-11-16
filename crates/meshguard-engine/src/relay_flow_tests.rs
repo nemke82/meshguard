@@ -276,3 +276,31 @@ fn with_the_relay_off_messages_use_lora_only() {
     assert_eq!(t.route, Route::Radio);
     assert!(t.topic.is_none());
 }
+
+#[test]
+fn a_revoke_and_its_ack_travel_over_the_relay_alone() {
+    let (mut a, mut b) = paired("t5");
+    a.relay_disable(B, NOW).unwrap();
+    assert!(a.relay_outbound_topic(B).is_none(), "routing state is gone");
+    let c = a.relay_due_controls(NOW).pop().expect("revoke queued");
+    let topic = c.topic.clone().expect("revoke keeps its relay topic");
+    // B receives it on its inbound topic, ends the relay, and the ACK still
+    // has somewhere to go.
+    let actions = b.on_relay_frame(&topic, &c.frame, NOW);
+    assert!(b.relay_outbound_topic(A).is_none());
+    let reply = actions
+        .iter()
+        .find_map(|x| match x {
+            Action::SendAck {
+                route: Route::Relay,
+                reply,
+                ..
+            } => reply.clone(),
+            _ => None,
+        })
+        .expect("ACK with its reply topic");
+    assert!(b.relay_reply_valid(A, &reply));
+    // Blocking A in between makes that ACK stale.
+    b.config.send_generations.insert(A, 9);
+    assert!(!b.relay_reply_valid(A, &reply));
+}

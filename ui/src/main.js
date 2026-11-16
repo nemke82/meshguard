@@ -1024,6 +1024,7 @@ function enterChat(nodeNum, peerName, opts = {}) {
   renderHistoryBanner();
   showScreen(screenChat);
   loadChatMessages(nodeNum);
+  refreshRelayButton(nodeNum);
 }
 
 function renderHistoryBanner() {
@@ -1345,6 +1346,7 @@ function uiStatus(state) {
 
 function statusIcon(status) {
   switch (status) {
+    case "broker": return "\u2601";
     case "sending": return "\u23F3";
     case "sent": return "\u2713";
     case "delivered": return "\u2713\u2713";
@@ -1529,8 +1531,10 @@ async function setupEventListeners() {
 
   // Outbox progress: resent, timed out, expired, or confirmed.
   await listen("message-state", (event) => {
-    const { message_id, state: st } = event.payload;
-    const status = uiStatus(st);
+    const { message_id, state: st, via } = event.payload;
+    let status = uiStatus(st);
+    // Accepted by the MQTT broker: sent over the internet, not delivered.
+    if (status === "sent" && via === "relay") status = "broker";
     if (!status) return;
     for (const late of state.lateBuffers) {
       if (late.get(message_id) !== "delivered") late.set(message_id, status);
@@ -1568,6 +1572,27 @@ async function setupEventListeners() {
     if (peer) peer.protocol = protocol;
   });
 
+  await listen("relay-changed", (event) => {
+    const { peer_node, state: st, same_broker } = event.payload;
+    if (state.activePeerNodeNum === peer_node) refreshRelayButton(peer_node);
+    const name = peerDisplayName(peer_node);
+    if (st === "incoming" || st === "rotation") {
+      Toast.show({
+        sender: "Internet relay",
+        text:
+          same_broker === false
+            ? `${name} offers internet relay on a different broker`
+            : `${name} wants to use internet relay. Open the chat and tap the globe.`,
+      });
+    } else if (st === "active") {
+      Toast.show({ sender: "Internet relay", text: `Internet relay is on with ${name}` });
+    } else if (st === "none") {
+      Toast.show({ sender: "Internet relay", text: `Internet relay with ${name} is off` });
+    }
+  });
+
+  await listen("relay-status", (event) => renderRelayStatus(event.payload));
+
   await listen("pair-request", (event) => {
     const data = event.payload;
     if (isBlocked(data.from_node)) return; // blocked a moment ago
@@ -1604,6 +1629,7 @@ const notifSettingsClose = $("#notif-settings-close");
 
 btnNotifSettings.addEventListener("click", () => {
   loadBlocked();
+  refreshRelaySummary();
   notifSoundEnabled.checked = NotificationSound.settings.enabled;
   notifVolume.value = Math.round(NotificationSound.settings.volume * 100);
   notifTone.value = NotificationSound.settings.tone;
@@ -2298,6 +2324,7 @@ const BACK_CLOSERS = [
   ["#qr-overlay", "#qr-done"],
   ["#diag-overlay", "#diag-close"],
   ["#presets-overlay", "#presets-close"],
+  ["#relay-overlay", "#relay-close"],
   ["#notif-settings-overlay", "#notif-settings-close"],
 ];
 
@@ -2641,5 +2668,212 @@ document.addEventListener("click", (e) => {
   const shell = window.__TAURI__ && window.__TAURI__.shell;
   if (shell && shell.open) {
     shell.open(a.href).catch((err) => console.error("Could not open link:", err));
+  }
+});
+
+// ============================================================
+// Internet relay (Private MQTT, ADR-006)
+// ============================================================
+const relayOverlay = $("#relay-overlay");
+const RELAY_STATUS_TEXT = {
+  disabled: "Off",
+  not_configured: "Not set up",
+  connecting: "Connecting to the broker\u2026",
+  connected: "Connected to the broker",
+  auth_failed: "The broker refused the username or password",
+  tls_error: "The broker's certificate could not be verified",
+  disconnected: "Not connected; retrying",
+  stopped: "Off",
+};
+
+function peerDisplayName(nodeNum) {
+  const p = state.peers.find((x) => x.node_num === nodeNum);
+  return (p && p.device_name) || `!${(nodeNum >>> 0).toString(16).padStart(8, "0")}`;
+}
+
+function renderRelayStatus(st) {
+  const el = $("#relay-status");
+  if (!el || !st) return;
+  const text = RELAY_STATUS_TEXT[st.state] || st.state;
+  el.textContent = st.detail && st.state !== "auth_failed" ? `${text} (${st.detail})` : text;
+  el.classList.toggle("ok", st.state === "connected");
+  el.classList.toggle("bad", ["auth_failed", "tls_error"].includes(st.state));
+}
+
+async function refreshRelaySummary() {
+  try {
+    const s = await invoke("relay_get_settings");
+    $("#relay-summary").textContent = !s.vault
+      ? "Not available: this device has no secure key store."
+      : s.configured
+        ? `${s.enabled ? "On" : "Off"} \u2014 ${RELAY_STATUS_TEXT[s.status.state] || s.status.state}`
+        : "Off. Chat over the internet through your own MQTT broker when you are out of radio range.";
+    $("#btn-relay-settings").textContent = s.configured ? "Internet relay settings" : "Set up internet relay";
+  } catch (err) {
+    console.error("Relay settings:", err);
+  }
+}
+
+async function openRelaySettings() {
+  let s;
+  try {
+    s = await invoke("relay_get_settings");
+  } catch (err) {
+    alert("Could not load the relay settings: " + err);
+    return;
+  }
+  $("#relay-broker").value = s.broker || "";
+  $("#relay-username").value = s.username || "";
+  $("#relay-password").value = "";
+  $("#relay-password").placeholder = s.has_password ? "Saved \u2014 leave empty to keep" : "";
+  $("#relay-ca").value = s.ca_pem || "";
+  $("#relay-days").value = String(s.session_days || 3);
+  $("#relay-preference").value = s.preference || "auto";
+  $("#relay-enabled").checked = !!s.enabled;
+  $("#relay-enabled").disabled = !s.configured;
+  $("#relay-remove").hidden = !s.configured;
+  renderRelayStatus(s.status);
+  relayOverlay.style.display = "flex";
+}
+
+$("#btn-relay-settings").addEventListener("click", openRelaySettings);
+$("#relay-close").addEventListener("click", () => {
+  relayOverlay.style.display = "none";
+  refreshRelaySummary();
+});
+relayOverlay.addEventListener("click", (e) => {
+  if (e.target === relayOverlay) $("#relay-close").click();
+});
+
+$("#relay-generate").addEventListener("click", async () => {
+  const cur = $("#relay-username").value.trim();
+  if (cur && !confirm("Replace the username? The broker account must use the new one.")) return;
+  $("#relay-username").value = await invoke("relay_new_username");
+});
+
+$("#relay-save").addEventListener("click", async () => {
+  const btn = $("#relay-save");
+  btn.disabled = true;
+  try {
+    await invoke("relay_save_settings", {
+      broker: $("#relay-broker").value,
+      username: $("#relay-username").value,
+      password: $("#relay-password").value || null,
+      caPem: $("#relay-ca").value || null,
+      sessionDays: Number($("#relay-days").value),
+      preference: $("#relay-preference").value,
+    });
+    Toast.show({ sender: "Internet relay", text: "Settings saved" });
+    await openRelaySettings();
+  } catch (err) {
+    alert(String(err));
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$("#relay-enabled").addEventListener("change", async (e) => {
+  try {
+    await invoke("relay_set_enabled", { enabled: e.target.checked });
+  } catch (err) {
+    e.target.checked = !e.target.checked;
+    alert(String(err));
+  }
+});
+
+$("#relay-test").addEventListener("click", async () => {
+  const btn = $("#relay-test");
+  btn.disabled = true;
+  btn.textContent = "Testing\u2026";
+  try {
+    const st = await invoke("relay_test");
+    renderRelayStatus(st);
+    if (st.state === "connected") Toast.show({ sender: "Internet relay", text: "The broker accepted the connection" });
+  } catch (err) {
+    alert(String(err));
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Test connection";
+  }
+});
+
+$("#relay-remove").addEventListener("click", async () => {
+  if (!confirm("Remove the relay settings? The password and all relay keys are deleted from this device and your contacts are told the relay is off. The broker may still hold encrypted messages until they expire.")) return;
+  try {
+    await invoke("relay_remove");
+    await openRelaySettings();
+  } catch (err) {
+    alert(String(err));
+  }
+});
+
+async function refreshRelayButton(nodeNum) {
+  const btn = $("#btn-relay-chat");
+  btn.classList.remove("relay-on", "relay-pending");
+  try {
+    const c = await invoke("relay_contact", { peer: nodeNum });
+    if (state.activePeerNodeNum !== nodeNum) return;
+    btn.classList.toggle("relay-on", c.state === "active");
+    btn.classList.toggle("relay-pending", ["offered", "incoming", "rotation"].includes(c.state));
+    btn.title = {
+      none: "Internet relay: off",
+      offered: "Internet relay: waiting for your contact",
+      incoming: "Internet relay: your contact asks to use it",
+      rotation: "Internet relay: your contact sent a new key",
+      active: "Internet relay: on",
+    }[c.state];
+  } catch (err) {
+    console.error("Relay state:", err);
+  }
+}
+
+$("#btn-relay-chat").addEventListener("click", async () => {
+  const peer = state.activePeerNodeNum;
+  if (peer == null) return;
+  const name = chatPeerName.textContent;
+  let c;
+  try {
+    c = await invoke("relay_contact", { peer });
+  } catch (err) {
+    alert(String(err));
+    return;
+  }
+  const act = async (cmd, done) => {
+    try {
+      await invoke(cmd, { peer });
+      if (done) Toast.show({ sender: "Internet relay", text: done });
+    } catch (err) {
+      alert(String(err));
+    }
+    refreshRelayButton(peer);
+  };
+  if (!c.configured && c.state === "none") {
+    if (confirm("Internet relay is not set up on this phone. Open its settings?")) openRelaySettings();
+    return;
+  }
+  switch (c.state) {
+    case "none":
+      if (confirm(`Use internet relay with ${name}?\n\nWhen you are out of radio range, messages to ${name} can go over the internet through your MQTT broker. They stay end-to-end encrypted; the broker sees only metadata. ${name} has to accept, and must use the same broker.`))
+        await act("relay_contact_enable", `Offer sent to ${name}`);
+      break;
+    case "offered":
+      if (confirm(`Waiting for ${name} to accept internet relay. Cancel the offer?`))
+        await act("relay_contact_disable", "Offer cancelled");
+      break;
+    case "incoming":
+    case "rotation":
+      if (c.same_broker === false) {
+        if (confirm(`${name} uses a different MQTT broker, so the relay cannot work. Decline?`))
+          await act("relay_contact_disable", "Declined");
+      } else if (!c.configured) {
+        if (confirm(`${name} wants to use internet relay. Set it up on this phone first?`)) openRelaySettings();
+      } else if (confirm(`${name} wants to use internet relay.\n\nMessages stay end-to-end encrypted; your broker sees only metadata. Accept?\n\n(Cancel to decide later.)`)) {
+        await act("relay_contact_enable", `Internet relay is on with ${name}`);
+      }
+      break;
+    case "active":
+      if (confirm(`Internet relay is on with ${name}. Turn it off? Messages then go over LoRa only.`))
+        await act("relay_contact_disable", "Internet relay off");
+      break;
   }
 });

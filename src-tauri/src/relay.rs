@@ -162,14 +162,16 @@ async fn ensure_keys(app: &tauri::AppHandle) {
 pub async fn restart(app: &tauri::AppHandle) {
     let state = app.state::<AppState>();
     let mgr = &state.relay;
+    // Under the send gate: no publish is in progress, and every later one
+    // sees the new client (or none).
+    let _gate = mgr.send_gate.lock().await;
     let mut running = mgr.running.lock().await;
     if let Some(old) = running.take() {
         for t in &old.tasks {
             t.abort();
         }
-        if let Ok(client) = Arc::try_unwrap(old.client) {
-            client.stop().await;
-        }
+        // Stops the connection even if someone still holds the Arc.
+        old.client.shutdown().await;
     }
     crate::history::ensure_open(app).await;
     let enabled = state
@@ -270,10 +272,10 @@ fn attempt_of(r: &Result<(), PublishError>) -> Attempt {
 /// to broker*; only the peer's AppAck means delivered.
 pub async fn publish(app: &tauri::AppHandle, t: &Transmit, now: u64) -> Attempt {
     let state = app.state::<AppState>();
+    let _gate = state.relay.send_gate.lock().await;
     let Some(client) = state.relay.client().await else {
         return Attempt::Unavailable;
     };
-    let _gate = state.relay.send_gate.lock().await;
     let topic = {
         let e = state.engine();
         if !e.still_sendable(t) {
@@ -300,16 +302,17 @@ pub async fn publish_control(
     now: u64,
 ) -> bool {
     let state = app.state::<AppState>();
+    let _gate = state.relay.send_gate.lock().await;
     let Some(client) = state.relay.client().await else {
         return false;
     };
     if client.status() != RelayStatus::Connected {
         return false;
     }
-    let _gate = state.relay.send_gate.lock().await;
     let topic = {
         let mut e = state.engine();
-        let Some(topic) = e.relay_outbound_topic(c.peer) else {
+        // A revoke keeps the topic of the relay it ends.
+        let Some(topic) = e.relay_outbound_topic(c.peer).or_else(|| c.topic.clone()) else {
             return false;
         };
         if !e.relay_reserve_control(c, now) {
@@ -332,15 +335,19 @@ async fn run_actions(app: &tauri::AppHandle, actions: Vec<Action>) {
                 to,
                 frame,
                 route: Route::Relay,
+                reply: Some(reply),
             } => {
+                // Same gate as block/remove: re-checked right before the
+                // hand-over to the broker.
+                let _gate = state.relay.send_gate.lock().await;
                 let Some(client) = state.relay.client().await else {
                     continue;
                 };
-                let topic = state.engine().relay_outbound_topic(to);
-                if let Some(topic) = topic {
-                    if let Err(e) = client.publish(&topic, &frame, ACK_EXPIRY_SECS).await {
-                        tracing::info!("Relay ACK to {to} not published: {e}");
-                    }
+                if !state.engine().relay_reply_valid(to, &reply) {
+                    continue;
+                }
+                if let Err(e) = client.publish(&reply.topic, &frame, ACK_EXPIRY_SECS).await {
+                    tracing::info!("Relay ACK to {to} not published: {e}");
                 }
             }
             Action::Emit(event) => crate::mesh_radio::emit_event(app, event),
@@ -590,18 +597,7 @@ pub async fn relay_remove(app_handle: tauri::AppHandle) -> Result<(), MeshGuardE
     let state = app_handle.state::<AppState>();
     {
         let mut e = state.engine();
-        let now = now_secs();
-        let peers: Vec<u32> = e
-            .relay
-            .contacts
-            .keys()
-            .filter_map(|k| k.split_once(':'))
-            .filter_map(|(_, p)| u32::from_str_radix(p, 16).ok())
-            .collect();
-        for p in peers {
-            let _ = e.relay_disable(p, now);
-        }
-        e.update_relay(|b| b.password = None)?;
+        e.relay_remove_all(now_secs())?;
         let prev = e.config.relay.take();
         if let Err(err) = e.config.save(&state.config_dir) {
             e.config.relay = prev;

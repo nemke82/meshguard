@@ -1,6 +1,6 @@
 # ADR-006: Private Encrypted MQTT relay (Internet Relay)
 
-**Status:** Proposed (2026-11-16)
+**Status:** Accepted (2026-11-16); implemented through P3, device tests pending
 **Source:** `MESHGUARD_PRIVATE_ENCRYPTED_MQTT_RFC.md` (2026-11-16)
 **Scope:** MVP, app-to-app over a self-hosted broker. The LoRa↔MQTT
 gateway (RFC phase 4) is out of scope and needs its own RFC.
@@ -208,7 +208,7 @@ Each message keeps per-route attempt counts in memory, in the engine's in-flight
 |---|---|
 | **Off** (default) | LoRa only; the relay task does not run, so there is no MQTT traffic |
 | **Auto** | If both routes are up: the route *not* used by the previous attempt (the first attempt uses the relay). If one is up: that one. Otherwise wait |
-| **LoRa preferred** | LoRa if live and its attempts so far < 2. Otherwise the relay if connected. Otherwise LoRa if live. Otherwise wait |
+| **LoRa preferred** | LoRa if live and its attempts so far < 2, or if the previous attempt used the relay (LoRa and relay then alternate). Otherwise the relay. Otherwise wait |
 
 - A radio that comes back is always reconsidered. In both modes a live radio gets attempts even after several relay attempts. Each attempt goes to one transport.
 - The existing `RetryPolicy` (bounded attempts, back-off, ACK timeout) and the message TTL bound the total. SOS gets no dual-send in the MVP.
@@ -295,11 +295,11 @@ Examples:
 
 | Phase | PR | Content | Status |
 |---|---|---|---|
-| P0 | this | ADR-006, audit, threat model | Proposed |
-| P1a | — | `meshguard-core::relay`: secrets, topic derivation, control message bodies, vectors (no wire use yet) | Planned |
-| P1b | — | MQTT client (`rumqttc` v5 + rustls/ring), settings validation, status, Mosquitto harness and integration tests | Planned |
-| P2 | — | Engine: cancel queued sends on block/unpair (generation), relay settings and vault-sealed state, `Caps` reply flag, types 0x20–0x22 and the exchange state machine, inbound relay path, per-route ACKs, router in the outbox | Planned |
-| P3 | — | UI (Settings → Internet Relay, per-contact control, *Sent to broker* vs *Delivered*), Android lifecycle, docs and website (*Experimental*), device tests | Planned |
+| P0 | #48 | ADR-006, audit, threat model | Done |
+| P1a | #49 | `meshguard-core::relay`: secrets, topic derivation, control message bodies, vectors | Done |
+| P1b | #49 | MQTT client (`rumqttc` v5 + rustls/ring), settings validation, status, Mosquitto harness and integration tests | Done |
+| P2 | #50, #51, this | Engine: cancel queued sends on block/unpair (generation), relay settings and vault-sealed state, `Caps` reply flag, types 0x20–0x22 and the exchange state machine, inbound relay path, per-route ACKs, router in the outbox | Done |
+| P3 | this | UI (Settings → Internet Relay, per-contact control, *Sent to broker* vs *Delivered*), Android lifecycle, docs and website (*Experimental*), device tests | Done except device tests and the Android foreground-service type |
 | P4 | separate RFC | LoRa↔MQTT gateway | Not started |
 
 ## 10. Open questions
