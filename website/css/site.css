@@ -557,11 +557,93 @@ main {
   );
 }
 
-.path-caption {
-  margin-top: 14px;
+/* ── Decorative animations (home hero, How It Works) ─── */
+
+.media-video {
+  margin: 0;
+}
+
+.media-frame {
+  position: relative;
+}
+
+.media-video video {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1280 / 732;
+  object-fit: cover;
+  border-radius: var(--radius);
+  border: 1px solid var(--color-border);
+  box-shadow: var(--shadow);
+  background: var(--color-surface-2);
+}
+
+.media-video figcaption {
+  margin-top: 12px;
   font-size: 0.85rem;
   color: var(--color-muted);
   font-style: italic;
+}
+
+.video-toggle {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(10, 20, 17, 0.72);
+  color: #fff;
+  cursor: pointer;
+}
+
+.video-toggle[hidden] {
+  display: none;
+}
+
+.video-toggle:hover {
+  background: rgba(10, 20, 17, 0.88);
+}
+
+.video-toggle:focus-visible {
+  outline: 3px solid #fff;
+  box-shadow: 0 0 0 6px var(--color-primary);
+}
+
+.video-toggle .i-pause,
+.media-video.is-playing .video-toggle .i-play {
+  display: none;
+}
+
+.media-video.is-playing .video-toggle .i-pause {
+  display: block;
+}
+
+.stack {
+  display: grid;
+  gap: 24px;
+  align-content: start;
+}
+
+.how-split {
+  gap: 24px;
+  align-items: start;
+}
+
+.how-cards {
+  gap: 16px;
+}
+
+@media (min-width: 960px) {
+  .how-split {
+    grid-template-columns: 1fr 1.2fr;
+    gap: 40px;
+  }
 }
 
 /* ── Cards and grids ─────────────────────────────────── */
@@ -928,6 +1010,36 @@ tbody th {
   margin-top: 8px;
   font-size: 0.88rem;
   color: var(--color-muted);
+}
+
+/* Generated app illustrations: labelled, never presented as captures. */
+.shot-img img {
+  display: block;
+  width: 100%;
+  max-width: 300px;
+  height: auto;
+  border-radius: 22px;
+  border: 1px solid var(--color-border);
+  box-shadow: var(--shadow);
+  background: #0f1715;
+}
+
+.mock-tag {
+  display: inline-block;
+  margin-right: 4px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border-strong);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text);
+  font-style: normal;
+}
+
+.shot-img figcaption {
+  max-width: 300px;
 }
 
 .shot-pair {
