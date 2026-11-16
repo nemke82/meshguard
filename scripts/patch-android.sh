@@ -235,15 +235,19 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
     private val readQueue = LinkedBlockingQueue<ByteArray>(1)
     private val writeQueue = LinkedBlockingQueue<Int>(1)
     private val mtuQueue = LinkedBlockingQueue<Int>(1)
+    private val linkLock = Any()
 
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             if (isRetired(gatt)) return
             Log.d(TAG, "GATT state: $newState (status=$status)")
-            if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                linkUp = false
+            // Under linkLock so connectDevice's ready check cannot interleave.
+            synchronized(linkLock) {
+                if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                    linkUp = false
+                }
+                connectQueue.offer(newState)
             }
-            connectQueue.offer(newState)
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
@@ -820,11 +824,15 @@ class BlePlugin(private val activity: android.app.Activity) : Plugin(activity) {
         }
         gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
 
-        linkUp = true
         // The link may have dropped during discovery or the MTU wait; that
-        // callback queued STATE_DISCONNECTED. Checked after setting linkUp,
-        // so a drop racing with this line still leaves linkUp false.
-        if (connectQueue.peek() == BluetoothProfile.STATE_DISCONNECTED) {
+        // callback queued STATE_DISCONNECTED. Check and mark ready atomically
+        // with respect to the callback.
+        val lost = synchronized(linkLock) {
+            val dropped = connectQueue.peek() == BluetoothProfile.STATE_DISCONNECTED
+            if (!dropped) linkUp = true
+            dropped
+        }
+        if (lost) {
             closeGatt()
             invoke.reject("GATT connection lost during setup")
             return
