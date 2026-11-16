@@ -52,8 +52,8 @@ The guide uses generated app illustrations from the updated media starter pack (
 | `05-scan-contact-qr` | C | None noted |
 | `07-message-delivery-ack` | D | Uses "Delivered"/"ACK" labels; the app shows ✓ and ✓✓ |
 | `08-check-in` | E | A separate check-in screen with "Check location"; the real buttons sit above the message box in a chat |
-| `09-radio-diagnostics` | E | Says "2.4 GHz LoRa"; the T1000-E uses sub-GHz LoRa (868 or 915 MHz) |
-| `10-sos-warning` | E | None noted |
+| `09-radio-diagnostics` | E | Says "2.4 GHz LoRa" (the T1000-E uses sub-GHz LoRa, 868 or 915 MHz). Shows battery time left, firmware version and GPS fix, which the real diagnostics sheet does not have |
+| `10-sos-warning` | E | Shows a "Share my location" switch; the real SOS is a plain confirmation and always tries to include the location |
 
 Still placeholders (`.shot` figures), with no image yet:
 
