@@ -300,6 +300,30 @@ fn a_revoke_and_its_ack_travel_over_the_relay_alone() {
         })
         .expect("ACK with its reply topic");
     assert!(b.relay_reply_valid(A, &reply));
+    // That ACK is lost; A retries the revoke on the same topic. B, whose
+    // relay with A has ended, still answers it on the retiring topic, and
+    // A still receives the answer on its own retiring topic.
+    let retry = a
+        .relay_due_controls(NOW + 3600)
+        .pop()
+        .expect("revoke retried");
+    let actions = b.on_relay_frame(&topic, &retry.frame, NOW + 3600);
+    let ack = actions
+        .iter()
+        .find_map(|x| match x {
+            Action::SendAck {
+                frame,
+                reply: Some(r),
+                ..
+            } => Some((frame.clone(), r.topic.clone())),
+            _ => None,
+        })
+        .expect("duplicate revoke acknowledged again");
+    let back = a.on_relay_frame(&ack.1, &ack.0, NOW + 3600);
+    assert!(back.is_empty() || !back.iter().any(|x| matches!(x, Action::Emit(_))));
+    assert!(a.relay.outgoing.is_empty(), "revoke completed by its ACK");
+    assert!(a.relay.retiring.is_empty(), "and its topics retired");
+    // A message on a retiring topic is not accepted.
     // Blocking A in between makes that ACK stale.
     b.config.send_generations.insert(A, 9);
     assert!(!b.relay_reply_valid(A, &reply));

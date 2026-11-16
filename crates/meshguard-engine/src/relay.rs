@@ -189,6 +189,17 @@ impl StoredControl {
     }
 }
 
+/// The topics of a relay that ended, while its revoke completes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Retiring {
+    pub inbound: String,
+    pub outbound: String,
+    pub until: u64,
+    /// Send generation of the peer (stamped by the engine).
+    #[serde(default)]
+    pub gen: Option<u64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tombstone {
     pub confirm: String,
@@ -212,6 +223,11 @@ pub struct RelayBook {
     /// was not connected); handed to the client at start.
     #[serde(default)]
     pub unsubscribe: BTreeSet<String>,
+    /// Topics of relays that just ended (revoked), kept subscribed for the
+    /// lifetime of the revoke so a lost ACK can be repeated and received;
+    /// only control receipts are accepted on them.
+    #[serde(default)]
+    pub retiring: BTreeMap<String, Retiring>,
     /// Send generation of the peer (`config.send_generations`) each
     /// contact entry was made under. Blocking or removing raises it
     /// durably, so an entry that outlived a failed save is ignored.
@@ -460,6 +476,7 @@ impl RelayBook {
         if let Some((inbound, _)) = self.topics_of(my_node, peer, me) {
             self.unsubscribe.remove(&inbound);
         }
+        self.retiring.remove(&contact_key(my_node, peer));
         self.drop_outgoing(
             my_node,
             peer,
@@ -495,7 +512,7 @@ impl RelayBook {
         let out_topic = me
             .and_then(|m| self.topics_of(my_node, peer, m))
             .map(|(_, out)| out);
-        self.end(my_node, peer, me);
+        self.retire(my_node, peer, me, now);
         let until = now + tombstone_secs();
         let mut confirms = vec![c.secret().clone()];
         if let ContactRelay::Active {
@@ -578,15 +595,62 @@ impl RelayBook {
                 }
             }
         }
+        let gone: Vec<String> = self
+            .retiring
+            .keys()
+            .filter(|k| parse_contact_key(k).is_some_and(|(_, p)| p == peer))
+            .cloned()
+            .collect();
+        for k in &gone {
+            if let Some(r) = self.retiring.remove(k) {
+                self.unsubscribe.insert(r.inbound);
+            }
+        }
         let before = self.outgoing.len();
         self.outgoing.retain(|p| p.peer != peer);
         !keys.is_empty() || self.outgoing.len() != before
+    }
+
+    /// Like [`Self::end`] for a relay ended by a revoke (sent or received):
+    /// its topics stay subscribed as *retiring* until `now` + the revoke's
+    /// lifetime, so duplicate revokes and their ACKs still get through.
+    fn retire(&mut self, my_node: u32, peer: u32, me: Option<&RelayIdentity>, now: u64) {
+        let topics = me.and_then(|m| self.topics_of(my_node, peer, m));
+        self.end(my_node, peer, me);
+        if let Some((inbound, outbound)) = topics {
+            self.unsubscribe.remove(&inbound);
+            self.retiring.insert(
+                contact_key(my_node, peer),
+                Retiring {
+                    inbound,
+                    outbound,
+                    until: now + CONTROL_LIFETIME,
+                    gen: None,
+                },
+            );
+        }
+    }
+
+    /// Unsubscribe retiring topics whose time is up.
+    pub fn prune_retiring(&mut self, now: u64) {
+        let done: Vec<String> = self
+            .retiring
+            .iter()
+            .filter(|(_, r)| r.until < now)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in done {
+            if let Some(r) = self.retiring.remove(&k) {
+                self.unsubscribe.insert(r.inbound);
+            }
+        }
     }
 
     /// Remove the contact's state, its pending controls (except revokes)
     /// and note its topics for unsubscription.
     fn end(&mut self, my_node: u32, peer: u32, me: Option<&RelayIdentity>) {
         self.note_unsubscribe(my_node, peer, me);
+        self.retiring.remove(&contact_key(my_node, peer));
         self.contacts.remove(&contact_key(my_node, peer));
         self.drop_outgoing(
             my_node,
@@ -709,6 +773,7 @@ impl RelayBook {
                 if !matches || !same_broker || !is_valid_inbox(&a.inbox) {
                     return ControlOutcome::Handled;
                 }
+                self.retiring.remove(&key);
                 self.contacts.insert(
                     key,
                     ContactRelay::Active {
@@ -720,6 +785,7 @@ impl RelayBook {
                 if let Some((inbound, _)) = me.and_then(|me| self.topics_of(my_node, peer, me)) {
                     self.unsubscribe.remove(&inbound);
                 }
+
                 self.drop_outgoing(
                     my_node,
                     peer,
@@ -735,7 +801,7 @@ impl RelayBook {
                 let is =
                     |s: &StoredSecret| s.confirm().is_some_and(|x| confirm_matches(&x, &r.confirm));
                 if is(c.secret()) {
-                    self.end(my_node, peer, me);
+                    self.retire(my_node, peer, me, now);
                     // A newer offer waiting as a rotation is another
                     // generation: it stays, as an incoming offer.
                     if let ContactRelay::Active {
@@ -826,10 +892,26 @@ impl RelayBook {
     /// was one of our control messages (retries stop).
     pub fn control_acked(&mut self, my_node: u32, peer: u32, acked: &MessageId) -> bool {
         let id = acked.to_hex();
-        let before = self.outgoing.len();
-        self.outgoing
-            .retain(|p| !(p.my_node == my_node && p.peer == peer && p.message_id == id));
-        self.outgoing.len() != before
+        let Some(i) = self
+            .outgoing
+            .iter()
+            .position(|p| p.my_node == my_node && p.peer == peer && p.message_id == id)
+        else {
+            return false;
+        };
+        let p = self.outgoing.remove(i);
+        let revokes_left = self.outgoing.iter().any(|q| {
+            q.my_node == my_node
+                && q.peer == peer
+                && matches!(q.control, StoredControl::Revoke { .. })
+        });
+        if matches!(p.control, StoredControl::Revoke { .. }) && !revokes_left {
+            // The peer has it: the retiring topics can go.
+            if let Some(r) = self.retiring.remove(&contact_key(my_node, peer)) {
+                self.unsubscribe.insert(r.inbound);
+            }
+        }
+        true
     }
 }
 
@@ -1000,6 +1082,25 @@ impl crate::Engine {
         t
     }
 
+    /// Retiring inbound topics of the current radio (see
+    /// [`RelayBook::retiring`]): topic -> (peer, reply topic).
+    pub fn relay_retiring_topics(&self) -> BTreeMap<String, (u32, String)> {
+        let Some(my_node) = self.keys_owner else {
+            return BTreeMap::new();
+        };
+        self.relay
+            .retiring
+            .iter()
+            .filter_map(|(k, r)| {
+                let (m, peer) = parse_contact_key(k)?;
+                (m == my_node
+                    && !self.config.is_blocked(peer)
+                    && r.gen == Some(self.send_generation(peer)))
+                .then(|| (r.inbound.clone(), (peer, r.outbound.clone())))
+            })
+            .collect()
+    }
+
     /// The topic to publish to `peer` on, when the relay is active with it.
     pub fn relay_outbound_topic(&self, peer: u32) -> Option<String> {
         let my_node = self.keys_owner?;
@@ -1109,6 +1210,24 @@ impl crate::Engine {
         }
         book.generations
             .retain(|k, _| book.contacts.contains_key(k));
+        for (k, r) in book.retiring.iter_mut() {
+            if let Some((_, peer)) = parse_contact_key(k) {
+                r.gen.get_or_insert(gen_of(peer));
+            }
+        }
+        let stale: Vec<String> = book
+            .retiring
+            .iter()
+            .filter(|(k, r)| {
+                parse_contact_key(k).is_none_or(|(_, peer)| r.gen != Some(gen_of(peer)))
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in stale {
+            if let Some(r) = book.retiring.remove(&k) {
+                book.unsubscribe.insert(r.inbound);
+            }
+        }
         for c in &mut book.outgoing {
             c.gen.get_or_insert(gen_of(c.peer));
         }
@@ -1391,7 +1510,11 @@ mod tests {
         let got = pump(&mut a, A, &ua(), &mut b, B, &ub(), NOW);
         assert_eq!(got, vec![ControlOutcome::Revoked]);
         assert!(b.contact(B, A).is_none());
-        assert!(b.unsubscribe.contains(&b_in));
+        // Retiring first (a lost ACK can still be repeated), then gone.
+        assert!(!b.unsubscribe.contains(&b_in));
+        assert!(b.retiring.values().any(|r| r.inbound == b_in));
+        b.prune_retiring(NOW + CONTROL_LIFETIME + 1);
+        assert!(b.unsubscribe.contains(&b_in) && b.retiring.is_empty());
         // A replayed accept or offer of that generation is ignored.
         let stale = b.on_control(
             B,

@@ -125,7 +125,11 @@ fn broker_settings(
         client_id: s.client_id.clone(),
         session_expiry_secs: s.session_expiry_secs,
     };
-    let topics = engine.relay_inbound_topics().into_keys().collect();
+    let topics = engine
+        .relay_inbound_topics()
+        .into_keys()
+        .chain(engine.relay_retiring_topics().into_keys())
+        .collect();
     let unsubscribe = engine.relay.unsubscribe.clone();
     Some((settings, topics, unsubscribe))
 }
@@ -247,10 +251,23 @@ pub async fn sync_topics(app: &tauri::AppHandle) {
     let state = app.state::<AppState>();
     let mut running = state.relay.running.lock().await;
     let Some(r) = running.as_mut() else { return };
-    let topics: BTreeSet<String> = state.engine().relay_inbound_topics().into_keys().collect();
+    let (topics, unsubscribe) = {
+        let mut e = state.engine();
+        let now = now_secs();
+        if let Err(err) = e.update_relay(|b| b.prune_retiring(now)) {
+            tracing::warn!("Relay state not saved: {err}");
+        }
+        let topics: BTreeSet<String> = e
+            .relay_inbound_topics()
+            .into_keys()
+            .chain(e.relay_retiring_topics().into_keys())
+            .collect();
+        (topics, e.relay.unsubscribe.clone())
+    };
     if topics != r.topics && r.client.set_topics(topics.clone()).is_ok() {
         r.topics = topics;
     }
+    let _ = r.client.add_unsubscribes(unsubscribe);
     let pending = r.client.pending_unsubscribes();
     let mut engine = state.engine();
     if engine.relay.unsubscribe != pending {

@@ -124,6 +124,9 @@ pub struct StoredMessage {
     pub stored_at: u64,
     /// Outgoing: `DeliveryState::as_str()`; incoming: [`IN_RECEIVED`] / [`IN_READ`].
     pub state: String,
+    /// Outgoing and still queued: the transport of the last attempt
+    /// (`"mqtt"` for the relay).
+    pub last_transport: Option<String>,
 }
 
 /// An outgoing message that is due for work, with its body for re-sealing.
@@ -664,11 +667,14 @@ impl Store {
         limit: u32,
     ) -> Result<Vec<StoredMessage>> {
         let mut stmt = self.conn.prepare(
-            "SELECT message_id, direction, kind, body_enc, created_at, stored_at, state, rowid
-             FROM messages
-             WHERE conversation_id = ?1
-               AND (stored_at < ?2 OR (stored_at = ?2 AND rowid < ?3))
-             ORDER BY stored_at DESC, rowid DESC
+            "SELECT m.message_id, m.direction, m.kind, m.body_enc, m.created_at, m.stored_at,
+                    m.state, m.rowid, o.last_transport
+             FROM messages m
+             LEFT JOIN outbox o
+               ON o.conversation_id = m.conversation_id AND o.message_id = m.message_id
+             WHERE m.conversation_id = ?1
+               AND (m.stored_at < ?2 OR (m.stored_at = ?2 AND m.rowid < ?3))
+             ORDER BY m.stored_at DESC, m.rowid DESC
              LIMIT ?4",
         )?;
         let (before_at, before_seq) = match before {
@@ -685,11 +691,12 @@ impl Store {
                 r.get::<_, i64>(5)?,
                 r.get::<_, String>(6)?,
                 r.get::<_, i64>(7)?,
+                r.get::<_, Option<String>>(8)?,
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (id, dir, kind, enc, created, stored, state, seq) = row?;
+            let (id, dir, kind, enc, created, stored, state, seq, last_transport) = row?;
             let message_id = MessageId::from_slice(&id).ok_or(StoreError::Invalid("message id"))?;
             let direction = Direction::from_i64(dir)?;
             let body = self.cipher.open(
@@ -709,6 +716,7 @@ impl Store {
                 created_at: to_u64(created),
                 stored_at: to_u64(stored),
                 state,
+                last_transport,
             });
         }
         out.reverse();

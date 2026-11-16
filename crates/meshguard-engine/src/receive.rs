@@ -314,6 +314,36 @@ impl Engine {
             route_acks,
             &policy,
         );
+        // A relay that just ended carries only its revoke and ACKs; anything
+        // else is dropped and its id forgotten, so it still counts when it
+        // arrives over LoRa.
+        if route == Route::Relay
+            && self.relay_controls_only
+            && !matches!(
+                outcome,
+                Inbound::PeerAck { .. }
+                    | Inbound::Duplicate { .. }
+                    | Inbound::Relay {
+                        control: meshguard_core::relay::RelayControl::Revoke(_),
+                        ..
+                    }
+            )
+        {
+            match &outcome {
+                Inbound::Text {
+                    message_id: Some(id),
+                    ..
+                }
+                | Inbound::Status { message_id: id, .. }
+                | Inbound::Relay { message_id: id, .. } => {
+                    self.protection.dedup.forget(&sender, id);
+                    self.protection.relay_acks.forget(&sender, id);
+                }
+                _ => {}
+            }
+            tracing::info!("Frame from {from_node} on an ended relay dropped");
+            return;
+        }
         // No pairing over the internet (ADR-006 §6): the relay only carries
         // frames of contacts already paired over the radio.
         if route == Route::Relay
@@ -714,9 +744,15 @@ impl Engine {
         let Some(my_node) = self.keys_owner else {
             return actions;
         };
-        let Some(&peer) = self.relay_inbound_topics().get(topic) else {
-            tracing::debug!("Relay frame on an unknown topic dropped");
-            return actions;
+        let (peer, retiring_reply) = match self.relay_inbound_topics().get(topic) {
+            Some(&peer) => (peer, None),
+            None => match self.relay_retiring_topics().remove(topic) {
+                Some((peer, reply)) => (peer, Some(reply)),
+                None => {
+                    tracing::debug!("Relay frame on an unknown topic dropped");
+                    return actions;
+                }
+            },
         };
         let v2 = self
             .config
@@ -735,11 +771,14 @@ impl Engine {
         // its ACK must still reach the peer.
         let reply = self
             .relay_outbound_topic(peer)
+            .or_else(|| retiring_reply.clone())
             .map(|topic| crate::relay::RelayReply {
                 topic,
                 generation: self.send_generation(peer),
             });
+        self.relay_controls_only = retiring_reply.is_some();
         self.on_frame(peer, payload, my_node, Route::Relay, now, &mut actions);
+        self.relay_controls_only = false;
         for a in &mut actions {
             if let Action::SendAck {
                 route: Route::Relay,

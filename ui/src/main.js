@@ -1057,7 +1057,7 @@ function fromStored(m) {
     // Ours: when we wrote it; theirs: the sender's clock, as when it arrived.
     timestamp: (m.outgoing ? m.stored_at : m.created_at) * 1000,
     mine: m.outgoing,
-    status: m.outgoing ? uiStatus(m.state) || "sent" : "delivered",
+    status: m.outgoing ? uiStatus(m.state, m.via) || "sent" : "delivered",
   };
 }
 
@@ -1278,7 +1278,7 @@ async function sendMessage() {
       updateMessageStatus(msg.id, "delivered");
     } else if (msg.status === "sending") {
       // Saved and waiting in the outbox (radio away) stays "sending".
-      msg.status = uiStatus(receipt && receipt.state) || "sent";
+      msg.status = uiStatus(receipt && receipt.state, receipt && receipt.via) || "sent";
       updateMessageStatus(msg.id, msg.status);
     }
   } catch (err) {
@@ -1324,8 +1324,11 @@ function updateMessageStatus(id, status) {
   if (el) el.textContent = statusIcon(status);
 }
 
-/** Backend delivery state (history outbox) -> the bubble's status. */
-function uiStatus(state) {
+/** Backend delivery state (history outbox) -> the bubble's status.
+ * `via === "relay"`: the attempt went to the MQTT broker, so "submitted"
+ * means sent to broker (not delivered). */
+function uiStatus(state, via) {
+  if (state === "submitted" && via === "relay") return "broker";
   switch (state) {
     case "queued":
     case "retrying":
@@ -1532,9 +1535,7 @@ async function setupEventListeners() {
   // Outbox progress: resent, timed out, expired, or confirmed.
   await listen("message-state", (event) => {
     const { message_id, state: st, via } = event.payload;
-    let status = uiStatus(st);
-    // Accepted by the MQTT broker: sent over the internet, not delivered.
-    if (status === "sent" && via === "relay") status = "broker";
+    const status = uiStatus(st, via);
     if (!status) return;
     for (const late of state.lateBuffers) {
       if (late.get(message_id) !== "delivered") late.set(message_id, status);
@@ -1829,7 +1830,7 @@ async function sendCheckin(nodeNums, kind, text, withLocation) {
         checkin: st,
         timestamp: Date.now(),
         mine: true,
-        status: r.message_id && unmatchedDelivered.delete(r.message_id) ? "delivered" : uiStatus(r.state) || "sent",
+        status: r.message_id && unmatchedDelivered.delete(r.message_id) ? "delivered" : uiStatus(r.state, r.via) || "sent",
       };
       if (!state.messages[r.peer_node]) state.messages[r.peer_node] = [];
       if (state.messages[r.peer_node].some((m) => m.id === r.message_id)) continue;
@@ -2733,12 +2734,19 @@ async function openRelaySettings() {
   $("#relay-enabled").disabled = !s.configured;
   $("#relay-remove").hidden = !s.configured;
   renderRelayStatus(s.status);
+  // One modal at a time: Settings comes back when this closes.
+  relayFromSettings = notifOverlay.style.display !== "none";
+  notifOverlay.style.display = "none";
   relayOverlay.style.display = "flex";
 }
+
+let relayFromSettings = false;
 
 $("#btn-relay-settings").addEventListener("click", openRelaySettings);
 $("#relay-close").addEventListener("click", () => {
   relayOverlay.style.display = "none";
+  if (relayFromSettings) notifOverlay.style.display = "flex";
+  relayFromSettings = false;
   refreshRelaySummary();
 });
 relayOverlay.addEventListener("click", (e) => {

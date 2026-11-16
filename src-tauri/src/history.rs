@@ -89,6 +89,8 @@ pub fn emit_state(app: &tauri::AppHandle, event: Option<MessageStateEvent>) {
 
 /// Result of [`send`]: the message is stored (or not) and in this state.
 pub struct SendOutcome {
+    /// "relay" when the attempt went to the MQTT broker.
+    pub via: Option<&'static str>,
     pub message_id: MessageId,
     /// `DeliveryState::as_str()`.
     pub state: &'static str,
@@ -157,6 +159,7 @@ pub async fn send(
     let (attempt, st) = transmit(app, &t, now).await;
     if t.conversation.is_some() {
         return Ok(SendOutcome {
+            via: (t.route == Route::Relay && attempt == Attempt::Submitted).then_some("relay"),
             message_id: t.message_id,
             // Deleted meanwhile: report what was attempted.
             state: st.unwrap_or(DeliveryState::Queued).as_str(),
@@ -167,6 +170,7 @@ pub async fn send(
     // Memory-only history: as before, only an accepted write succeeds.
     match attempt {
         Attempt::Submitted => Ok(SendOutcome {
+            via: (t.route == Route::Relay).then_some("relay"),
             message_id: t.message_id,
             state: DeliveryState::Submitted.as_str(),
             stored: false,
@@ -342,6 +346,9 @@ pub struct MessageView {
     pub stored_at: u64,
     /// Outgoing: delivery state; incoming: "received" / "read".
     pub state: String,
+    /// "relay" when the last attempt of a queued message went to the MQTT
+    /// broker (`submitted` then means *sent to broker*).
+    pub via: Option<&'static str>,
     pub cursor: CursorView,
 }
 
@@ -380,6 +387,7 @@ pub async fn get_messages(
                 created_at: m.created_at,
                 stored_at: m.stored_at,
                 state: m.state,
+                via: (m.last_transport.as_deref() == Some("mqtt")).then_some("relay"),
                 cursor: CursorView {
                     stored_at: m.cursor.stored_at,
                     seq: m.cursor.seq,

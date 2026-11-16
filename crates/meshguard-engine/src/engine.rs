@@ -102,6 +102,8 @@ pub struct Engine {
     pub history: Slot,
     /// Outgoing messages being transmitted right now.
     pub(crate) in_flight: crate::outbox::InFlight,
+    /// Set while handling a frame on a retiring relay topic.
+    pub(crate) relay_controls_only: bool,
     /// Attempts per route of messages being sent (in memory).
     pub(crate) route_counts: HashMap<MessageId, crate::outbox::RouteCounts>,
     /// Private MQTT relay state (sealed in `relay_secrets.json`).
@@ -126,6 +128,7 @@ impl Engine {
             my_device_name: None,
             history: Slot::Closed,
             in_flight: Default::default(),
+            relay_controls_only: false,
             route_counts: HashMap::new(),
             relay: Default::default(),
             vault: None,

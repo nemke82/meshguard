@@ -334,6 +334,25 @@ impl RelayClient {
         lock(&self.shared.refused).clone()
     }
 
+    /// Remove `topics` from the broker session (unless they are wanted):
+    /// e.g. topics that retired while this client was running.
+    pub fn add_unsubscribes(&self, topics: BTreeSet<String>) -> Result<(), BadTopic> {
+        for t in &topics {
+            validate_topic(t)?;
+        }
+        {
+            let cur = lock(&self.shared.topics);
+            let mut pending = lock(&self.shared.unsub_pending);
+            let before = pending.len();
+            pending.extend(topics.into_iter().filter(|t| !cur.contains(t)));
+            if pending.len() == before {
+                return Ok(());
+            }
+        }
+        let _ = self.shared.control.send(Resync);
+        Ok(())
+    }
+
     /// Topics not yet confirmed unsubscribed by the broker. Persist these
     /// and pass them to the next [`Self::start`].
     pub fn pending_unsubscribes(&self) -> BTreeSet<String> {

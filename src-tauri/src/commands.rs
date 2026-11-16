@@ -585,6 +585,8 @@ pub struct SendReceipt {
     pub state: String,
     /// Saved in the history store (and retried from the outbox).
     pub stored: bool,
+    /// "relay" when it went to the MQTT broker (sent to broker).
+    pub via: Option<&'static str>,
 }
 
 /// Send an encrypted text message to a peer. With history on, it is saved
@@ -606,6 +608,7 @@ pub async fn send_message(
         protocol: r.protocol,
         state: r.state.to_string(),
         stored: r.stored,
+        via: r.via,
     })
 }
 
@@ -865,6 +868,8 @@ pub struct StatusSendResult {
     /// Delivery state when sent or queued (see `SendReceipt::state`).
     pub state: Option<String>,
     pub error: Option<String>,
+    /// "relay" when it went to the MQTT broker.
+    pub via: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -1020,9 +1025,11 @@ pub async fn send_status(
                 message_id: Some(o.message_id.to_hex()),
                 protocol: o.protocol,
                 state: Some(o.state.to_string()),
+                via: o.via,
                 error: None,
             },
             Err(e) => StatusSendResult {
+                via: None,
                 peer_node: peer,
                 message_id: None,
                 protocol,
