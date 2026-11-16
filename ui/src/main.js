@@ -1977,7 +1977,9 @@ $("#btn-scan-qr").addEventListener("click", async () => {
     openCodeEntry("This device has no camera scanner. Type the code shown on the other phone.");
     return;
   }
+  // Reserved before the first await: a second tap must not start another scan.
   if (qrScan.active) return;
+  qrScan.active = true;
   qrScan.cancelled = false;
   qrScan.typeInstead = false;
   let content = null;
@@ -1987,6 +1989,7 @@ $("#btn-scan-qr").addEventListener("click", async () => {
       openCodeEntry("Camera permission was denied. You can type the code instead.");
       return;
     }
+    if (qrScan.cancelled) return; // Back while the permission dialog was up
     // Windowed: the camera is drawn behind the page and our own controls
     // (Cancel, Type code) stay on top. The full-screen mode covered the app
     // with no way out but Back, which closed the app.
@@ -2012,10 +2015,6 @@ const qrScan = { active: false, cancelled: false, typeInstead: false };
 
 function setScanUi(on) {
   qrScan.active = on;
-  if (on) {
-    qrScan.cancelled = false;
-    qrScan.typeInstead = false;
-  }
   document.documentElement.classList.toggle("qr-scanning", on);
   $("#scan-ui").hidden = !on;
 }
