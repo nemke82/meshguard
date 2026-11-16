@@ -228,6 +228,14 @@ pub struct AppConfig {
     /// Version of the terms of use the user accepted (0: none yet).
     #[serde(default)]
     pub terms_accepted: u32,
+
+    /// Per node: send generation, raised when the contact is blocked or
+    /// removed. Queued messages carry the generation they were queued
+    /// under; older ones are never sent. Saved with the block/removal
+    /// itself, so it holds even if the history could not be cleaned up at
+    /// that moment.
+    #[serde(default)]
+    pub send_generations: std::collections::BTreeMap<u32, u64>,
 }
 
 impl Default for AppConfig {
@@ -241,6 +249,7 @@ impl Default for AppConfig {
             saved_links: Vec::new(),
             blocked: Vec::new(),
             terms_accepted: 0,
+            send_generations: Default::default(),
         }
     }
 }

@@ -1,0 +1,4 @@
+# MeshGuard family ACL (ADR-006 §5): read only your own inbox, write only
+# under your own username as the sender segment.
+pattern read  mg/r1/%u/#
+pattern write mg/r1/+/%u/#

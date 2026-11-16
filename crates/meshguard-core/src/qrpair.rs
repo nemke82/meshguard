@@ -55,7 +55,7 @@ impl std::fmt::Debug for PairCode {
     }
 }
 
-fn base32(bytes: &[u8]) -> String {
+pub(crate) fn base32(bytes: &[u8]) -> String {
     let mut out = String::new();
     let (mut acc, mut bits) = (0u32, 0u32);
     for &b in bytes {

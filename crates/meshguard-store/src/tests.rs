@@ -74,7 +74,7 @@ fn chat_list_is_sorted_by_last_activity() {
     assert_eq!(order, vec![ann.clone(), bob.clone()]);
 
     let out = OutboundMessage::queued(id(3), 30, 3600);
-    s.insert_outgoing(&bob, MessageKind::Text, b"c", 30, &out)
+    s.insert_outgoing(&bob, MessageKind::Text, b"c", 30, &out, 0)
         .unwrap();
     assert_eq!(s.conversations().unwrap()[0].id, bob);
 }
@@ -85,7 +85,7 @@ fn outbox_follows_the_delivery_state_machine() {
     let c = s.upsert_conversation(ME, BOB, None).unwrap();
     let policy = RetryPolicy::default();
     let mut out = OutboundMessage::queued(id(9), 1000, 1000 + 3600);
-    s.insert_outgoing(&c, MessageKind::Text, b"are you ok?", 1000, &out)
+    s.insert_outgoing(&c, MessageKind::Text, b"are you ok?", 1000, &out, 0)
         .unwrap();
 
     // Queued: due now, with the body available for re-sealing.
@@ -119,7 +119,7 @@ fn expiry_makes_a_message_due() {
     let c = s.upsert_conversation(ME, BOB, None).unwrap();
     let mut out = OutboundMessage::queued(id(4), 0, 100);
     out.next_deadline = 500; // e.g. waiting on a long backoff
-    s.insert_outgoing(&c, MessageKind::Text, b"x", 0, &out)
+    s.insert_outgoing(&c, MessageKind::Text, b"x", 0, &out, 0)
         .unwrap();
     assert!(s.due_outbound(99).unwrap().is_empty());
     let due = s.due_outbound(100).unwrap();
@@ -133,7 +133,7 @@ fn deleting_a_conversation_removes_messages_and_outbox() {
     s.insert_incoming(&c, id(1), MessageKind::Text, b"a", 1, 1)
         .unwrap();
     let out = OutboundMessage::queued(id(2), 1, 3600);
-    s.insert_outgoing(&c, MessageKind::Status, b"ok", 1, &out)
+    s.insert_outgoing(&c, MessageKind::Status, b"ok", 1, &out, 0)
         .unwrap();
     assert!(s.delete_conversation(&c).unwrap());
     assert!(!s.delete_conversation(&c).unwrap());
@@ -347,7 +347,7 @@ fn unconfirmed_sends_leave_the_outbox_once_submitted() {
     let mut s = store();
     let c = s.upsert_conversation(ME, BOB, None).unwrap();
     let mut out = OutboundMessage::queued(id(5), 0, 3600);
-    s.insert_outgoing(&c, MessageKind::Text, b"v1", 0, &out)
+    s.insert_outgoing(&c, MessageKind::Text, b"v1", 0, &out, 0)
         .unwrap();
     out.record_submitted(1, TransportId::new("ble"), &RetryPolicy::default())
         .unwrap();
@@ -382,7 +382,7 @@ fn a_late_ack_can_still_confirm_a_failed_message() {
     let mut s = store();
     let c = s.upsert_conversation(ME, BOB, None).unwrap();
     let mut out = OutboundMessage::queued(id(6), 0, 10);
-    s.insert_outgoing(&c, MessageKind::Text, b"late", 0, &out)
+    s.insert_outgoing(&c, MessageKind::Text, b"late", 0, &out, 0)
         .unwrap();
     out.expire().unwrap();
     s.update_outbound(&c, &out).unwrap();
@@ -395,4 +395,43 @@ fn a_late_ack_can_still_confirm_a_failed_message() {
     assert_eq!(s.messages(&c, None, 5).unwrap()[0].state, "peer_ack");
     assert!(s.outbound(&c, &id(6)).unwrap().is_none());
     assert!(s.outgoing(&c, &id(99)).unwrap().is_none());
+}
+
+#[test]
+fn cancelling_a_peer_fails_its_queued_messages_only() {
+    let mut s = store();
+    let c = s.upsert_conversation(ME, BOB, None).unwrap();
+    // Same peer seen from another local radio.
+    let c2 = s.upsert_conversation(ME + 1, BOB, None).unwrap();
+    let other = s.upsert_conversation(ME, BOB + 1, None).unwrap();
+    for (conv, n) in [(&c, 1), (&c2, 2), (&other, 3)] {
+        let out = OutboundMessage::queued(id(n), 1, 3600);
+        s.insert_outgoing(conv, MessageKind::Text, b"x", 1, &out, 0)
+            .unwrap();
+    }
+    let mut cancelled = s.cancel_outbound_to(BOB).unwrap();
+    cancelled.sort();
+    assert_eq!(cancelled, vec![(c.clone(), id(1)), (c2.clone(), id(2))]);
+    // Gone from the outbox, kept in history as failed.
+    let due = s.due_outbound(u64::MAX / 2).unwrap();
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].outbound.message_id, id(3));
+    assert_eq!(s.messages(&c, None, 10).unwrap()[0].state, "failed");
+    assert!(s.outbound(&c, &id(1)).unwrap().is_none());
+    // Nothing left: a second call cancels nothing.
+    assert!(s.cancel_outbound_to(BOB).unwrap().is_empty());
+}
+
+#[test]
+fn the_send_generation_is_kept_through_updates() {
+    let mut s = store();
+    let c = s.upsert_conversation(ME, BOB, None).unwrap();
+    let mut out = OutboundMessage::queued(id(1), 1, 3600);
+    s.insert_outgoing(&c, MessageKind::Text, b"x", 1, &out, 7)
+        .unwrap();
+    out.attempts = 2;
+    s.update_outbound(&c, &out).unwrap();
+    let due = s.due_outbound(u64::MAX / 2).unwrap();
+    assert_eq!(due[0].send_generation, 7);
+    assert_eq!(due[0].outbound.attempts, 2);
 }

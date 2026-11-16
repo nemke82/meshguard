@@ -253,6 +253,7 @@ impl Engine {
                 message_id: Some(_),
                 ..
             } | Inbound::Status { .. }
+                | Inbound::Relay { .. }
         );
         // A new message's id is saved only once the message is in the
         // history (commit_id). Other authenticated v2 frames: now.
@@ -384,7 +385,7 @@ impl Engine {
                 })));
                 self.ack(from_node, ack, now, actions);
             }
-            Inbound::Caps { features, ack } => {
+            Inbound::Caps { features, ack, .. } => {
                 tracing::info!("Node {from_node} announced features {features:#x}");
                 self.mark_features(from_node, features & SUPPORTED_FEATURES);
                 self.ack(from_node, ack, now, actions);
@@ -428,6 +429,14 @@ impl Engine {
                 tracing::info!(
                     "Pair request ({version:?}) from node {from_node} — already have key"
                 );
+            }
+            Inbound::Relay { message_id, .. } => {
+                // This build does not announce FEATURE_RELAY yet, so peers do
+                // not send these. Ignored unacknowledged, and the id is
+                // forgotten so a retry is not taken for a handled duplicate
+                // (and acknowledged) either (ADR-006 P2).
+                self.protection.dedup.forget(&sender, &message_id);
+                tracing::info!("Relay control message from {from_node} ignored");
             }
             Inbound::Dropped(reason) => {
                 tracing::info!("Dropped frame from {from_node}: {reason:?}");
@@ -781,6 +790,31 @@ mod tests {
         assert!(incoming(&a).is_empty());
         assert_eq!(acks(&a), 0);
         assert!(!a.iter().any(|a| matches!(a, Action::Undecryptable { .. })));
+    }
+
+    #[test]
+    fn relay_controls_are_not_acknowledged_while_relay_is_unsupported() {
+        use meshguard_core::relay::{RelayControl, RelayRevoke};
+        let mut e = engine("relay-ignored", WireProtocol::V2, true);
+        let id = MessageId::random();
+        let control = RelayControl::Revoke(RelayRevoke { confirm: [1; 16] });
+        for _ in 0..3 {
+            // Each retry: same id, fresh nonce.
+            let f = meshguard_core::outbound::seal_relay(
+                &control,
+                id,
+                &key(),
+                &PeerIdentity::meshtastic_node(PEER),
+                &PeerIdentity::meshtastic_node(ME),
+                NOW as u32,
+                DEFAULT_FRAME_BUDGET,
+            )
+            .unwrap();
+            let a = e.on_mesh_packet(&packet(PEER, f), ME, NOW);
+            assert_eq!(acks(&a), 0, "{a:?}");
+        }
+        let sender = PeerIdentity::meshtastic_node(PEER);
+        assert!(!e.protection.dedup.contains(&sender, &id));
     }
 
     #[test]

@@ -46,6 +46,9 @@ const MIGRATIONS: &[&str] = &[
        name  TEXT PRIMARY KEY,
        value BLOB NOT NULL
      );",
+    // 3: the peer's send generation when the message was queued; rows of an
+    // older generation (contact blocked or removed since) are never sent.
+    "ALTER TABLE outbox ADD COLUMN send_generation INTEGER NOT NULL DEFAULT 0;",
 ];
 
 /// The schema version this build writes.

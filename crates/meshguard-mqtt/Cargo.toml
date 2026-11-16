@@ -1,0 +1,24 @@
+[package]
+name = "meshguard-mqtt"
+version = "0.1.0"
+edition = "2021"
+description = "Private MQTT relay client for MeshGuard (ADR-006): authenticated MQTT 5 over TLS, opaque frames only"
+license = "MIT"
+publish = false
+
+[dependencies]
+# MQTT 5 client. Rustls without a default provider: we install `ring`,
+# which cross-compiles to Android without cmake (aws-lc-rs needs it).
+rumqttc = { version = "0.25.1", default-features = false, features = ["use-rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-pki-types = { version = "1.9", features = ["std"] }
+webpki-roots = "1"
+tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
+thiserror = "2"
+tracing = "0.1"
+zeroize = "1"
+rand = "0.8"
+bytes = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }

@@ -16,6 +16,7 @@
 //! * [`outbound`] / [`inbound`] — sealing per negotiated [`outbound::WireVersion`]
 //!   and the receive-side decision for one frame (the start of the engine).
 //! * [`ratelimit`] — airtime budgets and notification cooldowns.
+//! * [`relay`] — private MQTT relay secrets, topics and control bodies (ADR-006).
 //!
 //! The crate has no Tauri, tokio, BLE or Android dependency on purpose, so it
 //! can later be exposed to a native Android service (see
@@ -33,6 +34,7 @@ pub mod keystore;
 pub mod outbound;
 pub mod qrpair;
 pub mod ratelimit;
+pub mod relay;
 pub mod status;
 pub mod transport;
 pub mod v1;

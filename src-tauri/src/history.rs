@@ -31,7 +31,7 @@ fn now_secs() -> u64 {
 }
 
 /// Open the store on first use (once the vault key is available).
-async fn ensure_open(app: &tauri::AppHandle) {
+pub async fn ensure_open(app: &tauri::AppHandle) {
     let state = app.state::<AppState>();
     if !matches!(state.engine().history, Slot::Closed) {
         return;
@@ -80,7 +80,7 @@ pub async fn record_peer_ack(
 use meshguard_engine::outbox::{Attempt, Transmit};
 pub use meshguard_engine::outbox::{Content, MessageStateEvent};
 
-fn emit_state(app: &tauri::AppHandle, event: Option<MessageStateEvent>) {
+pub fn emit_state(app: &tauri::AppHandle, event: Option<MessageStateEvent>) {
     if let Some(e) = event {
         let _ = app.emit("message-state", e);
     }
@@ -121,7 +121,7 @@ async fn transmit(
 ) -> (Attempt, Option<DeliveryState>) {
     let state = app.state::<AppState>();
     let attempt = if live_radio(&state).await == Some(t.my_node) {
-        classify(&crate::commands::send_as(&state, t.my_node, t.to, t.frame.clone()).await)
+        classify(&crate::commands::send_transmit(&state, t).await)
     } else {
         Attempt::Unavailable
     };
