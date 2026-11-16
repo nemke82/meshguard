@@ -1872,3 +1872,82 @@ html.qr-scanning #app {
   flex: 1;
   max-width: 180px;
 }
+
+/* ── Blocking and terms of use ─────────────────────────── */
+.pair-request-banner .pair-request-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.btn-danger-text {
+  color: var(--danger);
+}
+
+.blocked-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+}
+
+.blocked-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 14px;
+}
+
+.blocked-list li.empty {
+  color: var(--text-muted);
+  border-top: none;
+}
+
+.blocked-list .blocked-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terms-overlay {
+  z-index: 9000;
+  /* Nothing of the app shows until the terms are accepted. */
+  background: var(--bg-primary);
+  backdrop-filter: none;
+}
+
+.terms-card {
+  max-height: calc(100vh - 40px);
+  display: flex;
+  flex-direction: column;
+}
+
+.terms-body {
+  overflow-y: auto;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  margin-bottom: 16px;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.terms-body p,
+.terms-body ul {
+  margin: 0 0 10px;
+}
+
+.terms-body ul {
+  padding-left: 20px;
+}
+
+.terms-body a {
+  color: var(--accent, #0099ff);
+}
+
+.peer-badge.blocked-badge {
+  color: var(--danger);
+  border-color: rgba(255, 71, 87, 0.4);
+  background: rgba(255, 71, 87, 0.1);
+}

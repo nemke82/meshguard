@@ -113,6 +113,32 @@ impl Engine {
         }
     }
 
+    /// Block a node: forget the contact and its chat key, drop its pending
+    /// chat request, and ignore its MeshGuard frames from now on. The caller
+    /// saves the config and removes the remembered key. Returns false when
+    /// the node was already blocked.
+    pub fn block_node(&mut self, node: u32, name: String, now: i64) -> bool {
+        self.keys.remove(&node);
+        self.pending_pair_requests.remove(&node);
+        self.config.peers.retain(|p| p.node_num != node);
+        if self.config.is_blocked(node) {
+            return false;
+        }
+        self.config.blocked.push(crate::config::BlockedNode {
+            node_num: node,
+            name,
+            blocked_at: now,
+        });
+        true
+    }
+
+    /// Unblock a node. Returns false when it was not blocked.
+    pub fn unblock_node(&mut self, node: u32) -> bool {
+        let before = self.config.blocked.len();
+        self.config.blocked.retain(|b| b.node_num != node);
+        self.config.blocked.len() != before
+    }
+
     /// Write the replay cache to disk.
     pub fn save_dedup(&self) -> Result<(), MeshGuardError> {
         crate::dedup_store::save(&self.config_dir, &self.protection.dedup)
