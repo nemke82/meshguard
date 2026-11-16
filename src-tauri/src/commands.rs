@@ -584,14 +584,23 @@ pub async fn list_peers(state: State<'_, AppState>) -> Result<Vec<PeerConfig>, M
 pub async fn remove_peer(
     peer_node_num: u32,
     state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
 ) -> Result<(), MeshGuardError> {
     state.engine().keys.remove(&peer_node_num);
     crate::key_store::remove_peer(&state.config_dir, peer_node_num)?;
 
-    let mut engine = state.engine();
-    let config = &mut engine.config;
-    config.peers.retain(|p| p.node_num != peer_node_num);
-    config.save(&state.config_dir)?;
+    let cancelled = {
+        let mut engine = state.engine();
+        let config = &mut engine.config;
+        config.peers.retain(|p| p.node_num != peer_node_num);
+        config.save(&state.config_dir)?;
+        // Nothing queued for a removed contact is sent later (e.g. to
+        // whoever pairs as this node next).
+        engine.cancel_sends_to(peer_node_num)
+    };
+    for e in cancelled {
+        crate::history::emit_state(&app_handle, Some(e));
+    }
     Ok(())
 }
 
@@ -613,6 +622,7 @@ fn refuse_blocked(state: &AppState, node: u32) -> Result<(), MeshGuardError> {
 pub async fn block_node(
     node_num: u32,
     state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
 ) -> Result<Vec<BlockedNode>, MeshGuardError> {
     // Serialized with pairing: a pairing in progress cannot re-add the
     // contact or its key after the block.
@@ -638,8 +648,14 @@ pub async fn block_node(
             }
             return Err(e);
         }
-        engine.config.blocked.clone()
+        // Saved: nothing queued for the blocked node is sent any more.
+        let cancelled = engine.cancel_sends_to(node_num);
+        (engine.config.blocked.clone(), cancelled)
     };
+    let (blocked, cancelled) = blocked;
+    for e in cancelled {
+        crate::history::emit_state(&app_handle, Some(e));
+    }
     // The block is saved; a remembered key left behind is never used for a
     // blocked node, so this is not an error for the user.
     if let Err(e) = crate::key_store::remove_peer(&state.config_dir, node_num) {

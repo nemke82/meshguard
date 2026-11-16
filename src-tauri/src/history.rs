@@ -80,7 +80,7 @@ pub async fn record_peer_ack(
 use meshguard_engine::outbox::{Attempt, Transmit};
 pub use meshguard_engine::outbox::{Content, MessageStateEvent};
 
-fn emit_state(app: &tauri::AppHandle, event: Option<MessageStateEvent>) {
+pub fn emit_state(app: &tauri::AppHandle, event: Option<MessageStateEvent>) {
     if let Some(e) = event {
         let _ = app.emit("message-state", e);
     }
@@ -120,6 +120,11 @@ async fn transmit(
     now: u64,
 ) -> (Attempt, Option<DeliveryState>) {
     let state = app.state::<AppState>();
+    // Checked right before the hand-over: sends to a contact blocked or
+    // removed since this was sealed are not transmitted.
+    if !state.engine().still_sendable(t) {
+        return (Attempt::Unavailable, None);
+    }
     let attempt = if live_radio(&state).await == Some(t.my_node) {
         classify(&crate::commands::send_as(&state, t.my_node, t.to, t.frame.clone()).await)
     } else {

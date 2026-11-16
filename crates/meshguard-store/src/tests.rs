@@ -396,3 +396,28 @@ fn a_late_ack_can_still_confirm_a_failed_message() {
     assert!(s.outbound(&c, &id(6)).unwrap().is_none());
     assert!(s.outgoing(&c, &id(99)).unwrap().is_none());
 }
+
+#[test]
+fn cancelling_a_peer_fails_its_queued_messages_only() {
+    let mut s = store();
+    let c = s.upsert_conversation(ME, BOB, None).unwrap();
+    // Same peer seen from another local radio.
+    let c2 = s.upsert_conversation(ME + 1, BOB, None).unwrap();
+    let other = s.upsert_conversation(ME, BOB + 1, None).unwrap();
+    for (conv, n) in [(&c, 1), (&c2, 2), (&other, 3)] {
+        let out = OutboundMessage::queued(id(n), 1, 3600);
+        s.insert_outgoing(conv, MessageKind::Text, b"x", 1, &out)
+            .unwrap();
+    }
+    let mut cancelled = s.cancel_outbound_to(BOB).unwrap();
+    cancelled.sort();
+    assert_eq!(cancelled, vec![(c.clone(), id(1)), (c2.clone(), id(2))]);
+    // Gone from the outbox, kept in history as failed.
+    let due = s.due_outbound(u64::MAX / 2).unwrap();
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].outbound.message_id, id(3));
+    assert_eq!(s.messages(&c, None, 10).unwrap()[0].state, "failed");
+    assert!(s.outbound(&c, &id(1)).unwrap().is_none());
+    // Nothing left: a second call cancels nothing.
+    assert!(s.cancel_outbound_to(BOB).unwrap().is_empty());
+}

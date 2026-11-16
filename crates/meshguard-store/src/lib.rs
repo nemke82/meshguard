@@ -482,6 +482,44 @@ impl Store {
         Ok(())
     }
 
+    /// Take every queued message to `peer_node` (from any local radio) out
+    /// of the outbox and mark it failed, keeping it in the history. Used
+    /// when the contact is blocked or removed, so nothing queued for it is
+    /// sent later (e.g. after re-pairing). Returns what was cancelled.
+    pub fn cancel_outbound_to(
+        &mut self,
+        peer_node: u32,
+    ) -> Result<Vec<(ConversationId, MessageId)>> {
+        let tx = self.conn.transaction()?;
+        let rows: Vec<(String, Vec<u8>)> = {
+            let mut stmt = tx.prepare(
+                "SELECT o.conversation_id, o.message_id
+                 FROM outbox o JOIN conversations c USING (conversation_id)
+                 WHERE c.peer_node = ?1",
+            )?;
+            let rows = stmt.query_map(params![i64::from(peer_node)], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+            })?;
+            rows.collect::<std::result::Result<_, _>>()?
+        };
+        let mut cancelled = Vec::with_capacity(rows.len());
+        for (conv, id) in rows {
+            tx.execute(
+                "UPDATE messages SET state = ?3
+                 WHERE conversation_id = ?1 AND message_id = ?2 AND direction = 1",
+                params![conv, id, DeliveryState::Failed.as_str()],
+            )?;
+            tx.execute(
+                "DELETE FROM outbox WHERE conversation_id = ?1 AND message_id = ?2",
+                params![conv, id],
+            )?;
+            let message_id = MessageId::from_slice(&id).ok_or(StoreError::Invalid("message id"))?;
+            cancelled.push((ConversationId(conv), message_id));
+        }
+        tx.commit()?;
+        Ok(cancelled)
+    }
+
     /// Bookkeeping for an outgoing message whether or not it is still in
     /// the outbox (a late ACK may confirm a message already marked failed
     /// or expired). Without an outbox row the deadlines and attempts are 0.
