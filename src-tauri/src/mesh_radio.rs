@@ -1162,7 +1162,7 @@ fn spawn_listener(mut listener: meshtastic::packet::PacketReceiver, ctx: Listene
 async fn run_actions(ctx: &ListenerCtx, actions: Vec<Action>, now: u64) {
     for action in actions {
         match action {
-            Action::SendAck { to, frame } => send_ack(ctx, to, frame).await,
+            Action::SendAck { to, frame, .. } => send_ack(ctx, to, frame).await,
             Action::Emit(event) => emit_event(&ctx.app_handle, event),
             Action::Notify { title, body, node } => {
                 #[cfg(target_os = "android")]
@@ -1200,9 +1200,12 @@ async fn run_actions(ctx: &ListenerCtx, actions: Vec<Action>, now: u64) {
                     crate::status_tx::announce_caps(&state, peer).await;
                 });
             }
-            // The relay client (ADR-006 P2e) follows topic changes; control
-            // messages go out with the outbox loop.
-            Action::RelayTopicsChanged | Action::RelayControlsDue => {}
+            Action::RelayTopicsChanged => {
+                let app = ctx.app_handle.clone();
+                tauri::async_runtime::spawn(async move { crate::relay::sync_topics(&app).await });
+            }
+            // Control messages go out with the outbox loop.
+            Action::RelayControlsDue => {}
             Action::ProbePeers => {
                 let app = ctx.app_handle.clone();
                 tauri::async_runtime::spawn(async move {
@@ -1265,6 +1268,14 @@ fn emit_nodes_updated(app: &tauri::AppHandle) {
         }
         let _ = app.emit("mesh-nodes-updated", ());
     });
+}
+
+/// Post a system notification (Android only).
+pub fn notify(app: &tauri::AppHandle, title: &str, body: &str, node: u32) {
+    #[cfg(target_os = "android")]
+    show_android_notification(app, title, body, node);
+    #[cfg(not(target_os = "android"))]
+    let _ = (app, title, body, node);
 }
 
 /// Send an engine event to the UI.

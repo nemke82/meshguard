@@ -22,9 +22,10 @@ use meshguard_store::{conversation_id, parse_conversation_id, MessageKind};
 use meshtastic::protobufs;
 use serde::Serialize;
 
-use crate::config::WireProtocol;
+use crate::config::{RelayPreference, WireProtocol};
 use crate::engine::{Engine, Slot};
 use crate::error::MeshGuardError;
+use crate::receive::Route;
 
 /// An in-flight mark older than this is stale (the caller never reported
 /// the attempt); the message becomes eligible again.
@@ -95,6 +96,65 @@ pub struct Transmit {
     /// peer's sends (block, unpair) bumps it; check it with
     /// [`Engine::still_sendable`] right before handing the frame over.
     pub generation: u64,
+    /// Where this attempt goes.
+    pub route: Route,
+    /// The relay topic, for `Route::Relay`.
+    pub topic: Option<String>,
+    /// When the message expires (unix seconds): the relay's message expiry.
+    pub expires_at: u64,
+}
+
+/// Which transports can carry a message right now.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Routes {
+    /// The radio connected now, if any.
+    pub radio: Option<u32>,
+    /// The relay client is connected.
+    pub relay: bool,
+}
+
+/// Attempts of one message per route, for the routing policy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RouteCounts {
+    pub radio: u32,
+    pub relay: u32,
+    pub last: Option<Route>,
+}
+
+/// The routing policy of ADR-006 §6, for a contact the relay is active with:
+/// * Auto: if both routes are up, the one not used last (relay first);
+///   otherwise whichever is up.
+/// * LoRa preferred: LoRa while it is up and has had fewer than 2 attempts,
+///   then the relay, then LoRa again.
+///
+/// A radio that comes back is always reconsidered. `None`: wait.
+pub fn pick_route(
+    pref: RelayPreference,
+    counts: RouteCounts,
+    radio_ok: bool,
+    relay_ok: bool,
+) -> Option<Route> {
+    match (radio_ok, relay_ok) {
+        (false, false) => None,
+        (true, false) => Some(Route::Radio),
+        (false, true) => Some(Route::Relay),
+        (true, true) => Some(match pref {
+            RelayPreference::Auto => {
+                if counts.last == Some(Route::Relay) {
+                    Route::Radio
+                } else {
+                    Route::Relay
+                }
+            }
+            RelayPreference::LoraPreferred => {
+                if counts.radio < 2 || counts.last == Some(Route::Relay) {
+                    Route::Radio
+                } else {
+                    Route::Relay
+                }
+            }
+        }),
+    }
 }
 
 /// How a transmission went.
@@ -114,6 +174,9 @@ pub struct MessageStateEvent {
     pub conversation_id: String,
     pub message_id: String,
     pub state: String,
+    /// "relay" when the change came from an attempt over the MQTT relay
+    /// (`submitted` then means *sent to broker*, not delivered).
+    pub via: Option<&'static str>,
 }
 
 impl MessageStateEvent {
@@ -122,6 +185,7 @@ impl MessageStateEvent {
             conversation_id: c.0.clone(),
             message_id: id.to_hex(),
             state: state.as_str().to_string(),
+            via: None,
         }
     }
 }
@@ -258,7 +322,10 @@ impl Engine {
         Ok((sealed.frame, protocol))
     }
 
-    fn transport_id(&self) -> TransportId {
+    fn transport_id(&self, route: Route) -> TransportId {
+        if route == Route::Relay {
+            return TransportId::new("mqtt");
+        }
         TransportId::new(
             self.config
                 .last_link
@@ -266,6 +333,62 @@ impl Engine {
                 .map(|l| l.kind())
                 .unwrap_or("radio"),
         )
+    }
+
+    /// The relay preference while the relay is on (`None`: off).
+    fn relay_preference(&self) -> Option<RelayPreference> {
+        self.config
+            .relay
+            .as_ref()
+            .filter(|r| r.enabled)
+            .map(|r| r.preference)
+    }
+
+    /// Choose the route for the next attempt of `message_id` to `peer`,
+    /// sealed for radio `my_node`. Radio when nothing is up (the attempt
+    /// then reports `Unavailable` and the message waits).
+    fn route_for(
+        &self,
+        my_node: u32,
+        peer: u32,
+        message_id: &MessageId,
+        protocol: WireProtocol,
+        routes: Routes,
+    ) -> Option<(Route, Option<String>)> {
+        let radio_ok = routes.radio == Some(my_node);
+        let topic = match self.relay_preference() {
+            Some(_)
+                if routes.relay
+                    && protocol == WireProtocol::V2
+                    && self.keys_owner == Some(my_node) =>
+            {
+                self.relay_outbound_topic(peer)
+            }
+            _ => None,
+        };
+        let counts = self
+            .route_counts
+            .get(message_id)
+            .copied()
+            .unwrap_or_default();
+        let pref = self.relay_preference().unwrap_or_default();
+        match pick_route(pref, counts, radio_ok, topic.is_some())? {
+            Route::Radio => Some((Route::Radio, None)),
+            Route::Relay => Some((Route::Relay, topic)),
+        }
+    }
+
+    /// Count an attempt of `t` on its route.
+    fn count_attempt(&mut self, t: &Transmit) {
+        if self.route_counts.len() > 2048 {
+            self.route_counts.clear();
+        }
+        let c = self.route_counts.entry(t.message_id).or_default();
+        match t.route {
+            Route::Radio => c.radio += 1,
+            Route::Relay => c.relay += 1,
+        }
+        c.last = Some(t.route);
     }
 
     /// Seal a new message for `peer` and store it (when history is on).
@@ -277,6 +400,7 @@ impl Engine {
         peer: u32,
         content: &Content,
         now: u64,
+        routes: Routes,
     ) -> Result<Transmit, MeshGuardError> {
         let my_node = self.sending_node().ok_or(MeshGuardError::NotConnected)?;
         let (protocol, capable) = self.peer_wire(peer);
@@ -299,6 +423,9 @@ impl Engine {
         } else {
             0
         };
+        let (route, topic) = self
+            .route_for(my_node, peer, &message_id, protocol, routes)
+            .unwrap_or((Route::Radio, None));
         Ok(Transmit {
             conversation,
             message_id,
@@ -309,6 +436,9 @@ impl Engine {
             attempt: 0,
             token,
             generation,
+            route,
+            topic,
+            expires_at: now + ttl,
         })
     }
 
@@ -321,6 +451,9 @@ impl Engine {
         attempt: Attempt,
         now: u64,
     ) -> (Option<DeliveryState>, Option<MessageStateEvent>) {
+        if attempt != Attempt::Unavailable {
+            self.count_attempt(t);
+        }
         let Some(c) = &t.conversation else {
             // Memory-only: nothing stored, only the result counts.
             let st = match attempt {
@@ -335,7 +468,7 @@ impl Engine {
             tracing::debug!("Late result for {} ignored", t.message_id);
             return (None, None);
         }
-        let transport = self.transport_id();
+        let transport = self.transport_id(t.route);
         let policy = RetryPolicy::default();
         let unconfirmable = t.protocol == WireProtocol::V1;
         let r = self.with_store(|s| {
@@ -361,7 +494,11 @@ impl Engine {
         });
         match r {
             Some((Some(st), true)) => {
-                (Some(st), Some(MessageStateEvent::new(c, &t.message_id, st)))
+                let mut ev = MessageStateEvent::new(c, &t.message_id, st);
+                if t.route == Route::Relay {
+                    ev.via = Some("relay");
+                }
+                (Some(st), Some(ev))
             }
             Some((st, _)) => (st, None),
             None => (None, None),
@@ -369,14 +506,14 @@ impl Engine {
     }
 
     /// One pass over the outbox: expire old messages, settle ACK timeouts,
-    /// and pick at most one message to resend (shared LoRa airtime) when
-    /// its radio `live_radio` is connected. Returns the state changes and
+    /// and pick at most one message to resend (shared LoRa airtime) when a
+    /// route for it is up (`routes`). Returns the state changes and
     /// the frame to transmit, which is marked in flight until
     /// [`Self::finish_attempt`].
     pub fn outbox_step(
         &mut self,
         now: u64,
-        live_radio: Option<u32>,
+        routes: Routes,
     ) -> (Vec<MessageStateEvent>, Option<Transmit>) {
         let mut events = Vec::new();
         let Some(due) = self.with_store(|s| s.due_outbound(now)) else {
@@ -419,11 +556,18 @@ impl Engine {
                     }
                 }
                 Some(DueAction::Send) => {
-                    // Only through the radio the chat belongs to; otherwise
-                    // wait (the TTL still applies).
-                    if resend.is_some() || live_radio != Some(my_node) {
+                    // Only through the radio the chat belongs to, or the
+                    // relay of that radio's keys; otherwise wait (the TTL
+                    // still applies).
+                    if resend.is_some() {
                         continue;
                     }
+                    let (protocol, _) = self.peer_wire(peer);
+                    let Some((route, topic)) =
+                        self.route_for(my_node, peer, &out.message_id, protocol, routes)
+                    else {
+                        continue;
+                    };
                     let Some(content) = Content::from_stored(item.kind, &item.body) else {
                         continue;
                     };
@@ -444,6 +588,9 @@ impl Engine {
                         attempt: out.attempts,
                         token,
                         generation: self.send_generation(peer),
+                        route,
+                        topic,
+                        expires_at: out.expires_at,
                     });
                 }
                 None => {}
@@ -577,6 +724,13 @@ mod tests {
         e
     }
 
+    fn radio(node: u32) -> Routes {
+        Routes {
+            radio: Some(node),
+            relay: false,
+        }
+    }
+
     fn text() -> Content {
         Content::Text("hello".into())
     }
@@ -584,10 +738,10 @@ mod tests {
     #[test]
     fn a_message_in_flight_is_not_sent_twice() {
         let mut e = engine("flight", WireProtocol::V2, true);
-        let t = e.enqueue(PEER, &text(), NOW).unwrap();
+        let t = e.enqueue(PEER, &text(), NOW, radio(ME)).unwrap();
         assert!(t.conversation.is_some());
         // Due right away, but the caller is transmitting it.
-        assert!(e.outbox_step(NOW, Some(ME)).1.is_none());
+        assert!(e.outbox_step(NOW, radio(ME)).1.is_none());
         let (st, ev) = e.finish_attempt(&t, Attempt::Submitted, NOW);
         assert_eq!(st, Some(DeliveryState::Submitted));
         assert_eq!(ev.unwrap().state, "submitted");
@@ -596,7 +750,7 @@ mod tests {
     #[test]
     fn an_ack_during_the_write_is_not_undone() {
         let mut e = engine("ack-race", WireProtocol::V2, true);
-        let t = e.enqueue(PEER, &text(), NOW).unwrap();
+        let t = e.enqueue(PEER, &text(), NOW, radio(ME)).unwrap();
         let ack = e.record_peer_ack(ME, PEER, t.message_id).unwrap();
         assert_eq!(ack.state, "peer_ack");
         let (st, ev) = e.finish_attempt(&t, Attempt::Submitted, NOW);
@@ -607,20 +761,20 @@ mod tests {
     #[test]
     fn an_unacked_message_is_resent_through_its_radio_only() {
         let mut e = engine("retry", WireProtocol::V2, true);
-        let t = e.enqueue(PEER, &text(), NOW).unwrap();
+        let t = e.enqueue(PEER, &text(), NOW, radio(ME)).unwrap();
         e.finish_attempt(&t, Attempt::Submitted, NOW);
 
-        let (ev, tx) = e.outbox_step(NOW + 61, Some(ME));
+        let (ev, tx) = e.outbox_step(NOW + 61, radio(ME));
         assert_eq!(ev[0].state, "retrying");
         assert!(tx.is_none());
         let later = NOW + 61 + 60;
         // Another radio connected: wait.
-        assert!(e.outbox_step(later, Some(0x99)).1.is_none());
-        let tx = e.outbox_step(later, Some(ME)).1.expect("resend");
+        assert!(e.outbox_step(later, radio(0x99)).1.is_none());
+        let tx = e.outbox_step(later, radio(ME)).1.expect("resend");
         assert_eq!((tx.message_id, tx.attempt, tx.to), (t.message_id, 1, PEER));
         // Same id, fresh nonce (ADR-003): the frame differs.
         assert_ne!(tx.frame, t.frame);
-        assert!(e.outbox_step(later, Some(ME)).1.is_none(), "in flight");
+        assert!(e.outbox_step(later, radio(ME)).1.is_none(), "in flight");
         let (st, _) = e.finish_attempt(&tx, Attempt::Submitted, later);
         assert_eq!(st, Some(DeliveryState::Submitted));
     }
@@ -628,9 +782,9 @@ mod tests {
     #[test]
     fn cancelling_a_peer_stops_queued_and_prepared_sends() {
         let mut e = engine("cancel", WireProtocol::V2, true);
-        let first = e.enqueue(PEER, &text(), NOW).unwrap();
+        let first = e.enqueue(PEER, &text(), NOW, radio(ME)).unwrap();
         e.finish_attempt(&first, Attempt::Submitted, NOW);
-        let prepared = e.enqueue(PEER, &text(), NOW).unwrap();
+        let prepared = e.enqueue(PEER, &text(), NOW, radio(ME)).unwrap();
         assert!(e.still_sendable(&prepared));
 
         let ev = e.cancel_sends_to(PEER);
@@ -646,9 +800,9 @@ mod tests {
         // Nothing comes back from the outbox, even once a key is there again
         // (re-paired).
         e.keys.insert(PEER, SessionKey::from_bytes([8; 32]));
-        assert!(e.outbox_step(NOW + 3600, Some(ME)).1.is_none());
+        assert!(e.outbox_step(NOW + 3600, radio(ME)).1.is_none());
         // New messages after re-pairing are sendable.
-        let fresh = e.enqueue(PEER, &text(), NOW).unwrap();
+        let fresh = e.enqueue(PEER, &text(), NOW, radio(ME)).unwrap();
         assert!(e.still_sendable(&fresh));
         // A late ACK for a cancelled message still counts (it was delivered).
         assert_eq!(
@@ -660,46 +814,46 @@ mod tests {
     #[test]
     fn the_barrier_stops_messages_the_store_could_not_cancel() {
         let mut e = engine("barrier", WireProtocol::V2, true);
-        let t = e.enqueue(PEER, &text(), NOW).unwrap();
+        let t = e.enqueue(PEER, &text(), NOW, radio(ME)).unwrap();
         e.finish_attempt(&t, Attempt::Submitted, NOW);
         // As if the store had been unavailable when the contact was removed:
         // only the raised generation is in place.
         e.config.send_generations.insert(PEER, 1);
         e.keys.insert(PEER, SessionKey::from_bytes([8; 32]));
-        let (ev, tx) = e.outbox_step(NOW + 3600, Some(ME));
+        let (ev, tx) = e.outbox_step(NOW + 3600, radio(ME));
         assert!(tx.is_none(), "never resent");
         assert_eq!(ev.len(), 1);
         assert_eq!(ev[0].state, "failed");
         // Retired: nothing left to do.
-        assert!(e.outbox_step(NOW + 7200, Some(ME)).0.is_empty());
+        assert!(e.outbox_step(NOW + 7200, radio(ME)).0.is_empty());
         // Messages queued after it go out normally, even in the same second
         // and whatever the clock says.
-        let fresh = e.enqueue(PEER, &text(), NOW - 100).unwrap();
+        let fresh = e.enqueue(PEER, &text(), NOW - 100, radio(ME)).unwrap();
         assert_eq!(fresh.generation, 1);
         e.finish_attempt(&fresh, Attempt::Submitted, NOW - 100);
         let later = NOW - 100 + 61;
-        e.outbox_step(later, Some(ME));
-        assert!(e.outbox_step(later + 120, Some(ME)).1.is_some());
+        e.outbox_step(later, radio(ME));
+        assert!(e.outbox_step(later + 120, radio(ME)).1.is_some());
     }
 
     #[test]
     fn v1_messages_are_never_resent() {
         let mut e = engine("v1", WireProtocol::V1, true);
-        let t = e.enqueue(PEER, &text(), NOW).unwrap();
+        let t = e.enqueue(PEER, &text(), NOW, radio(ME)).unwrap();
         e.finish_attempt(&t, Attempt::Submitted, NOW);
-        let (ev, tx) = e.outbox_step(NOW + 3600, Some(ME));
+        let (ev, tx) = e.outbox_step(NOW + 3600, radio(ME));
         assert!(ev.is_empty() && tx.is_none());
     }
 
     #[test]
     fn a_missing_radio_does_not_count_as_an_attempt() {
         let mut e = engine("away", WireProtocol::V2, true);
-        let t = e.enqueue(PEER, &text(), NOW).unwrap();
+        let t = e.enqueue(PEER, &text(), NOW, radio(ME)).unwrap();
         let (st, ev) = e.finish_attempt(&t, Attempt::Unavailable, NOW);
         assert_eq!(st, Some(DeliveryState::Queued));
         assert!(ev.is_none());
         let tx = e
-            .outbox_step(NOW + 1, Some(ME))
+            .outbox_step(NOW + 1, radio(ME))
             .1
             .expect("sent once the radio is back");
         assert_eq!(tx.attempt, 0);
@@ -708,7 +862,7 @@ mod tests {
     #[test]
     fn deleting_during_the_write_wins() {
         let mut e = engine("delete", WireProtocol::V2, true);
-        let t = e.enqueue(PEER, &text(), NOW).unwrap();
+        let t = e.enqueue(PEER, &text(), NOW, radio(ME)).unwrap();
         let c = t.conversation.clone().unwrap();
         e.with_store(|s| s.delete_conversation(&c)).unwrap();
         assert_eq!(e.finish_attempt(&t, Attempt::Submitted, NOW), (None, None));
@@ -717,7 +871,7 @@ mod tests {
     #[test]
     fn without_history_only_the_write_counts() {
         let mut e = engine("memory", WireProtocol::V2, false);
-        let t = e.enqueue(PEER, &text(), NOW).unwrap();
+        let t = e.enqueue(PEER, &text(), NOW, radio(ME)).unwrap();
         assert!(t.conversation.is_none());
         assert_eq!(
             e.finish_attempt(&t, Attempt::Submitted, NOW).0,
@@ -730,7 +884,7 @@ mod tests {
     fn nothing_is_stored_without_a_key() {
         let mut e = engine("nokey", WireProtocol::V2, true);
         assert!(matches!(
-            e.enqueue(0x33, &text(), NOW),
+            e.enqueue(0x33, &text(), NOW, radio(ME)),
             Err(MeshGuardError::NoSession)
         ));
         assert!(e.with_store(|s| s.conversations()).unwrap().is_empty());
@@ -788,12 +942,12 @@ mod tests {
     #[test]
     fn a_late_result_does_not_touch_a_newer_attempt() {
         let mut e = engine("stale", WireProtocol::V2, true);
-        let old = e.enqueue(PEER, &text(), NOW).unwrap();
+        let old = e.enqueue(PEER, &text(), NOW, radio(ME)).unwrap();
         // The first write never reported back; after the in-flight window
         // the outbox takes over.
         let later = NOW + IN_FLIGHT_SECS + 1;
         let new = e
-            .outbox_step(later, Some(ME))
+            .outbox_step(later, radio(ME))
             .1
             .expect("resend after stale mark");
         assert_eq!(
@@ -801,7 +955,7 @@ mod tests {
             (None, None)
         );
         // Still in flight for the newer attempt: no third transmit.
-        assert!(e.outbox_step(later, Some(ME)).1.is_none());
+        assert!(e.outbox_step(later, radio(ME)).1.is_none());
         let (st, ev) = e.finish_attempt(&new, Attempt::Submitted, later);
         assert_eq!(st, Some(DeliveryState::Submitted));
         assert!(ev.is_some());

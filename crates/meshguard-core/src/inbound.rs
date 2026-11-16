@@ -148,6 +148,21 @@ pub fn process_inbound(
     dedup: &mut DedupCache,
     policy: &InboundPolicy,
 ) -> Inbound {
+    process_inbound_routed(frame, ctx, dedup, None, policy)
+}
+
+/// Like [`process_inbound`] for a frame that came over a second transport
+/// with its own ACK allowance (ADR-006 §6). `dedup` stays shared, so a
+/// message is shown once whichever way it came, but copies on this route
+/// are counted in `route_acks` only: replays on one transport cannot use
+/// up the ACK allowance of the other. `None`: the shared cache counts.
+pub fn process_inbound_routed(
+    frame: &[u8],
+    ctx: &InboundContext<'_>,
+    dedup: &mut DedupCache,
+    route_acks: Option<&mut DedupCache>,
+    policy: &InboundPolicy,
+) -> Inbound {
     let aad = aad_context(ctx.sender, ctx.me);
     let decoded = match decode_frame(frame, ctx.key, &aad) {
         Ok(d) => d,
@@ -188,12 +203,28 @@ pub fn process_inbound(
         return Inbound::Dropped(DropReason::Stale(e));
     }
 
-    let seen = dedup.observe(ctx.sender, env.message_id, ctx.now);
+    let (seen, ack_seen) = match route_acks {
+        None => {
+            let seen = dedup.observe(ctx.sender, env.message_id, ctx.now);
+            (seen, seen)
+        }
+        Some(acks) => {
+            let seen = if dedup.contains(ctx.sender, &env.message_id) {
+                Seen::Duplicate { copies: 2 }
+            } else {
+                dedup.observe(ctx.sender, env.message_id, ctx.now)
+            };
+            (seen, acks.observe(ctx.sender, env.message_id, ctx.now))
+        }
+    };
     if seen == Seen::Refused {
         return Inbound::Dropped(DropReason::DedupFull);
     }
 
-    let ack = if env.message_type.requires_ack() && seen.should_ack(policy.max_acks_per_message) {
+    let ack = if env.message_type.requires_ack()
+        && ack_seen != Seen::Refused
+        && ack_seen.should_ack(policy.max_acks_per_message)
+    {
         ctx.key.and_then(|k| {
             seal_ack(
                 env.message_id,
@@ -626,5 +657,43 @@ mod tests {
             crate::status::decode_caps(&crate::status::encode_caps_request(5)),
             Some(5)
         );
+    }
+
+    #[test]
+    fn a_second_route_has_its_own_ack_allowance_but_shared_dedup() {
+        let mut t = setup();
+        let mut relay_acks = t.policy.new_dedup_cache(64);
+        let f = t.send(WireVersion::V2, OutPayload::Text("hi"));
+        let (a, b) = (t.a.clone(), t.b.clone());
+        let key = SessionKey::from_bytes(*t.key.to_bytes());
+        let c = InboundContext {
+            sender: &a,
+            me: &b,
+            key: Some(&key),
+            pinned: Some(WireVersion::V2),
+            now: NOW,
+        };
+        // The relay replays the frame many times: shown once, ACKed 3 times.
+        let mut acks = 0;
+        for i in 0..6 {
+            let r = process_inbound_routed(&f, &c, &mut t.dedup, Some(&mut relay_acks), &t.policy);
+            if i == 0 {
+                assert!(matches!(r, Inbound::Text { .. }));
+            } else {
+                assert!(matches!(r, Inbound::Duplicate { .. }));
+            }
+            if matches!(
+                r,
+                Inbound::Text { ack: Some(_), .. } | Inbound::Duplicate { ack: Some(_), .. }
+            ) {
+                acks += 1;
+            }
+        }
+        assert_eq!(acks, 3);
+        // The same frame over LoRa is still acknowledged.
+        assert!(matches!(
+            t.recv(&f, Some(WireVersion::V2)),
+            Inbound::Duplicate { ack: Some(_), .. }
+        ));
     }
 }

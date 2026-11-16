@@ -284,6 +284,29 @@ pub(crate) async fn send_transmit(
     radio.send_private_app(t.frame.clone(), t.to).await
 }
 
+/// Transmit a relay control message over the radio. Like
+/// [`send_transmit`], under the radio gate: the control is checked to be
+/// still pending (not cancelled by a block or removal) and its attempt is
+/// reserved and saved before the hand-over.
+pub(crate) async fn send_control(
+    state: &AppState,
+    c: &meshguard_engine::relay::ControlTransmit,
+    now: u64,
+) -> Result<(), MeshGuardError> {
+    let mut radio_guard = state.radio.lock().await;
+    let radio = radio_guard.as_mut().ok_or(MeshGuardError::NotConnected)?;
+    {
+        let mut engine = state.engine();
+        if engine.my_node_num != Some(c.my_node) {
+            return Err(MeshGuardError::NotConnected);
+        }
+        if !engine.relay_reserve_control(c, now) {
+            return Ok(());
+        }
+    }
+    radio.send_private_app(c.frame.clone(), c.peer).await
+}
+
 fn key_copy(key: &crate::crypto::SessionKey) -> crate::crypto::SessionKey {
     crate::crypto::SessionKey::from_bytes(*key.to_bytes())
 }
@@ -611,9 +634,10 @@ pub async fn remove_peer(
     app_handle: tauri::AppHandle,
 ) -> Result<(), MeshGuardError> {
     crate::history::ensure_open(&app_handle).await;
-    // The radio lock is the gate shared with outbox sends (send_transmit):
-    // nothing sealed before this point is handed to the radio afterwards.
+    // The radio lock and the relay send gate are shared with outbox sends:
+    // nothing sealed before this point is handed over afterwards.
     let _gate = state.radio.lock().await;
+    let _relay_gate = state.relay.send_gate.lock().await;
     crate::key_store::remove_peer(&state.config_dir, peer_node_num)?;
     // One engine critical section: no message can be queued for the peer
     // between the cancellation and the removal of its key.
@@ -667,8 +691,9 @@ pub async fn block_node(
     // contact or its key after the block.
     let _pairing = PAIRING.lock().await;
     crate::history::ensure_open(&app_handle).await;
-    // Gate shared with outbox sends (see send_transmit).
+    // Gates shared with outbox sends (see send_transmit, relay::publish).
     let _gate = state.radio.lock().await;
+    let _relay_gate = state.relay.send_gate.lock().await;
     let (blocked, cancelled) = {
         let mut engine = state.engine();
         let name = engine

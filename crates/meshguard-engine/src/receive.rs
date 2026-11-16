@@ -3,7 +3,7 @@
 //! back as [`Action`]s for the caller (the Tauri listener today, the
 //! Android service later).
 
-use meshguard_core::inbound::{process_inbound, Inbound, InboundContext};
+use meshguard_core::inbound::{Inbound, InboundContext};
 use meshguard_core::outbound::WireVersion;
 use meshguard_core::status::{StatusBody, StatusKind, FEATURE_STATUS, SUPPORTED_FEATURES};
 use meshguard_core::{MessageId, PeerIdentity};
@@ -20,13 +20,30 @@ use crate::diagnostics::SignalSample;
 const KNOWN_FEATURES: u32 = SUPPORTED_FEATURES | meshguard_core::relay::FEATURE_RELAY;
 use crate::engine::{Engine, Slot};
 
+/// Largest relay frame accepted (MG2 frames are at most 228 bytes).
+pub const RELAY_MAX_FRAME: usize = 512;
+
+/// The transport a frame came over or goes out on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Route {
+    /// The Meshtastic radio (LoRa).
+    Radio,
+    /// The private MQTT relay (ADR-006).
+    Relay,
+}
+
 /// Something the caller has to do after the engine handled a packet.
 #[derive(Debug)]
 pub enum Action {
     /// Transmit an application ACK to `to` (PrivateApp port), if the link
     /// this packet came from is still the current one. The airtime budget
     /// was already charged.
-    SendAck { to: u32, frame: Vec<u8> },
+    SendAck {
+        to: u32,
+        frame: Vec<u8>,
+        route: Route,
+    },
     /// Tell the UI.
     Emit(Event),
     /// Post a system notification (Android).
@@ -246,7 +263,21 @@ impl Engine {
             "PrivateApp message from node {from_node} ({} bytes)",
             payload.len()
         );
+        self.on_frame(from_node, payload, my_node, Route::Radio, now, actions);
+    }
 
+    /// One MeshGuard frame of `from_node` for radio `my_node`, received
+    /// over `route`. LoRa and relay frames take the same path: one dedup,
+    /// one history, one notification; ACKs go back the way the frame came.
+    fn on_frame(
+        &mut self,
+        from_node: u32,
+        payload: &[u8],
+        my_node: u32,
+        route: Route,
+        now: u64,
+        actions: &mut Vec<Action>,
+    ) {
         let sender = PeerIdentity::meshtastic_node(from_node);
         let me = PeerIdentity::meshtastic_node(my_node);
         let pinned: Option<WireVersion> = self
@@ -270,7 +301,30 @@ impl Engine {
             now,
         };
         let policy = self.protection.policy;
-        let outcome = process_inbound(payload, &ictx, &mut self.protection.dedup, &policy);
+        let route_acks = match route {
+            Route::Radio => None,
+            Route::Relay => Some(&mut self.protection.relay_acks),
+        };
+        let outcome = meshguard_core::inbound::process_inbound_routed(
+            payload,
+            &ictx,
+            &mut self.protection.dedup,
+            route_acks,
+            &policy,
+        );
+        // No pairing over the internet (ADR-006 §6): the relay only carries
+        // frames of contacts already paired over the radio.
+        if route == Route::Relay
+            && matches!(
+                outcome,
+                Inbound::PairRequest { .. }
+                    | Inbound::PairAccept { .. }
+                    | Inbound::Undecryptable(_)
+            )
+        {
+            tracing::info!("Relay frame from {from_node} dropped: {outcome:?}");
+            return;
+        }
         let is_new = matches!(
             outcome,
             Inbound::Text {
@@ -355,7 +409,7 @@ impl Engine {
                     message_id: id.to_hex(),
                     conversation_id,
                 })));
-                self.ack(from_node, ack, now, actions);
+                self.ack(from_node, ack, route, now, actions);
             }
             Inbound::Status {
                 message_id,
@@ -407,7 +461,7 @@ impl Engine {
                     timestamp: i64::from(sent_at),
                     conversation_id,
                 })));
-                self.ack(from_node, ack, now, actions);
+                self.ack(from_node, ack, route, now, actions);
             }
             Inbound::Caps {
                 features,
@@ -416,7 +470,7 @@ impl Engine {
             } => {
                 tracing::info!("Node {from_node} announced features {features:#x}");
                 self.mark_features(from_node, features & KNOWN_FEATURES);
-                self.ack(from_node, ack, now, actions);
+                self.ack(from_node, ack, route, now, actions);
                 if reply_requested
                     && self
                         .protection
@@ -432,7 +486,7 @@ impl Engine {
                 // so the first copy is saved by now unless saving failed
                 // (then its id was forgotten and this is not a duplicate).
                 if self.protection.dedup.contains(&sender, &message_id) {
-                    self.ack(from_node, ack, now, actions);
+                    self.ack(from_node, ack, route, now, actions);
                 }
             }
             Inbound::PeerAck { acked } => {
@@ -482,7 +536,7 @@ impl Engine {
                 ..
             } => {
                 self.on_relay_control(
-                    my_node, from_node, &sender, message_id, &control, ack, now, actions,
+                    my_node, from_node, &sender, message_id, &control, ack, route, now, actions,
                 );
             }
             Inbound::Dropped(reason) => {
@@ -494,7 +548,7 @@ impl Engine {
                 );
                 actions.push(Action::Undecryptable {
                     from: from_node,
-                    payload: payload.clone(),
+                    payload: payload.to_vec(),
                 });
             }
         }
@@ -512,6 +566,7 @@ impl Engine {
         message_id: MessageId,
         control: &meshguard_core::relay::RelayControl,
         ack: Option<Vec<u8>>,
+        route: Route,
         now: u64,
         actions: &mut Vec<Action>,
     ) {
@@ -579,7 +634,7 @@ impl Engine {
         if self.relay.outgoing.len() > had_outgoing {
             actions.push(Action::RelayControlsDue);
         }
-        self.ack(from_node, ack, now, actions);
+        self.ack(from_node, ack, route, now, actions);
     }
 
     /// Keep an undecryptable frame as a pending chat request and, subject
@@ -620,14 +675,55 @@ impl Engine {
         ]
     }
 
-    /// Queue an ACK if the global airtime budget allows it.
-    fn ack(&mut self, to: u32, frame: Option<Vec<u8>>, now: u64, actions: &mut Vec<Action>) {
+    /// Queue an ACK back over `route` if that route's budget allows it
+    /// (LoRa airtime and relay have separate budgets, ADR-006 §6).
+    fn ack(
+        &mut self,
+        to: u32,
+        frame: Option<Vec<u8>>,
+        route: Route,
+        now: u64,
+        actions: &mut Vec<Action>,
+    ) {
         let Some(frame) = frame else { return };
-        if !self.protection.ack_budget.try_take(now) {
-            tracing::info!("ACK to {to} skipped: airtime budget exhausted");
+        let budget = match route {
+            Route::Radio => &mut self.protection.ack_budget,
+            Route::Relay => &mut self.protection.relay_ack_budget,
+        };
+        if !budget.try_take(now) {
+            tracing::info!("ACK to {to} skipped: {route:?} budget exhausted");
             return;
         }
-        actions.push(Action::SendAck { to, frame });
+        actions.push(Action::SendAck { to, frame, route });
+    }
+
+    /// A frame from the private MQTT relay (ADR-006 §6). Accepted only on
+    /// one of our exact inbound topics, for the radio the keys belong to,
+    /// from a v2 contact that is not blocked, MG2 only.
+    pub fn on_relay_frame(&mut self, topic: &str, payload: &[u8], now: u64) -> Vec<Action> {
+        let mut actions = Vec::new();
+        let Some(my_node) = self.keys_owner else {
+            return actions;
+        };
+        let Some(&peer) = self.relay_inbound_topics().get(topic) else {
+            tracing::debug!("Relay frame on an unknown topic dropped");
+            return actions;
+        };
+        let v2 = self
+            .config
+            .peers
+            .iter()
+            .any(|p| p.node_num == peer && p.protocol == WireProtocol::V2);
+        if !v2
+            || self.config.is_blocked(peer)
+            || payload.len() > RELAY_MAX_FRAME
+            || !meshguard_core::envelope::looks_like_v2(payload)
+        {
+            tracing::info!("Relay frame from {peer} dropped");
+            return actions;
+        }
+        self.on_frame(peer, payload, my_node, Route::Relay, now, &mut actions);
+        actions
     }
 
     #[allow(clippy::too_many_arguments)]

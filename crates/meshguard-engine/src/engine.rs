@@ -54,6 +54,11 @@ pub struct Protection {
     pub caps_probes: HashMap<u32, (MessageId, u64)>,
     /// Answering a peer's request for our `Caps`: once per node per hour.
     pub caps_reply_per_node: Cooldown<u32>,
+    /// ACK allowance per message for relay copies (in memory), separate
+    /// from the radio's (ADR-006 §6).
+    pub relay_acks: DedupCache,
+    /// ACK budget of the relay: burst 20, then one per second.
+    pub relay_ack_budget: TokenBucket,
 }
 
 impl Protection {
@@ -69,6 +74,8 @@ impl Protection {
             pair_notify_global: TokenBucket::new(3, 60),
             caps_probes: HashMap::new(),
             caps_reply_per_node: Cooldown::new(3600, 256),
+            relay_acks: policy.new_dedup_cache(DEDUP_CAPACITY),
+            relay_ack_budget: TokenBucket::new(20, 1),
         }
     }
 }
@@ -95,6 +102,8 @@ pub struct Engine {
     pub history: Slot,
     /// Outgoing messages being transmitted right now.
     pub(crate) in_flight: crate::outbox::InFlight,
+    /// Attempts per route of messages being sent (in memory).
+    pub(crate) route_counts: HashMap<MessageId, crate::outbox::RouteCounts>,
     /// Private MQTT relay state (sealed in `relay_secrets.json`).
     pub relay: crate::relay::RelayBook,
     /// The vault key, once known (seals the relay book).
@@ -117,6 +126,7 @@ impl Engine {
             my_device_name: None,
             history: Slot::Closed,
             in_flight: Default::default(),
+            route_counts: HashMap::new(),
             relay: Default::default(),
             vault: None,
         }

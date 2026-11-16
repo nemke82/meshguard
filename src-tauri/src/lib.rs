@@ -13,6 +13,7 @@ pub mod key_store;
 pub mod link;
 pub mod mesh_radio;
 pub mod protocol;
+pub mod relay;
 pub mod state;
 pub mod status_tx;
 
@@ -37,6 +38,9 @@ pub fn run() {
             let state = AppState::new(config_dir);
             app.manage(state);
             history::spawn_outbox_loop(app.handle().clone());
+            // The relay connects only when the user set it up and turned it on.
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move { relay::restart(&handle).await });
 
             tracing::info!("MeshGuard started — scan for a device to begin");
             Ok(())
@@ -82,6 +86,16 @@ pub fn run() {
             commands::get_node_history,
             commands::run_path_test,
             history::get_history_info,
+            relay::relay_get_settings,
+            relay::relay_new_username,
+            relay::relay_save_settings,
+            relay::relay_set_enabled,
+            relay::relay_test,
+            relay::relay_remove,
+            relay::relay_contact,
+            relay::relay_contact_enable,
+            relay::relay_contact_disable,
+            relay::relay_acl_lines,
             history::list_conversations,
             history::get_messages,
             history::mark_conversation_read,

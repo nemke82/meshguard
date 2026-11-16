@@ -21,3 +21,6 @@ pub mod relay;
 
 pub use engine::Engine;
 pub use error::MeshGuardError;
+
+#[cfg(test)]
+mod relay_flow_tests;

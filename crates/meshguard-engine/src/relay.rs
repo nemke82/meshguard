@@ -40,15 +40,28 @@ fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
-fn unhex<const N: usize>(s: &str) -> Option<[u8; N]> {
-    if s.len() != 2 * N {
+fn nibble(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Decode hex byte pairs; `None` for odd length or any non-hex byte.
+fn unhex_vec(s: &str) -> Option<Vec<u8>> {
+    let b = s.as_bytes();
+    if !b.len().is_multiple_of(2) {
         return None;
     }
-    let mut out = [0u8; N];
-    for (i, o) in out.iter_mut().enumerate() {
-        *o = u8::from_str_radix(s.get(2 * i..2 * i + 2)?, 16).ok()?;
-    }
-    Some(out)
+    b.chunks(2)
+        .map(|p| Some(nibble(p[0])? << 4 | nibble(p[1])?))
+        .collect()
+}
+
+fn unhex<const N: usize>(s: &str) -> Option<[u8; N]> {
+    unhex_vec(s)?.try_into().ok()
 }
 
 /// A relay secret as stored (hex, inside the sealed book only).
@@ -113,6 +126,9 @@ impl ContactRelay {
 pub struct PendingControl {
     pub my_node: u32,
     pub peer: u32,
+    /// Send generation of the peer when queued (stamped by the engine).
+    #[serde(default)]
+    pub gen: Option<u64>,
     pub message_id: String,
     pub control: StoredControl,
     pub created_at: u64,
@@ -192,6 +208,11 @@ pub struct RelayBook {
     /// was not connected); handed to the client at start.
     #[serde(default)]
     pub unsubscribe: BTreeSet<String>,
+    /// Send generation of the peer (`config.send_generations`) each
+    /// contact entry was made under. Blocking or removing raises it
+    /// durably, so an entry that outlived a failed save is ignored.
+    #[serde(default)]
+    pub generations: BTreeMap<String, u64>,
 }
 
 fn contact_key(my_node: u32, peer: u32) -> String {
@@ -296,6 +317,7 @@ impl RelayBook {
         self.outgoing.push(PendingControl {
             my_node,
             peer,
+            gen: None,
             message_id: MessageId::random().to_hex(),
             control,
             created_at: now,
@@ -671,12 +693,14 @@ impl RelayBook {
                     |s: &StoredSecret| s.confirm().is_some_and(|x| confirm_matches(&x, &r.confirm));
                 if is(c.secret()) {
                     self.end(my_node, peer, me);
+                    // A newer offer waiting as a rotation is another
+                    // generation: it stays, as an incoming offer.
                     if let ContactRelay::Active {
                         rotation: Some(rot),
                         ..
-                    } = &c
+                    } = c
                     {
-                        self.tombstone_secret(rot.secret(), until);
+                        self.contacts.insert(key, *rot);
                     }
                     return ControlOutcome::Revoked;
                 }
@@ -717,18 +741,30 @@ impl RelayBook {
     /// given up (too many attempts or past its lifetime): an unanswered
     /// offer then ends the exchange.
     pub fn control_attempted(&mut self, id: &str, now: u64) -> bool {
+        !self.reserve_attempt(id, now)
+    }
+
+    /// Reserve the next send attempt of control `id` *before* it is sent:
+    /// the attempt counts and the next deadline moves, so a failed send or
+    /// a crash cannot cause a retry storm. Returns false (nothing to send)
+    /// when it is gone, exhausted or past its lifetime; those are retired
+    /// here (an unanswered offer then ends the exchange).
+    pub fn reserve_attempt(&mut self, id: &str, now: u64) -> bool {
         let Some(i) = self.outgoing.iter().position(|p| p.message_id == id) else {
             return false;
         };
         let p = &mut self.outgoing[i];
-        p.attempts += 1;
-        let backoff = CONTROL_FIRST_RETRY
-            .saturating_mul(1u64 << (p.attempts - 1).min(10))
-            .min(CONTROL_MAX_RETRY);
-        p.next_at = now + backoff;
         let give_up = p.attempts >= CONTROL_MAX_ATTEMPTS
             || now.saturating_sub(p.created_at) >= CONTROL_LIFETIME;
-        if give_up {
+        if !give_up {
+            p.attempts += 1;
+            let backoff = CONTROL_FIRST_RETRY
+                .saturating_mul(1u64 << (p.attempts - 1).min(10))
+                .min(CONTROL_MAX_RETRY);
+            p.next_at = now + backoff;
+            return true;
+        }
+        {
             let p = self.outgoing.remove(i);
             if let StoredControl::Offer { secret, .. } = &p.control {
                 // Nobody answered: back to no relay (still tombstoned).
@@ -740,7 +776,7 @@ impl RelayBook {
                 }
             }
         }
-        give_up
+        false
     }
 
     /// An authenticated AppAck from `peer` for `acked`. Returns true when it
@@ -790,7 +826,10 @@ impl crate::Engine {
             return;
         };
         match open_book(vault, &data) {
-            Ok(book) => self.relay = book,
+            Ok(book) => {
+                self.relay = book;
+                self.sync_relay_generations();
+            }
             Err(e) => {
                 tracing::warn!("Relay settings could not be opened ({e}); starting new ones");
                 let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
@@ -884,6 +923,8 @@ impl crate::Engine {
     /// Kept in memory even if saving fails (logged), so it stops now.
     pub fn relay_forget(&mut self, peer: u32, now: u64) -> bool {
         let me = self.relay_identity();
+        // If saving fails, the raised send generation (saved with the
+        // block/removal) still makes any reloaded entry stale.
         let changed = self.relay.forget(peer, me.as_ref(), now);
         if changed {
             if let Err(e) = self.save_relay() {
@@ -900,7 +941,7 @@ impl crate::Engine {
             return BTreeMap::new();
         };
         let mut t = self.relay.inbound_topics(my_node, &me);
-        t.retain(|_, peer| !self.config.is_blocked(*peer));
+        t.retain(|_, peer| !self.config.is_blocked(*peer) && self.relay_current(my_node, *peer));
         t
     }
 
@@ -908,6 +949,9 @@ impl crate::Engine {
     pub fn relay_outbound_topic(&self, peer: u32) -> Option<String> {
         let my_node = self.keys_owner?;
         if self.config.is_blocked(peer) {
+            return None;
+        }
+        if !self.relay_current(my_node, peer) {
             return None;
         }
         let me = self.relay_identity()?;
@@ -924,6 +968,7 @@ impl crate::Engine {
             .due_controls(my_node, now)
             .into_iter()
             .filter(|p| !self.config.is_blocked(p.peer))
+            .filter(|p| p.gen == Some(self.send_generation(p.peer)))
             .filter_map(|p| {
                 let key = self.keys.get(&p.peer)?;
                 let control = p.control.control()?;
@@ -947,16 +992,71 @@ impl crate::Engine {
             .collect()
     }
 
-    /// Record a send attempt of a control message (handed to a transport,
-    /// or not). Returns true when it was given up.
-    pub fn relay_control_attempted(&mut self, message_id: &str, now: u64) -> bool {
-        match self.update_relay(|b| b.control_attempted(message_id, now)) {
-            Ok(gave_up) => gave_up,
+    /// Reserve (and save) a send attempt of control `c` right before it is
+    /// handed to a transport, under the caller's send gate. False: do not
+    /// send (cancelled, blocked, stale, exhausted, or the reservation could
+    /// not be saved).
+    pub fn relay_reserve_control(&mut self, c: &ControlTransmit, now: u64) -> bool {
+        let pending = self.relay.outgoing.iter().any(|p| {
+            p.message_id == c.message_id
+                && p.peer == c.peer
+                && p.my_node == c.my_node
+                && p.gen == Some(self.send_generation(c.peer))
+        });
+        if !pending
+            || self.config.is_blocked(c.peer)
+            || self.keys_owner != Some(c.my_node)
+            || !self.keys.contains_key(&c.peer)
+        {
+            return false;
+        }
+        match self.update_relay(|b| b.reserve_attempt(&c.message_id, now)) {
+            Ok(go) => go,
             Err(e) => {
-                tracing::warn!("Relay retry state not saved: {e}");
+                tracing::warn!("Relay retry state not saved, not sending: {e}");
                 false
             }
         }
+    }
+
+    /// Whether the relay entry with `peer` belongs to its current send
+    /// generation (not left over from before a block or removal).
+    fn relay_current(&self, my_node: u32, peer: u32) -> bool {
+        self.relay
+            .generations
+            .get(&contact_key(my_node, peer))
+            .is_some_and(|g| *g == self.send_generation(peer))
+    }
+
+    /// Drop relay entries and controls made under an older send generation
+    /// of their peer (it was blocked or removed since), and stamp new ones
+    /// with the current generation.
+    pub(crate) fn sync_relay_generations(&mut self) {
+        let gens = &self.config.send_generations;
+        let gen_of = |peer: u32| gens.get(&peer).copied().unwrap_or(0);
+        let book = &mut self.relay;
+        let keys: Vec<String> = book.contacts.keys().cloned().collect();
+        for k in keys {
+            let Some((_, peer)) = parse_contact_key(&k) else {
+                continue;
+            };
+            match book.generations.get(&k) {
+                None => {
+                    book.generations.insert(k, gen_of(peer));
+                }
+                Some(g) if *g != gen_of(peer) => {
+                    book.contacts.remove(&k);
+                    book.generations.remove(&k);
+                }
+                Some(_) => {}
+            }
+        }
+        book.generations
+            .retain(|k, _| book.contacts.contains_key(k));
+        for c in &mut book.outgoing {
+            c.gen.get_or_insert(gen_of(c.peer));
+        }
+        book.outgoing.retain(|c| c.gen == Some(gen_of(c.peer)));
     }
 
     /// Change the relay book with `f` and save it; on a failed save the
@@ -965,8 +1065,10 @@ impl crate::Engine {
         &mut self,
         f: impl FnOnce(&mut RelayBook) -> T,
     ) -> Result<T, MeshGuardError> {
+        self.sync_relay_generations();
         let before = self.relay.clone();
         let out = f(&mut self.relay);
+        self.sync_relay_generations();
         if self.relay != before {
             if let Err(e) = self.save_relay() {
                 self.relay = before;
@@ -1019,10 +1121,7 @@ pub fn open_book(vault: &SessionKey, data: &[u8]) -> Result<RelayBook, MeshGuard
             "unknown relay book format".into(),
         ));
     }
-    let blob: Option<Vec<u8>> = (0..sealed.blob.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&sealed.blob[i..i + 2], 16).ok())
-        .collect();
+    let blob = unhex_vec(&sealed.blob);
     let blob = blob.ok_or_else(|| MeshGuardError::Serialization("damaged relay book".into()))?;
     let json = zeroize::Zeroizing::new(
         vault
@@ -1294,21 +1393,6 @@ mod tests {
     }
 
     #[test]
-    fn an_unanswered_offer_gives_up() {
-        let mut a = RelayBook::default();
-        a.enable(A, B, Some(&ua()), NOW).unwrap();
-        let id = a.due_controls(A, NOW)[0].message_id.clone();
-        let mut t = NOW;
-        let mut gave_up = false;
-        for _ in 0..CONTROL_MAX_ATTEMPTS {
-            gave_up = a.control_attempted(&id, t);
-            t += CONTROL_MAX_RETRY;
-        }
-        assert!(gave_up);
-        assert!(a.contact(A, B).is_none() && a.outgoing.is_empty());
-    }
-
-    #[test]
     fn rotation_needs_the_users_accept_and_keeps_the_old_secret_until_then() {
         let (mut a, mut b) = (RelayBook::default(), RelayBook::default());
         a.enable(A, B, Some(&ua()), NOW).unwrap();
@@ -1340,6 +1424,60 @@ mod tests {
             b.unsubscribe.contains(&before.0),
             "old topic leaves the session"
         );
+    }
+
+    #[test]
+    fn an_old_revoke_keeps_a_newer_rotation() {
+        let (mut a, mut b) = (RelayBook::default(), RelayBook::default());
+        a.enable(A, B, Some(&ua()), NOW).unwrap();
+        pump(&mut a, A, &ua(), &mut b, B, &ub(), NOW);
+        b.accept(B, A, Some(&ub()), NOW).unwrap();
+        pump(&mut b, B, &ub(), &mut a, A, &ua(), NOW);
+        let s1 = b.contact(B, A).unwrap().secret().confirm().unwrap();
+        // A rotates: Offer(S2) overtakes Revoke(S1).
+        let s2 = RelaySecret::random();
+        let offer = RelayControl::Offer(RelayOffer {
+            secret: s2.clone(),
+            broker_tag: ua().broker_tag,
+            inbox: ua().user,
+        });
+        b.on_control(B, A, &offer, Some(&ub()), NOW);
+        let revoke = RelayControl::Revoke(RelayRevoke { confirm: s1 });
+        assert_eq!(
+            b.on_control(B, A, &revoke, Some(&ub()), NOW),
+            ControlOutcome::Revoked
+        );
+        match b.contact(B, A) {
+            Some(ContactRelay::Incoming { secret, .. }) => {
+                assert_eq!(secret.confirm(), Some(s2.confirm_tag()))
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn reservations_count_before_sending_and_stop_at_the_limit() {
+        let mut a = RelayBook::default();
+        a.enable(A, B, Some(&ua()), NOW).unwrap();
+        let id = a.due_controls(A, NOW)[0].message_id.clone();
+        let mut sent = 0;
+        let mut t = NOW;
+        while a.reserve_attempt(&id, t) {
+            sent += 1;
+            assert!(a.due_controls(A, t).is_empty(), "not due right after");
+            t += CONTROL_MAX_RETRY;
+        }
+        assert_eq!(sent, CONTROL_MAX_ATTEMPTS);
+        assert!(a.outgoing.is_empty() && a.contact(A, B).is_none());
+    }
+
+    #[test]
+    fn damaged_books_are_errors_not_panics() {
+        let vault = SessionKey::from_bytes([3; 32]);
+        for blob in ["€0", "zz", "0", "€€"] {
+            let data = format!("{{\"version\":1,\"blob\":\"{blob}\"}}");
+            assert!(open_book(&vault, data.as_bytes()).is_err(), "{blob}");
+        }
     }
 
     #[test]

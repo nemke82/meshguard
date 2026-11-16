@@ -18,7 +18,7 @@ use crate::error::CoreError;
 /// Feature bit: understands the `Status` message type.
 pub const FEATURE_STATUS: u32 = 1 << 0;
 /// Features this build supports (announced in `Caps`).
-pub const SUPPORTED_FEATURES: u32 = FEATURE_STATUS;
+pub const SUPPORTED_FEATURES: u32 = FEATURE_STATUS | crate::relay::FEATURE_RELAY;
 
 /// `Caps` flag: "please send your `Caps` back" (ADR-006 §4). Older builds
 /// ignore the trailing byte.

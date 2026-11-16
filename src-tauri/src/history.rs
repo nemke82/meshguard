@@ -77,7 +77,8 @@ pub async fn record_peer_ack(
 
 // ── Outgoing ──────────────────────────────────────────────────
 
-use meshguard_engine::outbox::{Attempt, Transmit};
+use meshguard_engine::outbox::{Attempt, Routes, Transmit};
+use meshguard_engine::receive::Route;
 pub use meshguard_engine::outbox::{Content, MessageStateEvent};
 
 pub fn emit_state(app: &tauri::AppHandle, event: Option<MessageStateEvent>) {
@@ -113,17 +114,27 @@ fn classify(r: &Result<(), MeshGuardError>) -> Attempt {
     }
 }
 
-/// Transmit `t` if its radio is connected, and record the result.
+/// What can carry messages right now.
+async fn routes(state: &AppState) -> Routes {
+    Routes {
+        radio: live_radio(state).await,
+        relay: state.relay.connected().await,
+    }
+}
+
+/// Transmit `t` on its route (radio or relay) and record the result.
 async fn transmit(
     app: &tauri::AppHandle,
     t: &Transmit,
     now: u64,
 ) -> (Attempt, Option<DeliveryState>) {
     let state = app.state::<AppState>();
-    let attempt = if live_radio(&state).await == Some(t.my_node) {
-        classify(&crate::commands::send_transmit(&state, t).await)
-    } else {
-        Attempt::Unavailable
+    let attempt = match t.route {
+        Route::Relay => crate::relay::publish(app, t, now).await,
+        Route::Radio if live_radio(&state).await == Some(t.my_node) => {
+            classify(&crate::commands::send_transmit(&state, t).await)
+        }
+        Route::Radio => Attempt::Unavailable,
     };
     let (st, event) = state.engine().finish_attempt(t, attempt, now);
     emit_state(app, event);
@@ -140,10 +151,9 @@ pub async fn send(
 ) -> Result<SendOutcome, MeshGuardError> {
     ensure_open(app).await;
     let now = now_secs();
-    let t = app
-        .state::<AppState>()
-        .engine()
-        .enqueue(peer, &content, now)?;
+    let state = app.state::<AppState>();
+    let routes = routes(&state).await;
+    let t = state.engine().enqueue(peer, &content, now, routes)?;
     let (attempt, st) = transmit(app, &t, now).await;
     if t.conversation.is_some() {
         return Ok(SendOutcome {
@@ -187,12 +197,13 @@ async fn outbox_tick(app: &tauri::AppHandle) {
     ensure_open(app).await;
     let state = app.state::<AppState>();
     let now = now_secs();
-    let live = live_radio(&state).await;
-    let (events, resend) = state.engine().outbox_step(now, live);
+    crate::relay::sync_topics(app).await;
+    let routes = routes(&state).await;
+    let (events, resend) = state.engine().outbox_step(now, routes);
     for e in events {
         emit_state(app, Some(e));
     }
-    send_relay_controls(&state, now).await;
+    send_relay_controls(app, now).await;
     if let Some(t) = resend {
         let (attempt, _) = transmit(app, &t, now).await;
         tracing::info!(
@@ -208,24 +219,22 @@ async fn outbox_tick(app: &tauri::AppHandle) {
     }
 }
 
-/// Send the relay control messages that are due (ADR-006 §4) over the
-/// radio they were sealed for, at most one per tick (shared airtime).
-async fn send_relay_controls(state: &AppState, now: u64) {
-    let live = live_radio(state).await;
-    let Some(c) = state
-        .engine()
-        .relay_due_controls(now)
-        .into_iter()
-        .find(|c| Some(c.my_node) == live)
-    else {
+/// Send the relay control messages that are due (ADR-006 §4): over the
+/// radio they were sealed for when it is there (at most one per tick,
+/// shared airtime), otherwise over the relay to contacts it is already
+/// active with (accept retries, revokes).
+async fn send_relay_controls(app: &tauri::AppHandle, now: u64) {
+    let state = app.state::<AppState>();
+    let live = live_radio(&state).await;
+    let due = state.engine().relay_due_controls(now);
+    if let Some(c) = due.iter().find(|c| Some(c.my_node) == live) {
+        if let Err(e) = crate::commands::send_control(&state, c, now).await {
+            tracing::info!("Relay control to {} not sent: {e}", c.peer);
+        }
         return;
-    };
-    let sent = crate::commands::send_as(state, c.my_node, c.peer, c.frame).await;
-    if let Err(e) = &sent {
-        tracing::info!("Relay control to {} not sent: {e}", c.peer);
     }
-    if state.engine().relay_control_attempted(&c.message_id, now) {
-        tracing::info!("Relay control to {} given up", c.peer);
+    for c in &due {
+        crate::relay::publish_control(app, c, now).await;
     }
 }
 

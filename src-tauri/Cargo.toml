@@ -29,6 +29,7 @@ tracing-subscriber = "0.3"
 meshguard-core = { path = "../crates/meshguard-core" }
 meshguard-store = { path = "../crates/meshguard-store" }
 meshguard-engine = { path = "../crates/meshguard-engine" }
+meshguard-mqtt = { path = "../crates/meshguard-mqtt" }
 zeroize = "1"
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 
