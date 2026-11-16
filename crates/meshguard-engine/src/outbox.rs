@@ -91,6 +91,10 @@ pub struct Transmit {
     pub attempt: u32,
     /// Which in-flight mark this attempt owns (0: none, memory-only).
     pub token: u64,
+    /// The peer's send generation when this was sealed. Cancelling the
+    /// peer's sends (block, unpair) bumps it; check it with
+    /// [`Engine::still_sendable`] right before handing the frame over.
+    pub generation: u64,
 }
 
 /// How a transmission went.
@@ -176,6 +180,51 @@ impl InFlight {
 }
 
 impl Engine {
+    /// Current send generation of `peer` (see [`Transmit::generation`]).
+    pub fn send_generation(&self, peer: u32) -> u64 {
+        self.config
+            .send_generations
+            .get(&peer)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Whether `t` may still be transmitted: its peer's sends were not
+    /// cancelled since it was sealed.
+    pub fn still_sendable(&self, t: &Transmit) -> bool {
+        self.send_generation(t.to) == t.generation
+    }
+
+    /// Cancel everything queued for `peer` (blocked or removed), in the
+    /// same engine critical section as the block/removal itself:
+    /// * the peer's send generation is raised in the config (the caller
+    ///   saves it with the block/removal): attempts already prepared and
+    ///   queued rows of an older generation are never sent, even if the
+    ///   history could not be cleaned up right now,
+    /// * queued messages leave the outbox as failed, if the history is
+    ///   open (they stay in the history).
+    ///
+    /// Returns the state changes for the UI.
+    pub fn cancel_sends_to(&mut self, peer: u32) -> Vec<MessageStateEvent> {
+        *self.config.send_generations.entry(peer).or_default() += 1;
+        let cancelled = match &mut self.history {
+            Slot::Open(store) => store.cancel_outbound_to(peer).unwrap_or_else(|e| {
+                // Their older generation still stops them; outbox_step
+                // retires them.
+                tracing::warn!("Queued messages to {peer} not cancelled yet: {e}");
+                Vec::new()
+            }),
+            _ => Vec::new(),
+        };
+        if !cancelled.is_empty() {
+            tracing::info!("Cancelled {} queued message(s) to {peer}", cancelled.len());
+        }
+        cancelled
+            .into_iter()
+            .map(|(c, id)| MessageStateEvent::new(&c, &id, DeliveryState::Failed))
+            .collect()
+    }
+
     /// The radio messages are sent from: the one the chat keys belong to
     /// (also while it is away, so messages queue for it).
     pub fn sending_node(&self) -> Option<u32> {
@@ -232,6 +281,7 @@ impl Engine {
         let my_node = self.sending_node().ok_or(MeshGuardError::NotConnected)?;
         let (protocol, capable) = self.peer_wire(peer);
         let message_id = MessageId::random();
+        let generation = self.send_generation(peer);
         let ttl = u64::from(outbound::ttl_mins(content.payload(protocol, capable))) * 60;
         let out = OutboundMessage::queued(message_id, now, now + ttl);
         let (frame, protocol) = self.seal_for(my_node, peer, content, message_id, now)?;
@@ -240,7 +290,7 @@ impl Engine {
         let (kind, body) = (content.kind(), content.body()?);
         let conversation = self.with_store(|s| {
             let c = s.upsert_conversation(my_node, peer, title.as_deref())?;
-            s.insert_outgoing(&c, kind, &body, now, &out)?;
+            s.insert_outgoing(&c, kind, &body, now, &out, generation)?;
             Ok(c)
         });
         // The outbox must not send it too while the caller does.
@@ -258,6 +308,7 @@ impl Engine {
             protocol,
             attempt: 0,
             token,
+            generation,
         })
     }
 
@@ -341,6 +392,17 @@ impl Engine {
             if self.in_flight.contains(&out.message_id, now) {
                 continue;
             }
+            if item.send_generation < self.send_generation(peer) {
+                // Queued before the contact was blocked or removed.
+                out.state = DeliveryState::Failed;
+                if self
+                    .with_store(|s| s.settle_unconfirmed(&c, &out))
+                    .is_some()
+                {
+                    events.push(MessageStateEvent::new(&c, &out.message_id, out.state));
+                }
+                continue;
+            }
             match out.due_action(now) {
                 Some(DueAction::Expire) => {
                     if out.expire().is_ok() && self.persist(&c, &out) {
@@ -381,6 +443,7 @@ impl Engine {
                         protocol,
                         attempt: out.attempts,
                         token,
+                        generation: self.send_generation(peer),
                     });
                 }
                 None => {}
@@ -560,6 +623,63 @@ mod tests {
         assert!(e.outbox_step(later, Some(ME)).1.is_none(), "in flight");
         let (st, _) = e.finish_attempt(&tx, Attempt::Submitted, later);
         assert_eq!(st, Some(DeliveryState::Submitted));
+    }
+
+    #[test]
+    fn cancelling_a_peer_stops_queued_and_prepared_sends() {
+        let mut e = engine("cancel", WireProtocol::V2, true);
+        let first = e.enqueue(PEER, &text(), NOW).unwrap();
+        e.finish_attempt(&first, Attempt::Submitted, NOW);
+        let prepared = e.enqueue(PEER, &text(), NOW).unwrap();
+        assert!(e.still_sendable(&prepared));
+
+        let ev = e.cancel_sends_to(PEER);
+        assert_eq!(ev.len(), 2);
+        assert!(ev.iter().all(|e| e.state == "failed"));
+        // The attempt sealed before the cancel must not be handed over, and
+        // its late result changes nothing.
+        assert!(!e.still_sendable(&prepared));
+        assert_eq!(
+            e.finish_attempt(&prepared, Attempt::Submitted, NOW),
+            (None, None)
+        );
+        // Nothing comes back from the outbox, even once a key is there again
+        // (re-paired).
+        e.keys.insert(PEER, SessionKey::from_bytes([8; 32]));
+        assert!(e.outbox_step(NOW + 3600, Some(ME)).1.is_none());
+        // New messages after re-pairing are sendable.
+        let fresh = e.enqueue(PEER, &text(), NOW).unwrap();
+        assert!(e.still_sendable(&fresh));
+        // A late ACK for a cancelled message still counts (it was delivered).
+        assert_eq!(
+            e.record_peer_ack(ME, PEER, first.message_id).unwrap().state,
+            "peer_ack"
+        );
+    }
+
+    #[test]
+    fn the_barrier_stops_messages_the_store_could_not_cancel() {
+        let mut e = engine("barrier", WireProtocol::V2, true);
+        let t = e.enqueue(PEER, &text(), NOW).unwrap();
+        e.finish_attempt(&t, Attempt::Submitted, NOW);
+        // As if the store had been unavailable when the contact was removed:
+        // only the raised generation is in place.
+        e.config.send_generations.insert(PEER, 1);
+        e.keys.insert(PEER, SessionKey::from_bytes([8; 32]));
+        let (ev, tx) = e.outbox_step(NOW + 3600, Some(ME));
+        assert!(tx.is_none(), "never resent");
+        assert_eq!(ev.len(), 1);
+        assert_eq!(ev[0].state, "failed");
+        // Retired: nothing left to do.
+        assert!(e.outbox_step(NOW + 7200, Some(ME)).0.is_empty());
+        // Messages queued after it go out normally, even in the same second
+        // and whatever the clock says.
+        let fresh = e.enqueue(PEER, &text(), NOW - 100).unwrap();
+        assert_eq!(fresh.generation, 1);
+        e.finish_attempt(&fresh, Attempt::Submitted, NOW - 100);
+        let later = NOW - 100 + 61;
+        e.outbox_step(later, Some(ME));
+        assert!(e.outbox_step(later + 120, Some(ME)).1.is_some());
     }
 
     #[test]

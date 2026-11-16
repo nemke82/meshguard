@@ -135,6 +135,8 @@ pub struct DueOutbound {
     pub created_at: u64,
     pub body: Vec<u8>,
     pub outbound: OutboundMessage,
+    /// The peer's send generation when it was queued.
+    pub send_generation: u64,
 }
 
 /// Stable conversation id for a chat between our radio and a peer.
@@ -396,7 +398,8 @@ impl Store {
     }
 
     /// Store an outgoing message and its outbox entry in one transaction.
-    /// Call this before handing the frame to any radio.
+    /// Call this before handing the frame to any radio. `send_generation`:
+    /// the peer's current send generation (see [`DueOutbound`]).
     pub fn insert_outgoing(
         &mut self,
         conversation: &ConversationId,
@@ -404,6 +407,7 @@ impl Store {
         body: &[u8],
         created_at: u64,
         outbound: &OutboundMessage,
+        send_generation: u64,
     ) -> Result<()> {
         let id = outbound.message_id;
         let enc = self
@@ -424,6 +428,15 @@ impl Store {
             ],
         )?;
         write_outbox(&tx, conversation, outbound)?;
+        tx.execute(
+            "UPDATE outbox SET send_generation = ?3
+             WHERE conversation_id = ?1 AND message_id = ?2",
+            params![
+                conversation.0,
+                id.as_bytes().as_slice(),
+                to_i64(send_generation)
+            ],
+        )?;
         tx.execute(
             "UPDATE conversations SET last_message_at = MAX(last_message_at, ?2)
              WHERE conversation_id = ?1",
@@ -480,6 +493,44 @@ impl Store {
         )?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Take every queued message to `peer_node` (from any local radio) out
+    /// of the outbox and mark it failed, keeping it in the history. Used
+    /// when the contact is blocked or removed, so nothing queued for it is
+    /// sent later (e.g. after re-pairing). Returns what was cancelled.
+    pub fn cancel_outbound_to(
+        &mut self,
+        peer_node: u32,
+    ) -> Result<Vec<(ConversationId, MessageId)>> {
+        let tx = self.conn.transaction()?;
+        let rows: Vec<(String, Vec<u8>)> = {
+            let mut stmt = tx.prepare(
+                "SELECT o.conversation_id, o.message_id
+                 FROM outbox o JOIN conversations c USING (conversation_id)
+                 WHERE c.peer_node = ?1",
+            )?;
+            let rows = stmt.query_map(params![i64::from(peer_node)], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+            })?;
+            rows.collect::<std::result::Result<_, _>>()?
+        };
+        let mut cancelled = Vec::with_capacity(rows.len());
+        for (conv, id) in rows {
+            tx.execute(
+                "UPDATE messages SET state = ?3
+                 WHERE conversation_id = ?1 AND message_id = ?2 AND direction = 1",
+                params![conv, id, DeliveryState::Failed.as_str()],
+            )?;
+            tx.execute(
+                "DELETE FROM outbox WHERE conversation_id = ?1 AND message_id = ?2",
+                params![conv, id],
+            )?;
+            let message_id = MessageId::from_slice(&id).ok_or(StoreError::Invalid("message id"))?;
+            cancelled.push((ConversationId(conv), message_id));
+        }
+        tx.commit()?;
+        Ok(cancelled)
     }
 
     /// Bookkeeping for an outgoing message whether or not it is still in
@@ -555,7 +606,7 @@ impl Store {
     pub fn due_outbound(&self, now: u64) -> Result<Vec<DueOutbound>> {
         let mut stmt = self.conn.prepare(
             "SELECT o.conversation_id, o.message_id, o.attempts, o.next_deadline, o.expires_at,
-                    o.last_transport, m.state, m.kind, m.body_enc, m.created_at
+                    o.last_transport, m.state, m.kind, m.body_enc, m.created_at, o.send_generation
              FROM outbox o JOIN messages m USING (conversation_id, message_id, direction)
              WHERE o.next_deadline <= ?1 OR o.expires_at <= ?1
              ORDER BY o.next_deadline",
@@ -572,11 +623,13 @@ impl Store {
                 r.get::<_, i64>(7)?,
                 r.get::<_, Vec<u8>>(8)?,
                 r.get::<_, i64>(9)?,
+                r.get::<_, i64>(10)?,
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (conv, id, attempts, next, expires, transport, state, kind, enc, created) = row?;
+            let (conv, id, attempts, next, expires, transport, state, kind, enc, created, gen) =
+                row?;
             let conversation = ConversationId(conv);
             let message_id = MessageId::from_slice(&id).ok_or(StoreError::Invalid("message id"))?;
             let body = self.cipher.open(
@@ -596,6 +649,7 @@ impl Store {
                     next_deadline: to_u64(next),
                     last_transport: transport.map(TransportId),
                 },
+                send_generation: to_u64(gen),
             });
         }
         Ok(out)

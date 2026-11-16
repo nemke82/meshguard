@@ -12,6 +12,9 @@ Versions are dates (`vYYYY.MM.DD`). Each release on [GitHub Releases](https://gi
 ### Changed
 - "Notification Settings" is now **Settings**.
 
+### Fixed
+- Messages still waiting to be sent to a contact you block or remove are cancelled (shown as failed) instead of being sent later, for example after pairing with that node again.
+
 ## v2026.11.16
 
 Message history, a resend queue, and the first piece of the Android background service.

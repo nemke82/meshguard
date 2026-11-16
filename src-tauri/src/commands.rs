@@ -260,6 +260,30 @@ pub(crate) async fn send_as(
     radio.send_private_app(frame, peer_node_num).await
 }
 
+/// Transmit an outbox message. The radio lock is the gate shared with
+/// cancellation (block, remove): the generation is checked under it and
+/// held through the hand-over, so nothing cancelled is sent afterwards.
+pub(crate) async fn send_transmit(
+    state: &AppState,
+    t: &meshguard_engine::outbox::Transmit,
+) -> Result<(), MeshGuardError> {
+    let mut radio_guard = state.radio.lock().await;
+    let radio = radio_guard.as_mut().ok_or(MeshGuardError::NotConnected)?;
+    {
+        let engine = state.engine();
+        if !engine.still_sendable(t) {
+            // Cancelled meanwhile; the row is gone, nothing to record.
+            return Err(MeshGuardError::NotConnected);
+        }
+        if engine.my_node_num != Some(t.my_node) {
+            return Err(MeshGuardError::Protocol(
+                "The radio changed while sending — please try again".into(),
+            ));
+        }
+    }
+    radio.send_private_app(t.frame.clone(), t.to).await
+}
+
 fn key_copy(key: &crate::crypto::SessionKey) -> crate::crypto::SessionKey {
     crate::crypto::SessionKey::from_bytes(*key.to_bytes())
 }
@@ -584,14 +608,36 @@ pub async fn list_peers(state: State<'_, AppState>) -> Result<Vec<PeerConfig>, M
 pub async fn remove_peer(
     peer_node_num: u32,
     state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
 ) -> Result<(), MeshGuardError> {
-    state.engine().keys.remove(&peer_node_num);
+    crate::history::ensure_open(&app_handle).await;
+    // The radio lock is the gate shared with outbox sends (send_transmit):
+    // nothing sealed before this point is handed to the radio afterwards.
+    let _gate = state.radio.lock().await;
     crate::key_store::remove_peer(&state.config_dir, peer_node_num)?;
-
-    let mut engine = state.engine();
-    let config = &mut engine.config;
-    config.peers.retain(|p| p.node_num != peer_node_num);
-    config.save(&state.config_dir)?;
+    // One engine critical section: no message can be queued for the peer
+    // between the cancellation and the removal of its key.
+    let cancelled = {
+        let mut engine = state.engine();
+        let prev_config = engine.config.clone();
+        let prev_key = engine.keys.remove(&peer_node_num);
+        // Nothing queued for a removed contact is sent later (e.g. to
+        // whoever pairs as this node next). The raised send generation is
+        // saved with the removal.
+        let cancelled = engine.cancel_sends_to(peer_node_num);
+        engine.config.peers.retain(|p| p.node_num != peer_node_num);
+        if let Err(e) = engine.config.save(&state.config_dir) {
+            engine.config = prev_config;
+            if let Some(k) = prev_key {
+                engine.keys.insert(peer_node_num, k);
+            }
+            return Err(e);
+        }
+        cancelled
+    };
+    for e in cancelled {
+        crate::history::emit_state(&app_handle, Some(e));
+    }
     Ok(())
 }
 
@@ -613,11 +659,15 @@ fn refuse_blocked(state: &AppState, node: u32) -> Result<(), MeshGuardError> {
 pub async fn block_node(
     node_num: u32,
     state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
 ) -> Result<Vec<BlockedNode>, MeshGuardError> {
     // Serialized with pairing: a pairing in progress cannot re-add the
     // contact or its key after the block.
     let _pairing = PAIRING.lock().await;
-    let blocked = {
+    crate::history::ensure_open(&app_handle).await;
+    // Gate shared with outbox sends (see send_transmit).
+    let _gate = state.radio.lock().await;
+    let (blocked, cancelled) = {
         let mut engine = state.engine();
         let name = engine
             .peer_title(node_num)
@@ -628,6 +678,9 @@ pub async fn block_node(
         let prev_key = engine.keys.get(&node_num).map(key_copy);
         let prev_request = engine.pending_pair_requests.get(&node_num).cloned();
         engine.block_node(node_num, name, chrono::Utc::now().timestamp());
+        // Same critical section: nothing queued for the node is sent any
+        // more; the raised send generation is saved with the block.
+        let cancelled = engine.cancel_sends_to(node_num);
         if let Err(e) = engine.config.save(&state.config_dir) {
             engine.config = prev_config;
             if let Some(key) = prev_key {
@@ -638,8 +691,11 @@ pub async fn block_node(
             }
             return Err(e);
         }
-        engine.config.blocked.clone()
+        (engine.config.blocked.clone(), cancelled)
     };
+    for e in cancelled {
+        crate::history::emit_state(&app_handle, Some(e));
+    }
     // The block is saved; a remembered key left behind is never used for a
     // blocked node, so this is not an error for the user.
     if let Err(e) = crate::key_store::remove_peer(&state.config_dir, node_num) {
