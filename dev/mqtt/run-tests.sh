@@ -56,11 +56,13 @@ for u in A B C; do
 done
 
 # ── Broker ────────────────────────────────────────────────────
+# Config and ACL are copied next to the generated files, so the container
+# only needs the (world-readable) temp folder, wherever the checkout lives.
+cp "$HERE/mosquitto.conf" "$HERE/acl" "$GEN/"
+chmod 0644 "$GEN/mosquitto.conf" "$GEN/acl"
 "$RUN" run -d --name "$NAME" -p "127.0.0.1:$PORT:8883" \
-  -v "$HERE/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro,Z" \
-  -v "$HERE/acl:/mosquitto/config/acl:ro,Z" \
   -v "$GEN:/mosquitto/gen:ro,Z" \
-  "$IMAGE" >/dev/null
+  "$IMAGE" mosquitto -c /mosquitto/gen/mosquitto.conf >/dev/null
 for _ in $(seq 1 50); do
   if (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null; then break; fi
   sleep 0.2
