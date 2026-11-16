@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Features and status — MeshGuard</title>
+  <meta name="description" content="Every MeshGuard feature and its status: available in the current release, new, in development or planned. Encrypted chat, QR pairing, check-ins, SOS, diagnostics.">
+  <link rel="canonical" href="https://meshguard.net/features">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f8faf9">
+  <meta property="og:title" content="Features and status — MeshGuard">
+  <meta property="og:description" content="Every MeshGuard feature and its status: available in the current release, new, in development or planned. Encrypted chat, QR pairing, check-ins, SOS, diagnostics.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://meshguard.net/features">
+  <meta property="og:site_name" content="MeshGuard">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23087f5b' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 2L2 7l10 5 10-5-10-5z'/%3E%3Cpath d='M2 17l10 5 10-5'/%3E%3Cpath d='M2 12l10 5 10-5'/%3E%3C/svg%3E">
+  <script src="/js/theme.js?v=2026.11.16"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/site.css?v=2026.11.16">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <div class="container">
+      <nav class="nav" aria-label="Main">
+        <a class="brand" href="/"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>MeshGuard</a>
+        <ul class="nav-menu" id="nav-menu">
+          <li><a href="/how-it-works">How It Works</a></li>
+          <li><a href="/getting-started">Getting Started</a></li>
+          <li><a href="/features" aria-current="page">Features</a></li>
+          <li><a href="/download">Download</a></li>
+          <li><a href="https://github.com/nemke82/meshguard" rel="noopener"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>GitHub</a></li>
+        </ul>
+        <button type="button" class="icon-btn theme-toggle" id="theme-toggle" aria-pressed="false" aria-label="Switch to dark theme" title="Switch to dark theme" hidden>
+          <svg class="icon-moon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>
+          <svg class="icon-sun" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+        </button>
+        <button type="button" class="icon-btn menu-toggle" id="menu-toggle" aria-expanded="false" aria-controls="nav-menu" aria-label="Open menu">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+        </button>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main" tabindex="-1">
+    <div class="container">
+      <header class="page-head">
+        <span class="eyebrow">Features</span>
+        <h1>What works today, and what is coming</h1>
+        <p class="lead">Every feature is marked by where it stands. <strong>Available</strong> means it is in the release you can download. Anything still being built or tested is labelled that way, without dates.</p>
+      </header>
+
+      <ul class="tag-row" aria-label="Status legend">
+        <li><span class="badge badge-available">Available</span> In the current release</li>
+        <li><span class="badge badge-new">New</span> New in the latest release</li>
+        <li><span class="badge badge-dev">In development</span> Being built</li>
+        <li><span class="badge badge-planned">Planned</span> Planned</li>
+      </ul>
+
+      <section class="section" aria-labelledby="f-msg">
+        <h2 id="f-msg">Messaging</h2>
+          <div class="table-wrap">
+            <table class="table-stack">
+              <caption class="visually-hidden">Messaging features</caption>
+              <thead><tr><th scope="col">Feature</th><th scope="col">Status</th><th scope="col">Since</th><th scope="col">Details</th></tr></thead>
+              <tbody>
+              <tr>
+                <th scope="row">Encrypted one-to-one messaging</th>
+                <td data-label="Status"><span class="badge badge-available">Available</span></td>
+                <td data-label="Since">v2026.11.14</td>
+                <td data-label="Details">AES-256-GCM on your device, bound to sender and recipient. Up to 173 bytes per message, sent as one packet.</td>
+              </tr>
+              <tr>
+                <th scope="row">Delivery confirmations</th>
+                <td data-label="Status"><span class="badge badge-available">Available</span></td>
+                <td data-label="Since">v2026.11.14</td>
+                <td data-label="Details">&#10003; your radio has it; &#10003;&#10003; your contact&rsquo;s MeshGuard confirmed it with an encrypted acknowledgement (2.0 mode).</td>
+              </tr>
+              <tr>
+                <th scope="row">Duplicate and replay protection</th>
+                <td data-label="Status"><span class="badge badge-available">Available</span></td>
+                <td data-label="Since">v2026.11.14</td>
+                <td data-label="Details">Every message has its own ID, time and lifetime. Relayed copies show once; a recorded message cannot be played back later (2.0 mode).</td>
+              </tr>
+              <tr>
+                <th scope="row">Works with older versions</th>
+                <td data-label="Status"><span class="badge badge-available">Available</span></td>
+                <td data-label="Since">v2026.11.14</td>
+                <td data-label="Details">Turn off <em>MeshGuard 2.0 mode</em> when pairing to chat with someone on an older version. A 2.0 chat is never silently downgraded.</td>
+              </tr>
+              <tr>
+                <th scope="row">Message history</th>
+                <td data-label="Status"><span class="badge badge-new">New</span></td>
+                <td data-label="Since">v2026.11.16</td>
+                <td data-label="Details">Conversations are kept on the device, encrypted, until you delete them. A chat list shows the last message and unread count.</td>
+              </tr>
+              <tr>
+                <th scope="row">Unsent messages kept and resent</th>
+                <td data-label="Status"><span class="badge badge-new">New</span></td>
+                <td data-label="Since">v2026.11.16</td>
+                <td data-label="Details">A message written while the radio is away waits and goes out when the radio is back, with pauses between attempts.</td>
+              </tr>
+              </tbody>
+            </table>
+          </div>
+      </section>
+
+      <section aria-labelledby="f-pair">
+        <h2 id="f-pair">Pairing and contacts</h2>
+          <div class="table-wrap">
+            <table class="table-stack">
+              <caption class="visually-hidden">Pairing features</caption>
+              <thead><tr><th scope="col">Feature</th><th scope="col">Status</th><th scope="col">Since</th><th scope="col">Details</th></tr></thead>
+              <tbody>
+              <tr>
+                <th scope="row">Offline QR pairing</th>
+                <td data-label="Status"><span class="badge badge-available">Available</span></td>
+                <td data-label="Since">v2026.11.14</td>
+                <td data-label="Details">Meet in person and scan a code: a random key, no passphrase to type. Typing the code works too.</td>
+              </tr>
+              <tr>
+                <th scope="row">Passphrase pairing</th>
+                <td data-label="Status"><span class="badge badge-available">Available</span></td>
+                <td data-label="Since">First release</td>
+                <td data-label="Details">Both people enter the same passphrase (at least 8 characters). It is never stored or sent.</td>
+              </tr>
+              <tr>
+                <th scope="row">Remembered chats</th>
+                <td data-label="Status"><span class="badge badge-available">Available</span></td>
+                <td data-label="Since">v2026.11.14</td>
+                <td data-label="Details">Chat keys are saved, encrypted with a key held in the Android Keystore, so you do not pair again. On Linux and macOS, with the system keyring, since v2026.11.16.</td>
+              </tr>
+              </tbody>
+            </table>
+          </div>
+      </section>
+
+      <section class="section" aria-labelledby="f-family">
+        <h2 id="f-family">Family and safety</h2>
+          <div class="table-wrap">
+            <table class="table-stack">
+              <caption class="visually-hidden">Family and safety features</caption>
+              <thead><tr><th scope="col">Feature</th><th scope="col">Status</th><th scope="col">Since</th><th scope="col">Details</th></tr></thead>
+              <tbody>
+              <tr>
+                <th scope="row">Family check-ins</th>
+                <td data-label="Status"><span class="badge badge-available">Available</span></td>
+                <td data-label="Since">v2026.11.14</td>
+                <td data-label="Details">&ldquo;I&rsquo;m OK&rdquo;, &ldquo;On my way&rdquo;, &ldquo;I need help&rdquo; with one tap; the wording is yours to change.</td>
+              </tr>
+              <tr>
+                <th scope="row">Share location</th>
+                <td data-label="Status"><span class="badge badge-available">Available</span></td>
+                <td data-label="Since">v2026.11.14</td>
+                <td data-label="Details">Sends the radio&rsquo;s last GPS position with its accuracy and age. Needs a radio with GPS and a fix.</td>
+              </tr>
+              <tr>
+                <th scope="row">SOS with location</th>
+                <td data-label="Status"><span class="badge badge-available">Available</span></td>
+                <td data-label="Since">v2026.11.14</td>
+                <td data-label="Details">Goes to all paired contacts, who see a full-screen alert. Delivery depends on range and relays. <strong>Does not contact emergency services.</strong></td>
+              </tr>
+              </tbody>
+            </table>
+          </div>
+        <div class="note note-warn"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg><div><p>MeshGuard is not an emergency service. An SOS reaches only your paired contacts, and only if the radios can reach each other.</p></div></div>
+      </section>
+
+      <section aria-labelledby="f-radio">
+        <h2 id="f-radio">Radio and connection</h2>
+          <div class="table-wrap">
+            <table class="table-stack">
+              <caption class="visually-hidden">Radio and connection features</caption>
+              <thead><tr><th scope="col">Feature</th><th scope="col">Status</th><th scope="col">Since</th><th scope="col">Details</th></tr></thead>
+              <tbody>
+              <tr>
+                <th scope="row">Bluetooth connection and auto-reconnect</th>
+                <td data-label="Status"><span class="badge badge-available">Available</span></td>
+                <td data-label="Since">v2026.11.14</td>
+                <td data-label="Details">Reconnects to the last radio when the app starts and when the radio comes back, while the app is running.</td>
+              </tr>
+              <tr>
+                <th scope="row">Wi-Fi (TCP) radios</th>
+                <td data-label="Status"><span class="badge badge-available">Available</span></td>
+                <td data-label="Since">First release</td>
+                <td data-label="Details">Connect to a radio on your local network. Since v2026.11.15 MeshGuard also finds such radios on its own and remembers them. Local network only, no internet.</td>
+              </tr>
+              <tr>
+                <th scope="row">USB serial</th>
+                <td data-label="Status"><span class="badge badge-available">Available</span></td>
+                <td data-label="Since">First release</td>
+                <td data-label="Details">Connect a radio with a cable on Linux and macOS.</td>
+              </tr>
+              <tr>
+                <th scope="row">Mesh diagnostics</th>
+                <td data-label="Status"><span class="badge badge-available">Available</span></td>
+                <td data-label="Since">v2026.11.14</td>
+                <td data-label="Details">Last heard, hops, RSSI and SNR, battery and channel use when the node reports them, signal history, and path tests.</td>
+              </tr>
+              </tbody>
+            </table>
+          </div>
+      </section>
+
+      <section class="section" aria-labelledby="f-next">
+        <h2 id="f-next">In development and planned</h2>
+          <div class="table-wrap">
+            <table class="table-stack">
+              <caption class="visually-hidden">Features in development and planned</caption>
+              <thead><tr><th scope="col">Feature</th><th scope="col">Status</th><th scope="col">Since</th><th scope="col">Details</th></tr></thead>
+              <tbody>
+              <tr>
+                <th scope="row">Messages with the app closed (Android)</th>
+                <td data-label="Status"><span class="badge badge-dev">In development</span></td>
+                <td data-label="Since">&mdash;</td>
+                <td data-label="Details">A background service that keeps the radio connection while MeshGuard is closed. The current release only contains a test switch for it.</td>
+              </tr>
+              <tr>
+                <th scope="row">Reply from a notification</th>
+                <td data-label="Status"><span class="badge badge-dev">In development</span></td>
+                <td data-label="Since">&mdash;</td>
+                <td data-label="Details">Answer a message from the Android notification without opening the app.</td>
+              </tr>
+              <tr>
+                <th scope="row">Group conversations</th>
+                <td data-label="Status"><span class="badge badge-planned">Planned</span></td>
+                <td data-label="Since">&mdash;</td>
+                <td data-label="Details">Today every conversation is between two people. SOS and check-ins can go to several contacts.</td>
+              </tr>
+              <tr>
+                <th scope="row">Home-screen widget and Quick Settings tile</th>
+                <td data-label="Status"><span class="badge badge-planned">Planned</span></td>
+                <td data-label="Since">&mdash;</td>
+                <td data-label="Details">One-tap check-in from outside the app.</td>
+              </tr>
+              <tr>
+                <th scope="row">Home gateway</th>
+                <td data-label="Status"><span class="badge badge-planned">Planned</span></td>
+                <td data-label="Since">&mdash;</td>
+                <td data-label="Details">An optional Raspberry Pi with a LoRa radio on your home network, so a phone does not need to stay near its radio.</td>
+              </tr>
+              <tr>
+                <th scope="row">Automatic switching between connections</th>
+                <td data-label="Status"><span class="badge badge-planned">Planned</span></td>
+                <td data-label="Since">&mdash;</td>
+                <td data-label="Details">Today you choose Bluetooth, Wi-Fi or USB yourself; MeshGuard does not switch between them on its own.</td>
+              </tr>
+              <tr>
+                <th scope="row">Voice and push-to-talk</th>
+                <td data-label="Status"><span class="badge badge-planned">Not planned</span></td>
+                <td data-label="Since">&mdash;</td>
+                <td data-label="Details">Not planned for LoRa, which is far too slow for voice. Any voice-radio work would be a separate, experimental project.</td>
+              </tr>
+              </tbody>
+            </table>
+          </div>
+        <p style="margin-top:16px">See the <a href="/roadmap">roadmap</a> for how these fit together.</p>
+      </section>
+
+      <section aria-labelledby="f-platforms">
+        <h2 id="f-platforms">Platforms</h2>
+        <div class="grid grid-3">
+          <div class="card"><h3>Android</h3><p>Android 8.0 or newer. The main platform, and the one the setup guide covers.</p></div>
+          <div class="card"><h3>Linux</h3><p>Ubuntu/Debian (.deb), Fedora/RHEL (.rpm) and a universal AppImage. Bluetooth through BlueZ.</p></div>
+          <div class="card"><h3>macOS</h3><p>One app for Apple Silicon and Intel Macs.</p></div>
+        </div>
+        <p style="margin-top:16px">Full release notes: <a href="https://github.com/nemke82/meshguard/blob/main/CHANGELOG.md" rel="noopener">changelog</a>.</p>
+      </section>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <div class="footer-grid">
+        <div class="footer-about">
+          <a class="brand" href="/"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>MeshGuard</a>
+          <p>Free, open-source, privacy-first messaging for Meshtastic LoRa radios. No account, no servers.</p>
+        </div>
+        <div>
+          <h2>Product</h2>
+          <ul>
+            <li><a href="/how-it-works">How it works</a></li>
+            <li><a href="/features">Features</a></li>
+            <li><a href="/hardware">Supported hardware</a></li>
+            <li><a href="/download">Download</a></li>
+          </ul>
+        </div>
+        <div>
+          <h2>Learn</h2>
+          <ul>
+            <li><a href="/getting-started">Getting started</a></li>
+            <li><a href="/videos">Tutorial videos</a></li>
+            <li><a href="/faq">FAQ &amp; troubleshooting</a></li>
+            <li><a href="/roadmap">Roadmap</a></li>
+          </ul>
+        </div>
+        <div>
+          <h2>Project</h2>
+          <ul>
+            <li><a href="https://github.com/nemke82/meshguard" rel="noopener">GitHub</a></li>
+            <li><a href="https://github.com/nemke82/meshguard/releases" rel="noopener">Releases</a></li>
+            <li><a href="https://github.com/nemke82/meshguard/blob/main/CHANGELOG.md" rel="noopener">Changelog</a></li>
+            <li><a href="https://github.com/nemke82/meshguard/issues" rel="noopener">Report an issue</a></li>
+            <li><a href="/privacy">Privacy policy</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <p>&copy; 2026 MeshGuard contributors &middot; <a href="https://github.com/nemke82/meshguard/blob/main/LICENSE" rel="noopener">MIT License</a> &middot; MeshGuard is an independent project and is not affiliated with Meshtastic or Seeed Studio. Not a replacement for emergency services.</p>
+      </div>
+    </div>
+  </footer>
+
+  <script src="/js/site.js?v=2026.11.16" defer></script>
+</body>
+</html>
