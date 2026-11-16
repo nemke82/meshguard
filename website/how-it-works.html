@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>How MeshGuard works — MeshGuard</title>
+  <meta name="description" content="How a MeshGuard message travels from your phone to your radio, across the LoRa mesh and to your contact, what is encrypted, and what affects range.">
+  <link rel="canonical" href="https://meshguard.net/how-it-works">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f8faf9">
+  <meta property="og:title" content="How MeshGuard works — MeshGuard">
+  <meta property="og:description" content="How a MeshGuard message travels from your phone to your radio, across the LoRa mesh and to your contact, what is encrypted, and what affects range.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://meshguard.net/how-it-works">
+  <meta property="og:site_name" content="MeshGuard">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23087f5b' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 2L2 7l10 5 10-5-10-5z'/%3E%3Cpath d='M2 17l10 5 10-5'/%3E%3Cpath d='M2 12l10 5 10-5'/%3E%3C/svg%3E">
+  <script src="/js/theme.js?v=2026.11.16"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/site.css?v=2026.11.16">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <div class="container">
+      <nav class="nav" aria-label="Main">
+        <a class="brand" href="/"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>MeshGuard</a>
+        <ul class="nav-menu" id="nav-menu">
+          <li><a href="/how-it-works" aria-current="page">How It Works</a></li>
+          <li><a href="/getting-started">Getting Started</a></li>
+          <li><a href="/features">Features</a></li>
+          <li><a href="/download">Download</a></li>
+          <li><a href="https://github.com/nemke82/meshguard" rel="noopener"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>GitHub</a></li>
+        </ul>
+        <button type="button" class="icon-btn theme-toggle" id="theme-toggle" aria-pressed="false" aria-label="Switch to dark theme" title="Switch to dark theme" hidden>
+          <svg class="icon-moon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>
+          <svg class="icon-sun" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+        </button>
+        <button type="button" class="icon-btn menu-toggle" id="menu-toggle" aria-expanded="false" aria-controls="nav-menu" aria-label="Open menu">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+        </button>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main" tabindex="-1">
+    <div class="container">
+      <header class="page-head">
+        <span class="eyebrow">How it works</span>
+        <h1>From your phone to theirs, without the internet</h1>
+        <p class="lead">MeshGuard is the app; Meshtastic radios carry the messages. Here is what happens to a message, who can see what, and what affects whether it arrives.</p>
+      </header>
+
+      <div class="grid grid-2">
+        <section aria-labelledby="path-title">
+          <h2 id="path-title">The path of a message</h2>
+          <ol>
+            <li><strong>You write a message.</strong> MeshGuard encrypts it on your phone for one contact.</li>
+            <li><strong>Your phone hands it to your radio</strong> over Bluetooth (or over your local Wi-Fi network, or a USB cable on a computer).</li>
+            <li><strong>Your radio transmits it over LoRa.</strong> If your contact&rsquo;s radio is in range, it hears it directly.</li>
+            <li><strong>Other Meshtastic nodes may relay it.</strong> Depending on their settings, the hop limit and how busy the channel is, nodes in between can pass the packet on. They cannot read it.</li>
+            <li><strong>Your contact&rsquo;s radio passes it to their phone,</strong> where MeshGuard decrypts it and sends back an encrypted confirmation.</li>
+          </ol>
+        </section>
+        <div>
+          <ol class="path" aria-label="How a message travels">
+            <li class="path-node"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 18h.01"/></svg><div><strong>Your phone</strong><span>MeshGuard encrypts the message</span></div></li>
+            <li class="path-link">Bluetooth</li>
+            <li class="path-node"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="8" width="18" height="13" rx="2"/><path d="M7 8l9-5"/><circle cx="8" cy="14.5" r="2"/><path d="M14 13h4M14 16h4"/></svg><div><strong>Your Meshtastic radio</strong><span>Sends it over LoRa</span></div></li>
+            <li class="path-link">LoRa radio</li>
+            <li class="path-node relay"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 010 8.49M7.76 16.24a6 6 0 010-8.49M19.07 4.93a10 10 0 010 14.14M4.93 19.07a10 10 0 010-14.14"/></svg><div><strong>Mesh relays (optional)</strong><span>Other nodes may pass it on</span></div></li>
+            <li class="path-link">LoRa radio</li>
+            <li class="path-node"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="8" width="18" height="13" rx="2"/><path d="M7 8l9-5"/><circle cx="8" cy="14.5" r="2"/><path d="M14 13h4M14 16h4"/></svg><div><strong>Your contact&rsquo;s radio</strong><span>Receives the packet</span></div></li>
+            <li class="path-link">Bluetooth</li>
+            <li class="path-node"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 18h.01"/></svg><div><strong>Your contact&rsquo;s phone</strong><span>MeshGuard decrypts it</span></div></li>
+          </ol>
+        </div>
+      </div>
+    </div>
+
+    <section class="section" aria-labelledby="conn-title">
+      <div class="container">
+        <div class="section-head">
+          <h2 id="conn-title">Ways to reach your radio</h2>
+          <p>None of these use the internet. They only connect your phone or computer to your own radio.</p>
+        </div>
+        <div class="grid grid-3">
+          <div class="card"><div class="card-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="8" width="18" height="13" rx="2"/><path d="M7 8l9-5"/><circle cx="8" cy="14.5" r="2"/><path d="M14 13h4M14 16h4"/></svg></div><h3>Bluetooth</h3><p>The usual way on a phone. You pair the phone with the radio once, using the radio&rsquo;s Bluetooth PIN.</p></div>
+          <div class="card"><div class="card-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M5 12.55a11 11 0 0114.08 0M1.42 9a16 16 0 0121.16 0M8.53 16.11a6 6 0 016.95 0M12 20h.01"/></svg></div><h3>Local Wi-Fi (TCP)</h3><p>For radios with Wi-Fi on your home or field network. MeshGuard can find them on the network. This is a local connection, not internet access.</p></div>
+          <div class="card"><div class="card-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M16 18l6-6-6-6M8 6l-6 6 6 6"/></svg></div><h3>USB serial</h3><p>On Linux and macOS, connect the radio with a USB cable.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section-alt" aria-labelledby="enc-title">
+      <div class="container">
+        <div class="section-head">
+          <h2 id="enc-title">Two separate layers of encryption</h2>
+          <p>It helps to keep these apart: one protects your conversation, the other is part of the Meshtastic network.</p>
+        </div>
+        <div class="grid grid-2">
+          <div class="card">
+            <h3>MeshGuard end-to-end encryption</h3>
+            <p>Each conversation has its own key that only you and your contact hold. Messages are encrypted with AES-256-GCM on your device and bound to the sender and the recipient. The key comes from a QR code you scan in person, or from a passphrase you both agreed on. It is never sent over the air.</p>
+          </div>
+          <div class="card">
+            <h3>Meshtastic channel encryption</h3>
+            <p>Your radio also encrypts packets with its channel key. Everyone on the same channel shares that key, and the default channel key is publicly known. It keeps casual listeners out, but it is not what keeps your conversation private &mdash; MeshGuard&rsquo;s own encryption does that.</p>
+          </div>
+        </div>
+        <div class="note"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg><div><p><strong>What others can still see.</strong> Like any radio transmission, Meshtastic packets reveal metadata to radios in range: node numbers, when a packet was sent, its size and signal strength. MeshGuard hides what you say, not that your radio is transmitting. It does not make you anonymous.</p></div></div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="ticks-title">
+      <div class="container narrow">
+        <h2 id="ticks-title">What the delivery ticks mean</h2>
+        <p>Each message you send shows one of these marks in the chat.</p>
+        <ul class="states">
+          <li><span class="sym" aria-hidden="true">&#9203;</span><div><strong>Sending</strong><br>Saved on your phone and waiting for the radio, or being sent again. Messages written while the radio is away are kept and sent when it is back.</div></li>
+          <li><span class="sym" aria-hidden="true">&#10003;</span><div><strong>Sent</strong><br>Your radio has accepted the message for transmission. It does not yet mean your contact received it.</div></li>
+          <li><span class="sym" aria-hidden="true">&#10003;&#10003;</span><div><strong>Delivered</strong><br>Your contact&rsquo;s MeshGuard received and decrypted it, and sent back an encrypted confirmation. Only in MeshGuard 2.0 mode.</div></li>
+          <li><span class="sym" aria-hidden="true">&#9888;</span><div><strong>Not delivered</strong><br>MeshGuard stopped trying, for example because the message reached the end of its lifetime without a confirmation.</div></li>
+        </ul>
+        <p>A message can stay at one tick for a while: the confirmation has to travel back over the same mesh. See <a href="/faq#delivery">the FAQ</a> for what to check.</p>
+      </div>
+    </section>
+
+    <section class="section section-alt" aria-labelledby="range-title">
+      <div class="container narrow">
+        <h2 id="range-title">What affects range</h2>
+        <p>LoRa can cover long distances, but there is no single number that holds everywhere. What matters most:</p>
+        <ul>
+          <li><strong>Line of sight and terrain.</strong> Hills, buildings and trees block signals. Open ground or water carries much further than a city street.</li>
+          <li><strong>Height and antenna.</strong> A radio held at waist height inside a pocket reaches far less than one on a windowsill or a roof.</li>
+          <li><strong>Radio settings.</strong> Both radios must use the same region and modem preset. Long-range presets reach further but send more slowly.</li>
+          <li><strong>Relays.</strong> Other Meshtastic nodes can extend the reach, if they are in range, configured to relay, and the hop limit allows it.</li>
+        </ul>
+        <p>Test with your own radios where you plan to use them. <a href="/hardware">Hardware notes</a> &middot; <a href="/getting-started">Setup guide</a></p>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="more-title">
+      <div class="container narrow">
+        <h2 id="more-title">For the technically curious</h2>
+        <p>MeshGuard is written in Rust. Its message format, pairing and storage are documented in the repository: <a href="https://github.com/nemke82/meshguard/blob/main/docs/adr/003-wire-protocol-v2.md" rel="noopener">wire protocol</a>, <a href="https://github.com/nemke82/meshguard/blob/main/docs/adr/004-qr-pairing.md" rel="noopener">QR pairing</a>, <a href="https://github.com/nemke82/meshguard/blob/main/docs/adr/005-message-store.md" rel="noopener">message storage</a>.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <div class="footer-grid">
+        <div class="footer-about">
+          <a class="brand" href="/"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>MeshGuard</a>
+          <p>Free, open-source, privacy-first messaging for Meshtastic LoRa radios. No account, no servers.</p>
+        </div>
+        <div>
+          <h2>Product</h2>
+          <ul>
+            <li><a href="/how-it-works">How it works</a></li>
+            <li><a href="/features">Features</a></li>
+            <li><a href="/hardware">Supported hardware</a></li>
+            <li><a href="/download">Download</a></li>
+          </ul>
+        </div>
+        <div>
+          <h2>Learn</h2>
+          <ul>
+            <li><a href="/getting-started">Getting started</a></li>
+            <li><a href="/videos">Tutorial videos</a></li>
+            <li><a href="/faq">FAQ &amp; troubleshooting</a></li>
+            <li><a href="/roadmap">Roadmap</a></li>
+          </ul>
+        </div>
+        <div>
+          <h2>Project</h2>
+          <ul>
+            <li><a href="https://github.com/nemke82/meshguard" rel="noopener">GitHub</a></li>
+            <li><a href="https://github.com/nemke82/meshguard/releases" rel="noopener">Releases</a></li>
+            <li><a href="https://github.com/nemke82/meshguard/blob/main/CHANGELOG.md" rel="noopener">Changelog</a></li>
+            <li><a href="https://github.com/nemke82/meshguard/issues" rel="noopener">Report an issue</a></li>
+            <li><a href="/privacy">Privacy policy</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <p>&copy; 2026 MeshGuard contributors &middot; <a href="https://github.com/nemke82/meshguard/blob/main/LICENSE" rel="noopener">MIT License</a> &middot; MeshGuard is an independent project and is not affiliated with Meshtastic or Seeed Studio. Not a replacement for emergency services.</p>
+      </div>
+    </div>
+  </footer>
+
+  <script src="/js/site.js?v=2026.11.16" defer></script>
+</body>
+</html>
