@@ -3,6 +3,7 @@
 //! back as [`Action`]s for the caller (the Tauri listener today, the
 //! Android service later).
 
+use meshguard_core::envelope::MessageType;
 use meshguard_core::inbound::{Inbound, InboundContext};
 use meshguard_core::outbound::WireVersion;
 use meshguard_core::status::{StatusBody, StatusKind, FEATURE_STATUS, SUPPORTED_FEATURES};
@@ -307,54 +308,31 @@ impl Engine {
             Route::Radio => None,
             Route::Relay => Some(&mut self.protection.relay_acks),
         };
+        // What the relay may carry (ADR-006 §6), checked before dedup so a
+        // refused frame does not use up its id: no pairing over the
+        // internet, and a relay that just ended carries only its revoke and
+        // ACKs.
+        let controls_only = self.relay_controls_only;
+        let relay_allows = move |t: MessageType| match t {
+            MessageType::PairRequest | MessageType::PairAccept => false,
+            _ if controls_only => matches!(t, MessageType::AppAck | MessageType::RelayRevoke),
+            _ => true,
+        };
+        let allow: Option<&dyn Fn(MessageType) -> bool> = match route {
+            Route::Radio => None,
+            Route::Relay => Some(&relay_allows),
+        };
         let outcome = meshguard_core::inbound::process_inbound_routed(
             payload,
             &ictx,
             &mut self.protection.dedup,
             route_acks,
+            allow,
             &policy,
         );
-        // A relay that just ended carries only its revoke and ACKs; anything
-        // else is dropped and its id forgotten, so it still counts when it
-        // arrives over LoRa.
-        if route == Route::Relay
-            && self.relay_controls_only
-            && !matches!(
-                outcome,
-                Inbound::PeerAck { .. }
-                    | Inbound::Duplicate { .. }
-                    | Inbound::Relay {
-                        control: meshguard_core::relay::RelayControl::Revoke(_),
-                        ..
-                    }
-            )
-        {
-            match &outcome {
-                Inbound::Text {
-                    message_id: Some(id),
-                    ..
-                }
-                | Inbound::Status { message_id: id, .. }
-                | Inbound::Relay { message_id: id, .. } => {
-                    self.protection.dedup.forget(&sender, id);
-                    self.protection.relay_acks.forget(&sender, id);
-                }
-                _ => {}
-            }
-            tracing::info!("Frame from {from_node} on an ended relay dropped");
-            return;
-        }
-        // No pairing over the internet (ADR-006 §6): the relay only carries
-        // frames of contacts already paired over the radio.
-        if route == Route::Relay
-            && matches!(
-                outcome,
-                Inbound::PairRequest { .. }
-                    | Inbound::PairAccept { .. }
-                    | Inbound::Undecryptable(_)
-            )
-        {
-            tracing::info!("Relay frame from {from_node} dropped: {outcome:?}");
+        // Undecryptable frames are no pairing attempts over the relay.
+        if route == Route::Relay && matches!(outcome, Inbound::Undecryptable(_)) {
+            tracing::info!("Undecryptable relay frame from {from_node} dropped");
             return;
         }
         let is_new = matches!(

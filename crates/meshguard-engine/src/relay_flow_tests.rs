@@ -328,3 +328,33 @@ fn a_revoke_and_its_ack_travel_over_the_relay_alone() {
     b.config.send_generations.insert(A, 9);
     assert!(!b.relay_reply_valid(A, &reply));
 }
+
+#[test]
+fn a_frame_refused_on_a_retiring_topic_still_counts_over_lora() {
+    let (mut a, mut b) = paired("t6");
+    a.relay_disable(B, NOW).unwrap();
+    let c = a.relay_due_controls(NOW).pop().unwrap();
+    let topic = c.topic.clone().unwrap();
+    b.on_relay_frame(&topic, &c.frame, NOW);
+    // A Caps frame (not allowed on an ended relay) arrives there first...
+    let caps = meshguard_core::outbound::seal_caps(
+        meshguard_core::status::SUPPORTED_FEATURES,
+        &SessionKey::from_bytes([7; 32]),
+        &meshguard_core::PeerIdentity::meshtastic_node(A),
+        &meshguard_core::PeerIdentity::meshtastic_node(B),
+        NOW as u32,
+        meshguard_core::envelope::DEFAULT_FRAME_BUDGET,
+    )
+    .unwrap()
+    .frame;
+    assert!(b.on_relay_frame(&topic, &caps, NOW).is_empty());
+    // ...and the same frame over LoRa is handled and acknowledged.
+    let lora = b.on_mesh_packet(&packet(A, B, caps), B, NOW);
+    assert!(lora.iter().any(|x| matches!(
+        x,
+        Action::SendAck {
+            route: Route::Radio,
+            ..
+        }
+    )));
+}

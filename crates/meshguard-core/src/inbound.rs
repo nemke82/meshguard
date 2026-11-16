@@ -64,6 +64,9 @@ pub enum DropReason {
     DedupFull,
     /// v1 frame from a peer pinned to v2 (anti-downgrade).
     V1FromV2Peer,
+    /// Authenticated, but this message type is not accepted on the route
+    /// it came over (checked before dedup, so the id is not consumed).
+    NotAllowed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -148,7 +151,7 @@ pub fn process_inbound(
     dedup: &mut DedupCache,
     policy: &InboundPolicy,
 ) -> Inbound {
-    process_inbound_routed(frame, ctx, dedup, None, policy)
+    process_inbound_routed(frame, ctx, dedup, None, None, policy)
 }
 
 /// Like [`process_inbound`] for a frame that came over a second transport
@@ -161,6 +164,7 @@ pub fn process_inbound_routed(
     ctx: &InboundContext<'_>,
     dedup: &mut DedupCache,
     route_acks: Option<&mut DedupCache>,
+    allow: Option<&dyn Fn(MessageType) -> bool>,
     policy: &InboundPolicy,
 ) -> Inbound {
     let aad = aad_context(ctx.sender, ctx.me);
@@ -201,6 +205,9 @@ pub fn process_inbound_routed(
 
     if let Err(e) = env.check_freshness(ctx.now, policy.max_skew_secs, policy.max_ttl_mins) {
         return Inbound::Dropped(DropReason::Stale(e));
+    }
+    if allow.is_some_and(|ok| !ok(env.message_type)) {
+        return Inbound::Dropped(DropReason::NotAllowed);
     }
 
     let (seen, ack_seen) = match route_acks {
@@ -676,7 +683,14 @@ mod tests {
         // The relay replays the frame many times: shown once, ACKed 3 times.
         let mut acks = 0;
         for i in 0..6 {
-            let r = process_inbound_routed(&f, &c, &mut t.dedup, Some(&mut relay_acks), &t.policy);
+            let r = process_inbound_routed(
+                &f,
+                &c,
+                &mut t.dedup,
+                Some(&mut relay_acks),
+                None,
+                &t.policy,
+            );
             if i == 0 {
                 assert!(matches!(r, Inbound::Text { .. }));
             } else {
