@@ -13,6 +13,7 @@ Versions are dates (`vYYYY.MM.DD`). Each release on [GitHub Releases](https://gi
 - "Notification Settings" is now **Settings**.
 
 ### Fixed
+- **Scan code no longer closes the app (Android).** The camera now runs inside the app page, which decodes the QR code itself. The native scanner plugin it replaces closed the app on some phones. Cancel, Type code and Back work as before.
 - Messages still waiting to be sent to a contact you block or remove are cancelled (shown as failed) instead of being sent later, for example after pairing with that node again.
 
 ## v2026.11.16

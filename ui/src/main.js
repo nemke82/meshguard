@@ -1,3 +1,5 @@
+import jsQR from "jsqr";
+
 if (!window.__TAURI__ || !window.__TAURI__.core) {
   document.body.innerHTML =
     '<div style="color:red;padding:2em;font-family:monospace;">ERROR: Tauri bridge not loaded.</div>';
@@ -1984,46 +1986,114 @@ async function pairWithCode(code) {
 
 const isMobile = /Android|iPhone|iPad/i.test(navigator.userAgent);
 
+// QR codes are scanned inside the page: the camera stream (getUserMedia)
+// is shown in a <video> and frames are decoded with jsQR. The WebView asks
+// for the camera permission itself. No native camera view, so nothing
+// outside the page can take the app down.
+//
+// Each scan is an *attempt* with its own id, camera stream, timer and
+// result. Cancelling ends the current attempt at once; a stale attempt
+// (its camera arriving after Cancel) only ever releases its own stream.
+const qrScan = { active: false, attempt: 0, cleanup: null, finish: null };
+let scanAttempts = 0;
+
 $("#btn-scan-qr").addEventListener("click", async () => {
-  if (!isMobile) {
+  if (!isMobile || !navigator.mediaDevices?.getUserMedia) {
     openCodeEntry("This device has no camera scanner. Type the code shown on the other phone.");
     return;
   }
   // Reserved before the first await: a second tap must not start another scan.
   if (qrScan.active) return;
-  qrScan.active = true;
-  qrScan.cancelled = false;
-  qrScan.typeInstead = false;
-  let content = null;
+  const id = ++scanAttempts;
+  qrScan.attempt = id;
+  setScanUi(true);
+  let result;
   try {
-    const perm = await invoke("plugin:barcode-scanner|request_permissions");
-    if (perm && perm.camera && perm.camera !== "granted") {
-      openCodeEntry("Camera permission was denied. You can type the code instead.");
-      return;
-    }
-    if (qrScan.cancelled) return; // Back while the permission dialog was up
-    // Windowed: the camera is drawn behind the page and our own controls
-    // (Cancel, Type code) stay on top. The full-screen mode covered the app
-    // with no way out but Back, which closed the app.
-    setScanUi(true);
-    const result = await invoke("plugin:barcode-scanner|scan", {
-      windowed: true,
-      formats: ["QR_CODE"],
-    });
-    content = result && result.content;
+    result = await scanQr(id);
   } catch (err) {
-    if (!qrScan.cancelled) {
-      console.error("Scan failed:", err);
-      openCodeEntry("Scanning did not work (" + err + "). You can type the code instead.");
-    }
-  } finally {
-    setScanUi(false);
+    if (qrScan.attempt !== id) return; // cancelled meanwhile
+    endScan(id);
+    console.error("Scan failed:", err);
+    const denied = err && (err.name === "NotAllowedError" || err.name === "SecurityError");
+    openCodeEntry(
+      denied
+        ? "Camera permission was denied. You can type the code instead."
+        : "The camera could not be started. You can type the code instead."
+    );
+    return;
   }
-  if (content) await pairWithCode(content);
-  else if (qrScan.typeInstead) openCodeEntry();
+  if (qrScan.attempt !== id) return; // cancelled: cancelScan handled it
+  endScan(id);
+  if (result && result.code) await pairWithCode(result.code);
 });
 
-const qrScan = { active: false, cancelled: false, typeInstead: false };
+/** Run scan attempt `id`: open the camera and resolve with `{code}` once a
+ * MeshGuard pairing code is seen. Resolves `{}` if the attempt was
+ * cancelled meanwhile (its camera is released). */
+async function scanQr(id) {
+  const owned = () => qrScan.active && qrScan.attempt === id;
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 } },
+    audio: false,
+  });
+  const video = $("#scan-video");
+  let timer = null;
+  const release = () => {
+    clearTimeout(timer);
+    stream.getTracks().forEach((t) => t.stop());
+    if (video.srcObject === stream) video.srcObject = null;
+  };
+  if (!owned()) {
+    release();
+    return {};
+  }
+  qrScan.cleanup = release;
+  video.srcObject = stream;
+  await video.play().catch(() => {});
+  if (!owned()) {
+    release();
+    return {};
+  }
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  return new Promise((resolve) => {
+    qrScan.finish = resolve;
+    const tick = () => {
+      if (!owned()) return;
+      const w = video.videoWidth;
+      const h = video.videoHeight;
+      if (w && h) {
+        // Downscale: fast enough on slow phones, plenty for a QR code.
+        const scale = Math.min(1, 720 / Math.max(w, h));
+        canvas.width = Math.round(w * scale);
+        canvas.height = Math.round(h * scale);
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const found = jsQR(img.data, img.width, img.height, { inversionAttempts: "attemptBoth" });
+        if (found && found.data && found.data.startsWith("meshguard:")) {
+          resolve({ code: found.data });
+          return;
+        }
+      }
+      timer = setTimeout(tick, 150);
+    };
+    tick();
+  });
+}
+
+/** End scan attempt `id` (if it is still the current one): release its
+ * camera and hide the scanner. */
+function endScan(id) {
+  if (qrScan.attempt !== id) return;
+  const cleanup = qrScan.cleanup;
+  const finish = qrScan.finish;
+  qrScan.cleanup = null;
+  qrScan.finish = null;
+  qrScan.attempt = 0;
+  setScanUi(false);
+  if (cleanup) cleanup();
+  if (finish) finish({});
+}
 
 function setScanUi(on) {
   qrScan.active = on;
@@ -2031,17 +2101,12 @@ function setScanUi(on) {
   $("#scan-ui").hidden = !on;
 }
 
-/** Stop the camera; the pending scan then rejects with "cancelled". */
-async function cancelScan(typeInstead = false) {
+/** Leave the scanner (Cancel, Type code or Back), also while the camera or
+ * its permission dialog is still opening. */
+function cancelScan(typeInstead = false) {
   if (!qrScan.active) return;
-  qrScan.cancelled = true;
-  qrScan.typeInstead = typeInstead;
-  try {
-    await invoke("plugin:barcode-scanner|cancel");
-  } catch (err) {
-    console.error("Cancel scan failed:", err);
-    setScanUi(false);
-  }
+  endScan(qrScan.attempt);
+  if (typeInstead) openCodeEntry();
 }
 
 $("#scan-ui-cancel").addEventListener("click", () => cancelScan());

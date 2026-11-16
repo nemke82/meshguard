@@ -1817,11 +1817,6 @@ input[type="range"]::-moz-range-thumb {
 /* ── Camera QR scan ────────────────────────────────────── */
 /* While scanning, the native camera preview is behind the WebView: make the
    page transparent and show only the scan controls. */
-html.qr-scanning,
-html.qr-scanning body {
-  background: transparent !important;
-}
-
 html.qr-scanning #app {
   visibility: hidden;
 }
@@ -1830,6 +1825,7 @@ html.qr-scanning #app {
   position: fixed;
   inset: 0;
   z-index: 9500;
+  background: #000;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1838,6 +1834,20 @@ html.qr-scanning #app {
 
 .scan-ui[hidden] {
   display: none;
+}
+
+.scan-ui-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.scan-ui-top,
+.scan-ui-frame,
+.scan-ui-bottom {
+  position: relative;
 }
 
 .scan-ui-top,
