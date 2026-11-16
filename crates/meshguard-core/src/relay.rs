@@ -12,6 +12,8 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
+use crate::envelope::MessageType;
+
 /// Feature bit: understands the relay control messages (0x20–0x22).
 pub const FEATURE_RELAY: u32 = 1 << 1;
 
@@ -282,6 +284,43 @@ impl RelayRevoke {
         Ok(Self {
             confirm: rest.try_into().map_err(|_| RelayError::Malformed)?,
         })
+    }
+}
+
+/// A decoded relay control message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelayControl {
+    Offer(RelayOffer),
+    Accept(RelayAccept),
+    Revoke(RelayRevoke),
+}
+
+impl RelayControl {
+    pub fn message_type(&self) -> MessageType {
+        match self {
+            Self::Offer(_) => MessageType::RelayOffer,
+            Self::Accept(_) => MessageType::RelayAccept,
+            Self::Revoke(_) => MessageType::RelayRevoke,
+        }
+    }
+
+    pub fn encode(&self) -> Result<Vec<u8>, RelayError> {
+        match self {
+            Self::Offer(o) => o.encode(),
+            Self::Accept(a) => a.encode(),
+            Self::Revoke(r) => Ok(r.encode()),
+        }
+    }
+
+    /// Decode the body of a relay message type; `None` for other types or
+    /// invalid bodies.
+    pub fn decode(ty: MessageType, body: &[u8]) -> Option<Self> {
+        match ty {
+            MessageType::RelayOffer => RelayOffer::decode(body).ok().map(Self::Offer),
+            MessageType::RelayAccept => RelayAccept::decode(body).ok().map(Self::Accept),
+            MessageType::RelayRevoke => RelayRevoke::decode(body).ok().map(Self::Revoke),
+            _ => None,
+        }
     }
 }
 

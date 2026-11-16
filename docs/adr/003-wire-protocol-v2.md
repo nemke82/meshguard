@@ -114,3 +114,12 @@ Body: `features u32 BE` (bit 0 = understands `Status`; extra trailing bytes are 
 - One outstanding probe per peer; unanswered probes expire after an hour.
 - The text fallback is cut to fit one frame (coordinates kept whole) and keeps the 6-hour TTL for urgent kinds.
 - Implementation: `meshguard-core::status`.
+
+## Addendum (2026-11-16): relay control types 0x20–0x22
+
+`RelayOffer` (0x20), `RelayAccept` (0x21) and `RelayRevoke` (0x22) carry the per-conversation secret of the private MQTT relay. Their bodies and rules are in [ADR-006](006-private-mqtt-relay.md) §4.
+
+- All three are acknowledged.
+- A retry reuses the message id and the original `created_at`, so the receiver deduplicates it. The TTL is 24 hours.
+- Peers learn about them through the `FEATURE_RELAY` bit (`1 << 1`) in `Caps`.
+- `Caps` bodies may carry a trailing flags byte. Bit 0 means "send your `Caps` back". Older builds ignore it.

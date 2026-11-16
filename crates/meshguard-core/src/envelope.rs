@@ -66,6 +66,12 @@ pub enum MessageType {
     Caps = 0x05,
     /// Authenticated application ACK. Body = acknowledged [`MessageId`].
     AppAck = 0x10,
+    /// Private MQTT relay: offer a relay secret (ADR-006 §4).
+    RelayOffer = 0x20,
+    /// Private MQTT relay: accept an offer.
+    RelayAccept = 0x21,
+    /// Private MQTT relay: stop using the relay.
+    RelayRevoke = 0x22,
 }
 
 impl MessageType {
@@ -77,6 +83,9 @@ impl MessageType {
             0x04 => Some(Self::Status),
             0x05 => Some(Self::Caps),
             0x10 => Some(Self::AppAck),
+            0x20 => Some(Self::RelayOffer),
+            0x21 => Some(Self::RelayAccept),
+            0x22 => Some(Self::RelayRevoke),
             _ => None,
         }
     }
@@ -85,7 +94,15 @@ impl MessageType {
     ///
     /// ACKs are never acknowledged, which rules out ACK-of-ACK loops.
     pub fn requires_ack(self) -> bool {
-        matches!(self, Self::Text | Self::Status | Self::Caps)
+        matches!(
+            self,
+            Self::Text
+                | Self::Status
+                | Self::Caps
+                | Self::RelayOffer
+                | Self::RelayAccept
+                | Self::RelayRevoke
+        )
     }
 }
 
@@ -175,6 +192,9 @@ fn body_is_valid(ty: MessageType, body: &[u8]) -> bool {
         MessageType::Status => crate::status::StatusBody::decode(body).is_some(),
         MessageType::Caps => body.len() >= 4,
         MessageType::AppAck => body.len() == MESSAGE_ID_LEN,
+        MessageType::RelayOffer | MessageType::RelayAccept | MessageType::RelayRevoke => {
+            crate::relay::RelayControl::decode(ty, body).is_some()
+        }
     }
 }
 
@@ -204,7 +224,12 @@ impl EnvelopeV2 {
     /// Body as text for text-like types.
     pub fn text_body(&self) -> Option<&str> {
         match self.message_type {
-            MessageType::AppAck | MessageType::Status | MessageType::Caps => None,
+            MessageType::AppAck
+            | MessageType::Status
+            | MessageType::Caps
+            | MessageType::RelayOffer
+            | MessageType::RelayAccept
+            | MessageType::RelayRevoke => None,
             _ => std::str::from_utf8(&self.body).ok(),
         }
     }

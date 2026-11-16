@@ -84,9 +84,20 @@ pub enum Inbound {
         sent_at: u32,
         ack: Option<Vec<u8>>,
     },
-    /// The peer announces/probes its features (v2 only). Send `ack`.
+    /// The peer announces/probes its features (v2 only). Send `ack`;
+    /// answer with our own `Caps` if `reply_requested` (rate-limited).
     Caps {
         features: u32,
+        reply_requested: bool,
+        ack: Option<Vec<u8>>,
+    },
+    /// Private MQTT relay control message (v2 only, ADR-006 §4). The
+    /// caller persists its effect before committing the id and sending
+    /// `ack`, like a new text.
+    Relay {
+        message_id: MessageId,
+        control: crate::relay::RelayControl,
+        sent_at: u32,
         ack: Option<Vec<u8>>,
     },
     /// Already seen: do not show again; send `ack` if present (unless the
@@ -124,7 +135,8 @@ impl Inbound {
             Self::PeerAck { .. }
             | Self::Duplicate { .. }
             | Self::Status { .. }
-            | Self::Caps { .. } => Some(WireVersion::V2),
+            | Self::Caps { .. }
+            | Self::Relay { .. } => Some(WireVersion::V2),
             Self::Undecryptable(_) | Self::Dropped(_) => None,
         }
     }
@@ -230,9 +242,24 @@ pub fn process_inbound(
             None => Inbound::Dropped(DropReason::Malformed),
         },
         MessageType::Caps => match crate::status::decode_caps(&env.body) {
-            Some(features) => Inbound::Caps { features, ack },
+            Some(features) => Inbound::Caps {
+                features,
+                reply_requested: crate::status::caps_reply_requested(&env.body),
+                ack,
+            },
             None => Inbound::Dropped(DropReason::Malformed),
         },
+        MessageType::RelayOffer | MessageType::RelayAccept | MessageType::RelayRevoke => {
+            match crate::relay::RelayControl::decode(env.message_type, &env.body) {
+                Some(control) => Inbound::Relay {
+                    message_id: env.message_id,
+                    control,
+                    sent_at: env.created_at,
+                    ack,
+                },
+                None => Inbound::Dropped(DropReason::Malformed),
+            }
+        }
         MessageType::AppAck => match env.acked_id() {
             Some(acked) => Inbound::PeerAck { acked },
             None => Inbound::Dropped(DropReason::Malformed),
@@ -475,6 +502,129 @@ mod tests {
         assert_eq!(
             p.dedup_retention_secs(),
             u64::from(p.max_ttl_mins) * 60 + 2 * p.max_skew_secs
+        );
+    }
+
+    fn relay_offer() -> crate::relay::RelayControl {
+        crate::relay::RelayControl::Offer(crate::relay::RelayOffer {
+            secret: crate::relay::RelaySecret::random(),
+            broker_tag: crate::relay::broker_tag("broker.example", 8883),
+            inbox: crate::relay::suggest_username(),
+        })
+    }
+
+    #[test]
+    fn relay_control_is_authenticated_acked_and_deduplicated_on_retry() {
+        let mut t = setup();
+        let control = relay_offer();
+        let id = MessageId::random();
+        let seal = |t: &T| {
+            crate::outbound::seal_relay(&control, id, &t.key, &t.a, &t.b, NOW as u32, 228).unwrap()
+        };
+        let first = seal(&t);
+        let Inbound::Relay {
+            message_id,
+            control: got,
+            ack,
+            ..
+        } = t.recv(&first, Some(WireVersion::V2))
+        else {
+            panic!("expected relay control");
+        };
+        assert_eq!((message_id, &got), (id, &control));
+        assert!(ack.is_some());
+        // A retry: same id, fresh nonce, so different bytes; still one.
+        let retry = seal(&t);
+        assert_ne!(retry, first);
+        assert!(matches!(
+            t.recv(&retry, Some(WireVersion::V2)),
+            Inbound::Duplicate { message_id, ack: Some(_) } if message_id == id
+        ));
+    }
+
+    #[test]
+    fn relay_control_from_the_wrong_direction_or_key_is_rejected() {
+        let mut t = setup();
+        let id = MessageId::random();
+        // Sealed b -> a, delivered as if a -> b (reflected).
+        let reflected =
+            crate::outbound::seal_relay(&relay_offer(), id, &t.key, &t.b, &t.a, NOW as u32, 228)
+                .unwrap();
+        assert!(matches!(
+            t.recv(&reflected, Some(WireVersion::V2)),
+            Inbound::Undecryptable(_)
+        ));
+        let other = derive_p2p_key("A", "B", "other").unwrap();
+        let wrong_key =
+            crate::outbound::seal_relay(&relay_offer(), id, &other, &t.a, &t.b, NOW as u32, 228)
+                .unwrap();
+        assert!(matches!(
+            t.recv(&wrong_key, Some(WireVersion::V2)),
+            Inbound::Undecryptable(_)
+        ));
+    }
+
+    #[test]
+    fn malformed_relay_bodies_are_dropped() {
+        let mut t = setup();
+        let env = EnvelopeV2 {
+            message_type: crate::envelope::MessageType::RelayAccept,
+            message_id: MessageId::random(),
+            created_at: NOW as u32,
+            ttl_mins: 60,
+            body: vec![1, 2, 3],
+        };
+        // Sealing refuses an invalid body outright.
+        assert!(env.seal(&t.key, &aad_context(&t.a, &t.b), 228).is_err());
+        let ok = crate::relay::RelayControl::Revoke(crate::relay::RelayRevoke { confirm: [3; 16] });
+        let f = crate::outbound::seal_relay(
+            &ok,
+            MessageId::random(),
+            &t.key,
+            &t.a,
+            &t.b,
+            NOW as u32,
+            228,
+        )
+        .unwrap();
+        assert!(matches!(
+            t.recv(&f, Some(WireVersion::V2)),
+            Inbound::Relay {
+                control: crate::relay::RelayControl::Revoke(_),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn caps_reply_flag_is_read_and_old_bodies_still_decode() {
+        let mut t = setup();
+        let f = crate::outbound::seal_caps_request(3, &t.key, &t.a, &t.b, NOW as u32, 228)
+            .unwrap()
+            .frame;
+        assert!(matches!(
+            t.recv(&f, Some(WireVersion::V2)),
+            Inbound::Caps {
+                features: 3,
+                reply_requested: true,
+                ack: Some(_)
+            }
+        ));
+        let f = crate::outbound::seal_caps(1, &t.key, &t.a, &t.b, NOW as u32, 228)
+            .unwrap()
+            .frame;
+        assert!(matches!(
+            t.recv(&f, Some(WireVersion::V2)),
+            Inbound::Caps {
+                features: 1,
+                reply_requested: false,
+                ..
+            }
+        ));
+        // An old decoder reads the features of a request body.
+        assert_eq!(
+            crate::status::decode_caps(&crate::status::encode_caps_request(5)),
+            Some(5)
         );
     }
 }
