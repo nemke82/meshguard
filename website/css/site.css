@@ -1012,6 +1012,36 @@ tbody th {
   color: var(--color-muted);
 }
 
+/* Generated app illustrations: labelled, never presented as captures. */
+.shot-img img {
+  display: block;
+  width: 100%;
+  max-width: 300px;
+  height: auto;
+  border-radius: 22px;
+  border: 1px solid var(--color-border);
+  box-shadow: var(--shadow);
+  background: #0f1715;
+}
+
+.mock-tag {
+  display: inline-block;
+  margin-right: 4px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border-strong);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text);
+  font-style: normal;
+}
+
+.shot-img figcaption {
+  max-width: 300px;
+}
+
 .shot-pair {
   display: grid;
   gap: 16px;

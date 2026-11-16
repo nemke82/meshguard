@@ -40,24 +40,31 @@ On every release:
 
 The Android **IzzyOnDroid** listing is not live yet, so the site does not link to it. Add the button on `download.html` when the listing exists.
 
-## Screenshots to capture
+## Guide images
 
-The guide shows labelled placeholders (`.shot` figures) where real screenshots go. Capture them from the current release on real devices, hide channel keys and pairing codes, and replace each placeholder with an `<img>` with alt text.
+The guide uses generated app illustrations from the updated media starter pack (`media/guide/*.webp`, 640 px wide, about 40 KB each). They are **not captures of the release**: the UI, labels and some values differ from the real app. Each one is captioned with an *Illustration* tag and "Not a screenshot of the app". Where the picture contradicts the app, the caption gives the correct fact. The guide text is the source of truth.
 
-| File | What it shows |
-|------|---------------|
-| `getting-started/a-radio-settings.png` | Meshtastic app: region, modem preset, channel name (keys hidden) |
-| `getting-started/b-scan.png` | MeshGuard Bluetooth scan listing the T1000-E |
+| Image | Step | Known differences, corrected in the caption |
+|-------|------|------|
+| `01-radio-region-preset-channel` | A | Shows radio settings inside MeshGuard; they are set in the Meshtastic app |
+| `02-ble-scan` | B | Says default PIN 000000 and "MeshGuard firmware"; the real default is 123456 and the radios run Meshtastic |
+| `04-contact-invite-qr` | C | Demo QR code, does not work |
+| `05-scan-contact-qr` | C | None noted |
+| `07-message-delivery-ack` | D | Uses "Delivered"/"ACK" labels; the app shows ✓ and ✓✓ |
+| `08-check-in` | E | A separate check-in screen with "Check location"; the real buttons sit above the message box in a chat |
+| `09-radio-diagnostics` | E | Says "2.4 GHz LoRa"; the T1000-E uses sub-GHz LoRa (868 or 915 MHz) |
+| `10-sos-warning` | E | None noted |
+
+Still placeholders (`.shot` figures), with no image yet:
+
+| Placeholder | What it should show |
+|-------------|---------------------|
 | `getting-started/b-connected.png` | Mesh Network screen with the radio connected |
-| `getting-started/c-show-code.png` | Phone A showing the pairing QR code (code blurred) |
-| `getting-started/c-scan.png` | Phone B scanning the code |
 | `getting-started/c-paired.png` | Chats list with the new contact, Encrypted Chat |
-| `getting-started/d-conversation.png` | A conversation with two messages and ✓✓ |
-| `getting-started/e-checkin.png` | Check-in buttons, and the diagnostics sheet |
 
-The home page has no app screenshot yet. Add a real one once captured.
+When real captures from the current release exist, replace the illustrations with them, hiding channel keys and pairing codes, and drop the *Illustration* tag. Do not put the illustrations anywhere they could be read as real captures, such as the home page, store listings or social posts.
 
-The SVG "screenshots" and feature cards in the 16 November 2026 media starter pack are not used: the screenshots are labelled frames that say a real capture is required, and the feature cards bake text into the image. Real captures replace the placeholders above.
+The SVG feature cards in the starter pack are not used: they bake text into the image.
 
 ## Animations
 

@@ -14,11 +14,11 @@
   <meta property="og:url" content="https://meshguard.net/getting-started">
   <meta property="og:site_name" content="MeshGuard">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23087f5b' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 2L2 7l10 5 10-5-10-5z'/%3E%3Cpath d='M2 17l10 5 10-5'/%3E%3Cpath d='M2 12l10 5 10-5'/%3E%3C/svg%3E">
-  <script src="/js/theme.js?v=2026.11.16c"></script>
+  <script src="/js/theme.js?v=2026.11.16d"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/css/site.css?v=2026.11.16c">
+  <link rel="stylesheet" href="/css/site.css?v=2026.11.16d">
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -88,14 +88,10 @@
               <li><strong>Primary channel.</strong> Both radios must share the same primary channel name and key. The default channel works; a private channel keeps other Meshtastic users out of your traffic. MeshGuard sends on the primary channel.</li>
               <li><strong>Bluetooth PIN.</strong> The T1000-E has no screen, so it uses a fixed Bluetooth PIN, <code>123456</code> by default. Note it if you changed it.</li>
             </ol>
-            <figure class="shot">
-          <div class="shot-frame" role="img" aria-label="Screenshot placeholder: Meshtastic app: radio settings with region, modem preset and channel name (keys hidden)">
-            <strong>Screenshot to come</strong>
-            <span>Meshtastic app: radio settings with region, modem preset and channel name (keys hidden)</span>
-            <span class="mono">getting-started/a-radio-settings.png</span>
-          </div>
-          
-        </figure>
+            <figure class="shot shot-img">
+            <img src="/media/guide/01-radio-region-preset-channel.webp" width="640" height="1138" alt="Illustration: radio settings with region, modem preset and primary channel" loading="lazy" decoding="async">
+            <figcaption><span class="mock-tag">Illustration</span> Not a screenshot of the app, so details may differ. Change these settings in the Meshtastic app, as the steps above describe.</figcaption>
+          </figure>
             <div class="note note-warn"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg><div><p>Connecting a phone to its radio over Bluetooth is <strong>not</strong> the same as pairing two MeshGuard users. Bluetooth links a phone to its own radio. MeshGuard pairing (step C) creates the encrypted conversation between two people.</p></div></div>
           </section>
 
@@ -110,14 +106,10 @@
             </ol>
             <p>MeshGuard remembers the radio. Next time it reconnects on its own when you open the app, and again when the radio comes back after a restart or a dead battery. A first connection can take up to a minute while the radio sends its list of nodes; on a busy mesh this takes longer.</p>
             <div class="shot-pair">
-              <figure class="shot">
-          <div class="shot-frame" role="img" aria-label="Screenshot placeholder: MeshGuard Bluetooth scan with the T1000-E in the list">
-            <strong>Screenshot to come</strong>
-            <span>MeshGuard Bluetooth scan with the T1000-E in the list</span>
-            <span class="mono">getting-started/b-scan.png</span>
-          </div>
-          
-        </figure>
+              <figure class="shot shot-img">
+            <img src="/media/guide/02-ble-scan.webp" width="640" height="1138" alt="Illustration: the Bluetooth tab scanning for nearby radios, with a Connect button for each" loading="lazy" decoding="async">
+            <figcaption><span class="mock-tag">Illustration</span> Not a screenshot of the app, so details may differ. The app lists Meshtastic radios, and the real default PIN is <code>123456</code>.</figcaption>
+          </figure>
               <figure class="shot">
           <div class="shot-frame" role="img" aria-label="Screenshot placeholder: Mesh Network screen showing the radio as connected">
             <strong>Screenshot to come</strong>
@@ -145,22 +137,14 @@
               <li>Both phones now list the other person under <strong>Chats</strong>, marked <em>Encrypted Chat</em>. Check that each phone shows the right name.</li>
             </ol>
             <div class="shot-pair">
-              <figure class="shot">
-          <div class="shot-frame" role="img" aria-label="Screenshot placeholder: Phone A showing the pairing QR code (code blurred)">
-            <strong>Screenshot to come</strong>
-            <span>Phone A showing the pairing QR code (code blurred)</span>
-            <span class="mono">getting-started/c-show-code.png</span>
-          </div>
-          
-        </figure>
-              <figure class="shot">
-          <div class="shot-frame" role="img" aria-label="Screenshot placeholder: Phone B scanning the QR code">
-            <strong>Screenshot to come</strong>
-            <span>Phone B scanning the QR code</span>
-            <span class="mono">getting-started/c-scan.png</span>
-          </div>
-          
-        </figure>
+              <figure class="shot shot-img">
+            <img src="/media/guide/04-contact-invite-qr.webp" width="640" height="1138" alt="Illustration: phone A showing a pairing QR code under Add a family member" loading="lazy" decoding="async">
+            <figcaption><span class="mock-tag">Illustration</span> Not a screenshot of the app, so details may differ. The QR code is a non-working demo.</figcaption>
+          </figure>
+              <figure class="shot shot-img">
+            <img src="/media/guide/05-scan-contact-qr.webp" width="640" height="1138" alt="Illustration: phone B pointing its camera at phone A&rsquo;s QR code" loading="lazy" decoding="async">
+            <figcaption><span class="mock-tag">Illustration</span> Not a screenshot of the app, so details may differ.</figcaption>
+          </figure>
             </div>
             <figure class="shot">
           <div class="shot-frame" role="img" aria-label="Screenshot placeholder: Chats list with the new contact marked Encrypted Chat">
@@ -192,14 +176,10 @@
               </li>
               <li>Phone B gets a notification and the message in the chat. Reply from phone B, and watch the same marks on that side.</li>
             </ol>
-            <figure class="shot">
-          <div class="shot-frame" role="img" aria-label="Screenshot placeholder: Conversation with two messages and the delivered mark">
-            <strong>Screenshot to come</strong>
-            <span>Conversation with two messages and the delivered mark</span>
-            <span class="mono">getting-started/d-conversation.png</span>
-          </div>
-          
-        </figure>
+            <figure class="shot shot-img">
+            <img src="/media/guide/07-message-delivery-ack.webp" width="640" height="1138" alt="Illustration: a conversation with sent and received messages and their delivery marks" loading="lazy" decoding="async">
+            <figcaption><span class="mock-tag">Illustration</span> Not a screenshot of the app, so details may differ. The app marks delivery with &#10003; and &#10003;&#10003;.</figcaption>
+          </figure>
             <p>Messages are saved on each phone, encrypted, until you delete the conversation. If your radio is out of reach when you send, the message waits and goes out when the radio is back.</p>
           </section>
 
@@ -209,19 +189,25 @@
             <p>In a chat, the buttons above the message box send a status with one tap: <strong>I&rsquo;m OK</strong>, <strong>On my way</strong>, <strong>I need help</strong> and <strong>Share location</strong>. Tap the pencil to change the wording.</p>
             <h3>Diagnostics</h3>
             <p>Open <strong>Find a node on the mesh</strong> and tap the <strong>i</strong> next to a node. You see when it was last heard, hops away, signal (RSSI and SNR), battery and channel use when the node reports them, a signal history, and <strong>Run path test</strong>, which shows each hop a message takes.</p>
+            <div class="shot-pair">
+              <figure class="shot shot-img">
+            <img src="/media/guide/08-check-in.webp" width="640" height="1138" alt="Illustration: one-tap check-in options such as I&rsquo;m OK, On my way and Need help" loading="lazy" decoding="async">
+            <figcaption><span class="mock-tag">Illustration</span> Not a screenshot of the app, so details may differ. The real buttons sit above the message box in a chat.</figcaption>
+          </figure>
+              <figure class="shot shot-img">
+            <img src="/media/guide/09-radio-diagnostics.webp" width="640" height="1138" alt="Illustration: radio diagnostics with battery, signal, SNR, hops, firmware and GPS fix" loading="lazy" decoding="async">
+            <figcaption><span class="mock-tag">Illustration</span> Not a screenshot of the app, so details may differ. Values are examples. The T1000-E uses sub-GHz LoRa, such as 868 or 915&nbsp;MHz.</figcaption>
+          </figure>
+            </div>
             <h3>Location and GPS</h3>
             <p>Location comes from the <strong>radio&rsquo;s</strong> GPS, not the phone. The T1000-E has GPS built in, but it needs a view of the sky for its first fix, which can take several minutes. Without a fix, MeshGuard sends the check-in without a location and says so.</p>
             <h3>SOS</h3>
             <p>The red <strong>SOS</strong> button at the top of the Mesh Network screen asks for confirmation, then sends an urgent message with your location to <em>all</em> paired contacts. Their phones show a full-screen alert.</p>
             <div class="note note-warn"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg><div><p><strong>SOS only reaches your paired MeshGuard contacts.</strong> It does not contact emergency services, and delivery depends on radio range and relays. In an emergency, call your local emergency number if you can.</p></div></div>
-            <figure class="shot">
-          <div class="shot-frame" role="img" aria-label="Screenshot placeholder: Check-in buttons above the message box, and the diagnostics sheet for a node">
-            <strong>Screenshot to come</strong>
-            <span>Check-in buttons above the message box, and the diagnostics sheet for a node</span>
-            <span class="mono">getting-started/e-checkin.png</span>
-          </div>
-          
-        </figure>
+            <figure class="shot shot-img">
+            <img src="/media/guide/10-sos-warning.webp" width="640" height="1138" alt="Illustration: the SOS confirmation dialog with a warning that it is not an emergency service" loading="lazy" decoding="async">
+            <figcaption><span class="mock-tag">Illustration</span> Not a screenshot of the app, so details may differ.</figcaption>
+          </figure>
           </section>
 
           <section class="guide-step" id="trouble" aria-labelledby="t-title">
@@ -293,6 +279,6 @@
     </div>
   </footer>
 
-  <script src="/js/site.js?v=2026.11.16c" defer></script>
+  <script src="/js/site.js?v=2026.11.16d" defer></script>
 </body>
 </html>
