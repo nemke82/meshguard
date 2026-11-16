@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Getting started: two phones, two T1000-E radios — MeshGuard</title>
+  <meta name="description" content="Step-by-step setup: configure two SenseCAP T1000-E Meshtastic radios, connect two Android phones, pair with a QR code and send your first offline message.">
+  <link rel="canonical" href="https://meshguard.net/getting-started">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f8faf9">
+  <meta property="og:title" content="Getting started: two phones, two T1000-E radios — MeshGuard">
+  <meta property="og:description" content="Step-by-step setup: configure two SenseCAP T1000-E Meshtastic radios, connect two Android phones, pair with a QR code and send your first offline message.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://meshguard.net/getting-started">
+  <meta property="og:site_name" content="MeshGuard">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23087f5b' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 2L2 7l10 5 10-5-10-5z'/%3E%3Cpath d='M2 17l10 5 10-5'/%3E%3Cpath d='M2 12l10 5 10-5'/%3E%3C/svg%3E">
+  <script src="/js/theme.js?v=2026.11.16"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/site.css?v=2026.11.16">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <div class="container">
+      <nav class="nav" aria-label="Main">
+        <a class="brand" href="/"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>MeshGuard</a>
+        <ul class="nav-menu" id="nav-menu">
+          <li><a href="/how-it-works">How It Works</a></li>
+          <li><a href="/getting-started" aria-current="page">Getting Started</a></li>
+          <li><a href="/features">Features</a></li>
+          <li><a href="/download">Download</a></li>
+          <li><a href="https://github.com/nemke82/meshguard" rel="noopener"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>GitHub</a></li>
+        </ul>
+        <button type="button" class="icon-btn theme-toggle" id="theme-toggle" aria-pressed="false" aria-label="Switch to dark theme" title="Switch to dark theme" hidden>
+          <svg class="icon-moon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>
+          <svg class="icon-sun" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+        </button>
+        <button type="button" class="icon-btn menu-toggle" id="menu-toggle" aria-expanded="false" aria-controls="nav-menu" aria-label="Open menu">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+        </button>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main" tabindex="-1">
+    <div class="container">
+      <header class="page-head">
+        <span class="eyebrow">Getting started</span>
+        <h1>Your first offline message</h1>
+        <p class="lead">This guide takes two people from unboxing to a confirmed message, using two Android phones and two Seeed SenseCAP T1000-E Meshtastic radios. It follows the current MeshGuard release; other radios work the same way.</p>
+      </header>
+
+      <div class="guide-layout">
+        <nav class="toc" aria-labelledby="toc-title">
+          <h2 id="toc-title">On this page</h2>
+          <ol>
+            <li><a href="#before">Before you begin</a></li>
+            <li><a href="#step-a">Configure each radio</a></li>
+            <li><a href="#step-b">Connect each phone</a></li>
+            <li><a href="#step-c">Pair the two users</a></li>
+            <li><a href="#step-d">Send the first message</a></li>
+            <li><a href="#step-e">Check-in, diagnostics, SOS</a></li>
+            <li><a href="#trouble">Troubleshooting</a></li>
+          </ol>
+        </nav>
+
+        <div class="guide">
+          <section class="guide-step" id="before" aria-labelledby="before-title">
+            <h2 id="before-title">Before you begin</h2>
+            <ul class="checklist">
+              <li>Two Android phones (Android 8.0 or newer) with <a href="/download">MeshGuard installed</a>.</li>
+              <li>Two fully charged <strong>Seeed SenseCAP T1000-E</strong> radios running current Meshtastic firmware.</li>
+              <li>The official Meshtastic app, for the one-time radio setup in step A.</li>
+              <li>Bluetooth turned on. GPS on the phone is not needed; location for SOS comes from the radio.</li>
+              <li>Both people within radio reach of each other, directly or through mesh relays. Start in the same room for the first test.</li>
+            </ul>
+            <div class="note"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg><div><p>No SIM card, mobile data or internet connection is needed to send messages between the radios.</p></div></div>
+          </section>
+
+          <section class="guide-step" id="step-a" aria-labelledby="a-title">
+            <h2 id="a-title"><span class="step-letter" aria-hidden="true">A</span>Configure each Meshtastic radio</h2>
+            <p>MeshGuard does not change radio settings. Do this once per radio in the <strong>official Meshtastic app</strong>, then close that app so it does not hold the Bluetooth connection.</p>
+            <ol>
+              <li><strong>Region.</strong> Set the LoRa region that is legal where you are (for example <code>EU_868</code> in Europe or <code>US</code> in North America). Both radios must use the same region.</li>
+              <li><strong>Modem preset.</strong> Use the same preset on both radios. The default, <em>Long Fast</em>, is a good start.</li>
+              <li><strong>Primary channel.</strong> Both radios must share the same primary channel name and key. The default channel works; a private channel keeps other Meshtastic users out of your traffic. MeshGuard sends on the primary channel.</li>
+              <li><strong>Bluetooth PIN.</strong> The T1000-E has no screen, so it uses a fixed Bluetooth PIN, <code>123456</code> by default. Note it if you changed it.</li>
+            </ol>
+            <figure class="shot">
+          <div class="shot-frame" role="img" aria-label="Screenshot placeholder: Meshtastic app: radio settings with region, modem preset and channel name (keys hidden)">
+            <strong>Screenshot to come</strong>
+            <span>Meshtastic app: radio settings with region, modem preset and channel name (keys hidden)</span>
+            <span class="mono">getting-started/a-radio-settings.png</span>
+          </div>
+          
+        </figure>
+            <div class="note note-warn"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg><div><p>Connecting a phone to its radio over Bluetooth is <strong>not</strong> the same as pairing two MeshGuard users. Bluetooth links a phone to its own radio. MeshGuard pairing (step C) creates the encrypted conversation between two people.</p></div></div>
+          </section>
+
+          <section class="guide-step" id="step-b" aria-labelledby="b-title">
+            <h2 id="b-title"><span class="step-letter" aria-hidden="true">B</span>Connect each phone to its own T1000-E</h2>
+            <p>Do this on both phones, each with its own radio.</p>
+            <ol>
+              <li>Open MeshGuard. On the <strong>Bluetooth</strong> tab, tap <strong>Scan for Devices</strong>.</li>
+              <li>Android asks for permission to find nearby devices (on Android 11 and older it asks for location instead, which Android requires for Bluetooth scanning). Allow it. Allow notifications too, so you see incoming messages.</li>
+              <li>Tap your T1000-E in the list. Check the <strong>Device PIN</strong> (default <code>123456</code>) and connect. If Android shows its own Bluetooth pairing request, enter the same PIN.</li>
+              <li>MeshGuard reads the radio and opens the <strong>Mesh Network</strong> screen. The header shows your radio&rsquo;s name with <em>(connected)</em>.</li>
+            </ol>
+            <p>MeshGuard remembers the radio. Next time it reconnects on its own when you open the app, and again when the radio comes back after a restart or a dead battery. A first connection can take up to a minute while the radio sends its list of nodes; on a busy mesh this takes longer.</p>
+            <div class="shot-pair">
+              <figure class="shot">
+          <div class="shot-frame" role="img" aria-label="Screenshot placeholder: MeshGuard Bluetooth scan with the T1000-E in the list">
+            <strong>Screenshot to come</strong>
+            <span>MeshGuard Bluetooth scan with the T1000-E in the list</span>
+            <span class="mono">getting-started/b-scan.png</span>
+          </div>
+          
+        </figure>
+              <figure class="shot">
+          <div class="shot-frame" role="img" aria-label="Screenshot placeholder: Mesh Network screen showing the radio as connected">
+            <strong>Screenshot to come</strong>
+            <span>Mesh Network screen showing the radio as connected</span>
+            <span class="mono">getting-started/b-connected.png</span>
+          </div>
+          
+        </figure>
+            </div>
+            <h3>If the radio does not appear</h3>
+            <ul>
+              <li>Close the Meshtastic app or disconnect it there: a radio talks to one phone at a time.</li>
+              <li>Make sure the radio is on and charged, Bluetooth is on, and MeshGuard has the nearby-devices permission (Android settings &rarr; Apps &rarr; MeshGuard &rarr; Permissions).</li>
+              <li>Move closer and tap <strong>Scan for Devices</strong> again.</li>
+            </ul>
+          </section>
+
+          <section class="guide-step" id="step-c" aria-labelledby="c-title">
+            <h2 id="c-title"><span class="step-letter" aria-hidden="true">C</span>Pair the two MeshGuard users securely</h2>
+            <p>Pairing creates a private key for your conversation. The QR code pairs the two <em>users</em>, not the radios. Do it in person, so you know whose code you are scanning.</p>
+            <ol>
+              <li><strong>Phone A</strong>: on the Mesh Network screen, under <em>Add a family member</em>, tap <strong>Show my code</strong>. A QR code appears, valid for 10 minutes, with a text code underneath.</li>
+              <li><strong>Phone B</strong>: tap <strong>Scan code</strong>, allow the camera, and point it at phone A&rsquo;s QR code.</li>
+              <li>Phone B shows <em>Request sent &hellip; waiting for confirmation</em>. Phone A accepts it automatically while it shows the code. Tap <strong>Done</strong> on phone A.</li>
+              <li>Both phones now list the other person under <strong>Chats</strong>, marked <em>Encrypted Chat</em>. Check that each phone shows the right name.</li>
+            </ol>
+            <div class="shot-pair">
+              <figure class="shot">
+          <div class="shot-frame" role="img" aria-label="Screenshot placeholder: Phone A showing the pairing QR code (code blurred)">
+            <strong>Screenshot to come</strong>
+            <span>Phone A showing the pairing QR code (code blurred)</span>
+            <span class="mono">getting-started/c-show-code.png</span>
+          </div>
+          
+        </figure>
+              <figure class="shot">
+          <div class="shot-frame" role="img" aria-label="Screenshot placeholder: Phone B scanning the QR code">
+            <strong>Screenshot to come</strong>
+            <span>Phone B scanning the QR code</span>
+            <span class="mono">getting-started/c-scan.png</span>
+          </div>
+          
+        </figure>
+            </div>
+            <figure class="shot">
+          <div class="shot-frame" role="img" aria-label="Screenshot placeholder: Chats list with the new contact marked Encrypted Chat">
+            <strong>Screenshot to come</strong>
+            <span>Chats list with the new contact marked Encrypted Chat</span>
+            <span class="mono">getting-started/c-paired.png</span>
+          </div>
+          
+        </figure>
+            <h3>Other ways to pair</h3>
+            <ul>
+              <li><strong>Type the code.</strong> If the camera is not available, MeshGuard offers to type the code shown under the QR instead.</li>
+              <li><strong>Shared passphrase.</strong> If you cannot meet, agree on a passphrase of at least 8 characters by another channel. One person opens <strong>Find a node on the mesh</strong>, taps the other&rsquo;s radio and enters the passphrase. The other person sees a chat request, taps <strong>Accept</strong> and enters the same passphrase. The passphrase is never stored or sent.</li>
+              <li>Several family members can scan the same QR code, one after another.</li>
+            </ul>
+            <div class="note note-warn"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg><div><p>Never share screenshots of a pairing QR code or its text code. Anyone who scans it within its 10 minutes can pair with you.</p></div></div>
+          </section>
+
+          <section class="guide-step" id="step-d" aria-labelledby="d-title">
+            <h2 id="d-title"><span class="step-letter" aria-hidden="true">D</span>Send and confirm the first message</h2>
+            <ol>
+              <li>On phone A, tap the contact under <strong>Chats</strong> and type a short message. The counter shows how many bytes are left (up to 173; emoji and accented letters use more than one).</li>
+              <li>Send it and watch the mark next to it:
+                <ul>
+                  <li>&#9203; <strong>Sending</strong>: saved and waiting for the radio.</li>
+                  <li>&#10003; <strong>Sent</strong>: your radio has it.</li>
+                  <li>&#10003;&#10003; <strong>Delivered</strong>: phone B&rsquo;s MeshGuard received and decrypted it.</li>
+                </ul>
+              </li>
+              <li>Phone B gets a notification and the message in the chat. Reply from phone B, and watch the same marks on that side.</li>
+            </ol>
+            <figure class="shot">
+          <div class="shot-frame" role="img" aria-label="Screenshot placeholder: Conversation with two messages and the delivered mark">
+            <strong>Screenshot to come</strong>
+            <span>Conversation with two messages and the delivered mark</span>
+            <span class="mono">getting-started/d-conversation.png</span>
+          </div>
+          
+        </figure>
+            <p>Messages are saved on each phone, encrypted, until you delete the conversation. If your radio is out of reach when you send, the message waits and goes out when the radio is back.</p>
+          </section>
+
+          <section class="guide-step" id="step-e" aria-labelledby="e-title">
+            <h2 id="e-title"><span class="step-letter" aria-hidden="true">E</span>Try check-in, diagnostics and SOS</h2>
+            <h3>Check-in</h3>
+            <p>In a chat, the buttons above the message box send a status with one tap: <strong>I&rsquo;m OK</strong>, <strong>On my way</strong>, <strong>I need help</strong> and <strong>Share location</strong>. Tap the pencil to change the wording.</p>
+            <h3>Diagnostics</h3>
+            <p>Open <strong>Find a node on the mesh</strong> and tap the <strong>i</strong> next to a node. You see when it was last heard, hops away, signal (RSSI and SNR), battery and channel use when the node reports them, a signal history, and <strong>Run path test</strong>, which shows each hop a message takes.</p>
+            <h3>Location and GPS</h3>
+            <p>Location comes from the <strong>radio&rsquo;s</strong> GPS, not the phone. The T1000-E has GPS built in, but it needs a view of the sky for its first fix, which can take several minutes. Without a fix, MeshGuard sends the check-in without a location and says so.</p>
+            <h3>SOS</h3>
+            <p>The red <strong>SOS</strong> button at the top of the Mesh Network screen asks for confirmation, then sends an urgent message with your location to <em>all</em> paired contacts. Their phones show a full-screen alert.</p>
+            <div class="note note-warn"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg><div><p><strong>SOS only reaches your paired MeshGuard contacts.</strong> It does not contact emergency services, and delivery depends on radio range and relays. In an emergency, call your local emergency number if you can.</p></div></div>
+            <figure class="shot">
+          <div class="shot-frame" role="img" aria-label="Screenshot placeholder: Check-in buttons above the message box, and the diagnostics sheet for a node">
+            <strong>Screenshot to come</strong>
+            <span>Check-in buttons above the message box, and the diagnostics sheet for a node</span>
+            <span class="mono">getting-started/e-checkin.png</span>
+          </div>
+          
+        </figure>
+          </section>
+
+          <section class="guide-step" id="trouble" aria-labelledby="t-title">
+            <h2 id="t-title">Troubleshooting</h2>
+            <h3>Bluetooth discovery fails</h3>
+            <ul>
+              <li>Allow the nearby-devices permission (location on Android 11 and older), and turn Bluetooth on.</li>
+              <li>Charge the radio. Disconnect it in the Meshtastic app or any other phone; it connects to one phone at a time.</li>
+              <li>If pairing with the PIN failed before, remove the radio in Android&rsquo;s Bluetooth settings and connect again.</li>
+            </ul>
+            <h3>The radios are connected, but messages do not arrive</h3>
+            <ul>
+              <li>Check that both radios use the same region, modem preset and primary channel (name and key).</li>
+              <li>Check that both phones show each other under <strong>Chats</strong>. If one side removed the contact, pair again.</li>
+              <li>Move closer, or higher. Use <strong>Run path test</strong> to see whether the other radio is reachable.</li>
+            </ul>
+            <h3>A message stays at one tick</h3>
+            <p>One tick means your radio accepted it, not that it arrived. The confirmation needs to travel back over the mesh. If the other phone is out of reach, or the app on it is closed, the second tick comes later or not at all. MeshGuard 2.0 keeps resending until the message is confirmed or its lifetime ends. Contacts paired with <em>MeshGuard 2.0 mode</em> turned off never show two ticks.</p>
+            <h3>No location in a check-in or SOS</h3>
+            <p>The radio has no GPS fix yet, or its last fix is old. Take the radio outside with a view of the sky and wait a few minutes. Make sure GPS is enabled in the radio&rsquo;s Meshtastic settings.</p>
+            <h3>App closed or phone locked</h3>
+            <p>Today MeshGuard receives messages while the app is running. If Android stops it in the background, or you close it, messages for you are not shown until you open it again. A 2.0 sender keeps resending until your app confirms, so many of them still arrive later. Background messaging and replying from a notification are <a href="/roadmap">in development</a>.</p>
+            <p>More answers in the <a href="/faq">FAQ</a>.</p>
+          </section>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <div class="footer-grid">
+        <div class="footer-about">
+          <a class="brand" href="/"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>MeshGuard</a>
+          <p>Free, open-source, privacy-first messaging for Meshtastic LoRa radios. No account, no servers.</p>
+        </div>
+        <div>
+          <h2>Product</h2>
+          <ul>
+            <li><a href="/how-it-works">How it works</a></li>
+            <li><a href="/features">Features</a></li>
+            <li><a href="/hardware">Supported hardware</a></li>
+            <li><a href="/download">Download</a></li>
+          </ul>
+        </div>
+        <div>
+          <h2>Learn</h2>
+          <ul>
+            <li><a href="/getting-started">Getting started</a></li>
+            <li><a href="/videos">Tutorial videos</a></li>
+            <li><a href="/faq">FAQ &amp; troubleshooting</a></li>
+            <li><a href="/roadmap">Roadmap</a></li>
+          </ul>
+        </div>
+        <div>
+          <h2>Project</h2>
+          <ul>
+            <li><a href="https://github.com/nemke82/meshguard" rel="noopener">GitHub</a></li>
+            <li><a href="https://github.com/nemke82/meshguard/releases" rel="noopener">Releases</a></li>
+            <li><a href="https://github.com/nemke82/meshguard/blob/main/CHANGELOG.md" rel="noopener">Changelog</a></li>
+            <li><a href="https://github.com/nemke82/meshguard/issues" rel="noopener">Report an issue</a></li>
+            <li><a href="/privacy">Privacy policy</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <p>&copy; 2026 MeshGuard contributors &middot; <a href="https://github.com/nemke82/meshguard/blob/main/LICENSE" rel="noopener">MIT License</a> &middot; MeshGuard is an independent project and is not affiliated with Meshtastic or Seeed Studio. Not a replacement for emergency services.</p>
+      </div>
+    </div>
+  </footer>
+
+  <script src="/js/site.js?v=2026.11.16" defer></script>
+</body>
+</html>
