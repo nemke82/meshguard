@@ -141,7 +141,7 @@
             <ol>
               <li><strong>Phone A</strong>: on the Mesh Network screen, under <em>Add a family member</em>, tap <strong>Show my code</strong>. A QR code appears, valid for 10 minutes, with a text code underneath.</li>
               <li><strong>Phone B</strong>: tap <strong>Scan code</strong>, allow the camera, and point it at phone A&rsquo;s QR code.</li>
-              <li>Phone B shows <em>Request sent &hellip; waiting for confirmation</em>. Phone A accepts it automatically while it shows the code. Tap <strong>Done</strong> on phone A.</li>
+              <li>Phone B shows <em>Request sent &hellip; waiting for confirmation</em>. Phone A accepts it automatically while it shows the code, and shows <em>Paired with</em> and phone B&rsquo;s name under the QR code. Wait for that line, then tap <strong>Done</strong> on phone A; tapping it earlier cancels the code.</li>
               <li>Both phones now list the other person under <strong>Chats</strong>, marked <em>Encrypted Chat</em>. Check that each phone shows the right name.</li>
             </ol>
             <div class="shot-pair">
@@ -239,11 +239,11 @@
               <li>Move closer, or higher. Use <strong>Run path test</strong> to see whether the other radio is reachable.</li>
             </ul>
             <h3>A message stays at one tick</h3>
-            <p>One tick means your radio accepted it, not that it arrived. The confirmation needs to travel back over the mesh. If the other phone is out of reach, or the app on it is closed, the second tick comes later or not at all. MeshGuard 2.0 keeps resending until the message is confirmed or its lifetime ends. Contacts paired with <em>MeshGuard 2.0 mode</em> turned off never show two ticks.</p>
+            <p>One tick means your radio accepted it, not that it arrived. The confirmation needs to travel back over the mesh. If the other phone is out of reach, or the app on it is closed, the second tick comes later or not at all. MeshGuard 2.0 resends it a few times, with growing pauses, until it is confirmed; after the last attempt, or when its lifetime ends, it is marked &#9888;. Contacts paired with <em>MeshGuard 2.0 mode</em> turned off never show two ticks.</p>
             <h3>No location in a check-in or SOS</h3>
             <p>The radio has no GPS fix yet, or its last fix is old. Take the radio outside with a view of the sky and wait a few minutes. Make sure GPS is enabled in the radio&rsquo;s Meshtastic settings.</p>
             <h3>App closed or phone locked</h3>
-            <p>Today MeshGuard receives messages while the app is running. If Android stops it in the background, or you close it, messages for you are not shown until you open it again. A 2.0 sender keeps resending until your app confirms, so many of them still arrive later. Background messaging and replying from a notification are <a href="/roadmap">in development</a>.</p>
+            <p>Today MeshGuard receives messages while the app is running. If Android stops it in the background, or you close it, messages for you are not shown until you open it again. A 2.0 sender resends a few times before giving up, so some of them may still arrive later. Background messaging and replying from a notification are <a href="/roadmap">in development</a>.</p>
             <p>More answers in the <a href="/faq">FAQ</a>.</p>
           </section>
         </div>

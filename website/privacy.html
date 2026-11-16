@@ -48,7 +48,7 @@
     <div class="container narrow">
       <article class="prose page-head">
       <h1>Privacy Policy</h1>
-      <p class="updated">Last updated: 15 November 2026</p>
+      <p class="updated">Last updated: 16 November 2026</p>
 
       <p>MeshGuard is an open-source, peer-to-peer messenger for Meshtastic radios. It has no accounts, no servers and no analytics. This policy covers the MeshGuard apps for Android, Linux and macOS, and this website.</p>
 
@@ -59,7 +59,7 @@
       <ul>
         <li><strong>Saved radios</strong> — the name, node number and Bluetooth address (or network address / USB port) of radios you connected to, so MeshGuard can list them and reconnect automatically. You can forget a radio at any time.</li>
         <li><strong>Paired peers</strong> — each peer's radio name, Meshtastic node number and protocol version.</li>
-        <li><strong>Chat keys</strong> — the encryption key for each paired chat, so you don't have to pair again. Each key is encrypted with a device key held in the Android Keystore (on Android, never leaving the device's secure hardware) or in your operating system's keyring (Linux Secret Service, macOS Keychain). Removing a peer deletes its key.</li>
+        <li><strong>Chat keys</strong> — the encryption key for each paired chat, so you don't have to pair again. Each key is encrypted with a random device key. On Android that device key is itself encrypted by a key in the Android Keystore, which never leaves the Keystore and is held in secure hardware where the phone provides it; on Linux and macOS it is kept in your operating system's keyring (Secret Service, Keychain). Removing a peer deletes its key.</li>
         <li><strong>Message history</strong> — the messages, check-ins and SOS alerts you send and receive, with their time and delivery status, so a conversation is still there after you close the app, and unsent messages can be retried when your radio is back. Message text and contact names are encrypted on the device with a key derived from the same device key; the time, node numbers and delivery status are stored unencrypted so the app can sort and retry messages. History is kept until you delete the conversation. It is never uploaded. If the device has no Keystore or keyring available, history is kept in memory only while the app runs.</li>
         <li><strong>Duplicate-protection records</strong> — message IDs and timestamps used to detect replayed or relayed copies. They never contain message text.</li>
         <li><strong>Notification settings</strong>, including a custom sound if you choose one.</li>
@@ -70,7 +70,7 @@
       <p>MeshGuard does not use your phone's location. When you send a check-in with location, share your location or send an SOS, MeshGuard attaches the last position reported by <strong>your Meshtastic radio</strong> — from its GPS, or a fixed position set on the radio — with its accuracy and when it was measured. It is encrypted like a message and sent only to the contacts you chose; SOS goes to all your paired contacts. Received positions are shown in the chat; the "Map" link opens openstreetmap.org in your browser only when you tap it.</p>
 
       <h2>What leaves your device</h2>
-      <p>Messages are encrypted on your device (AES-256-GCM) and sent through your own Meshtastic radio, over Bluetooth, Wi-Fi/TCP or USB, to the LoRa mesh. Other mesh nodes relay the encrypted packets; only the peer who knows the passphrase can read them. Like any radio transmission, Meshtastic packets reveal metadata such as node numbers, signal strength and timing to radios within range.</p>
+      <p>Messages are encrypted on your device (AES-256-GCM) and sent through your own Meshtastic radio, over Bluetooth, Wi-Fi/TCP or USB, to the LoRa mesh. Other mesh nodes relay the encrypted packets; only the contact who holds the key for your conversation (from the QR code you scanned together, or from your shared passphrase) can read them. Like any radio transmission, Meshtastic packets reveal metadata such as node numbers, signal strength and timing to radios within range.</p>
 
       <h2>Permissions (Android)</h2>
       <ul>

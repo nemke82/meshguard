@@ -79,7 +79,7 @@
         </details>
         <details>
           <summary>Should I use a private channel?</summary>
-          <div class="answer"><p>It is optional. MeshGuard encrypts every message itself, so others on the default channel cannot read it. A private channel also hides your traffic from other Meshtastic users and keeps theirs off your radios, but only radios with the same channel will then relay for you.</p></div>
+          <div class="answer"><p>It is optional. MeshGuard encrypts every message itself, so others on the default channel cannot read it. A private channel also keeps your packets out of other Meshtastic users&rsquo; apps. Other nodes with the same radio settings can still relay your packets without being able to decrypt them, depending on their rebroadcast settings.</p></div>
         </details>
         </section>
         <section aria-labelledby="faq-pairing" id="pairing">
@@ -105,11 +105,11 @@
           <h2 id="faq-delivery">Delivery and confirmations</h2>
         <details>
           <summary>What do &#10003; and &#10003;&#10003; mean?</summary>
-          <div class="answer"><p>&#9203; the message is saved and waiting for the radio. &#10003; your radio has accepted it. &#10003;&#10003; your contact&rsquo;s MeshGuard received and decrypted it. &#9888; it was not delivered before its lifetime ran out.</p></div>
+          <div class="answer"><p>&#9203; the message is saved and waiting for the radio. &#10003; your radio has accepted it. &#10003;&#10003; your contact&rsquo;s MeshGuard received and decrypted it. &#9888; MeshGuard gave up: no confirmation came back after its last attempt, or the message reached the end of its lifetime.</p></div>
         </details>
         <details>
           <summary>My message stays at one tick.</summary>
-          <div class="answer"><p>The confirmation has to come back over the mesh, so it can take a while or not arrive if your contact is out of reach or their app is closed. MeshGuard keeps resending until the message is confirmed or expires. Contacts paired with 2.0 mode off never show two ticks.</p></div>
+          <div class="answer"><p>The confirmation has to come back over the mesh, so it can take a while or not arrive if your contact is out of reach or their app is closed. MeshGuard resends it a few times, with growing pauses, then marks it &#9888; if no confirmation came. Contacts paired with 2.0 mode off never show two ticks.</p></div>
         </details>
         <details>
           <summary>What happens to messages I write while the radio is away?</summary>
@@ -139,7 +139,7 @@
         </details>
         <details>
           <summary>What is stored on my phone?</summary>
-          <div class="answer"><p>Your saved radios, contacts, chat keys and message history. Keys and message text are encrypted with a key kept in the Android Keystore. Nothing is uploaded, and there is no account. Details in the <a href="/privacy">privacy policy</a>.</p></div>
+          <div class="answer"><p>Your saved radios, contacts, chat keys and message history. Chat keys and message text are encrypted with a random device key, which the Android Keystore protects. Nothing is uploaded, and there is no account. Details in the <a href="/privacy">privacy policy</a>.</p></div>
         </details>
         </section>
         <section aria-labelledby="faq-gps" id="gps">
@@ -157,7 +157,7 @@
           <h2 id="faq-background">App closed and phone locked</h2>
         <details>
           <summary>Do I get messages when the app is closed?</summary>
-          <div class="answer"><p>Not yet. MeshGuard receives messages while it is running. If Android stops it in the background or you close it, messages are not shown until you open it again; a 2.0 sender keeps resending until your app confirms, so many still arrive later. Background messaging is in development.</p></div>
+          <div class="answer"><p>Not yet. MeshGuard receives messages while it is running. If Android stops it in the background or you close it, messages are not shown until you open it again; a 2.0 sender resends a few times before giving up, so some may still arrive later. Background messaging is in development.</p></div>
         </details>
         <details>
           <summary>Can I reply from the notification?</summary>
