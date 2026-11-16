@@ -181,6 +181,37 @@ pub fn forget_link(config: &mut AppConfig, id: &str) -> bool {
 /// way users must accept again.
 pub const TERMS_VERSION: u32 = 1;
 
+/// How messages to relay-enabled contacts choose a route (ADR-006 §6).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RelayPreference {
+    /// Alternate between internet relay and LoRa, relay first.
+    #[default]
+    Auto,
+    /// LoRa first (two attempts while the radio is there), relay as backup.
+    LoraPreferred,
+}
+
+/// Private MQTT relay settings (ADR-006). Not secret: the password and
+/// the relay secrets are in the sealed relay book.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelaySettings {
+    /// Off: no MQTT connection at all.
+    pub enabled: bool,
+    pub host: String,
+    pub port: u16,
+    /// Our broker username (app-generated, `mg-` + 20 base32 chars).
+    pub username: String,
+    /// PEM of a private CA (replaces the public roots).
+    #[serde(default)]
+    pub ca_pem: Option<String>,
+    /// Random, per installation.
+    pub client_id: String,
+    pub session_expiry_secs: u32,
+    #[serde(default)]
+    pub preference: RelayPreference,
+}
+
 /// A node the user blocked: its MeshGuard messages, chat requests, check-ins
 /// and QR pair requests are ignored (Play UGC policy).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -236,6 +267,10 @@ pub struct AppConfig {
     /// that moment.
     #[serde(default)]
     pub send_generations: std::collections::BTreeMap<u32, u64>,
+
+    /// Private MQTT relay; `None` until set up (off by default).
+    #[serde(default)]
+    pub relay: Option<RelaySettings>,
 }
 
 impl Default for AppConfig {
@@ -250,6 +285,7 @@ impl Default for AppConfig {
             blocked: Vec::new(),
             terms_accepted: 0,
             send_generations: Default::default(),
+            relay: None,
         }
     }
 }

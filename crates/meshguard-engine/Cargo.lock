@@ -474,6 +474,7 @@ dependencies = [
  "thiserror",
  "tracing",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

@@ -76,6 +76,38 @@ impl StatusTx {
     }
 }
 
+/// Answer a peer's request for our features with our `Caps` (rate-limited
+/// by the engine). Best effort: not retried.
+pub async fn announce_caps(state: &AppState, peer: u32) {
+    let Some(my_num) = state.engine().my_node_num else {
+        return;
+    };
+    let frame = {
+        let engine = state.engine();
+        if engine.keys_owner != Some(my_num) {
+            return;
+        }
+        let Some(key) = engine.keys.get(&peer) else {
+            return;
+        };
+        match outbound::seal_caps(
+            SUPPORTED_FEATURES,
+            key,
+            &PeerIdentity::meshtastic_node(my_num),
+            &PeerIdentity::meshtastic_node(peer),
+            crate::commands::unix_now(),
+            DEFAULT_FRAME_BUDGET,
+        ) {
+            Ok(s) => s.frame,
+            Err(_) => return,
+        }
+    };
+    let _tx = state.status_tx.lock().await;
+    if let Err(e) = crate::commands::send_as(state, my_num, peer, frame).await {
+        tracing::info!("Caps answer to {peer} not sent: {e}");
+    }
+}
+
 /// Send a feature probe to v2 peers whose support for check-in/SOS messages
 /// is not known yet. An ACK marks them capable (handled by the listener);
 /// older builds drop the probe silently and keep getting the text fallback.

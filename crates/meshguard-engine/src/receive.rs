@@ -14,6 +14,10 @@ use serde::Serialize;
 
 use crate::config::WireProtocol;
 use crate::diagnostics::SignalSample;
+
+/// Feature bits this build understands when a peer announces them. Wider
+/// than what it announces itself until the relay UI ships.
+const KNOWN_FEATURES: u32 = SUPPORTED_FEATURES | meshguard_core::relay::FEATURE_RELAY;
 use crate::engine::{Engine, Slot};
 
 /// Something the caller has to do after the engine handled a packet.
@@ -48,6 +52,14 @@ pub enum Action {
     /// A peer proved it holds our key for the first time: probe which
     /// message types it understands.
     ProbePeers,
+    /// The peer asked for our features: send it our `Caps` (rate-limited
+    /// already).
+    AnnounceCaps { peer: u32 },
+    /// Relay contacts changed: resubscribe (ADR-006). The caller asks the
+    /// engine for the current topics.
+    RelayTopicsChanged,
+    /// Relay control messages are waiting to be sent.
+    RelayControlsDue,
 }
 
 /// UI events (the names are the Tauri event names).
@@ -59,6 +71,7 @@ pub enum Event {
     PeerProtocol(PeerProtocolEvent),
     PairRequest(PairRequestEvent),
     PairAccepted(PairRequestEvent),
+    RelayChanged(RelayChangedEvent),
 }
 
 impl Event {
@@ -70,6 +83,7 @@ impl Event {
             Self::PeerProtocol(_) => "peer-protocol",
             Self::PairRequest(_) => "pair-request",
             Self::PairAccepted(_) => "pair-accepted",
+            Self::RelayChanged(_) => "relay-changed",
         }
     }
 }
@@ -109,6 +123,16 @@ pub struct MessageDeliveredEvent {
 pub struct PeerProtocolEvent {
     pub node_num: u32,
     pub protocol: WireProtocol,
+}
+
+/// The internet relay state with a contact changed (ADR-006).
+#[derive(Debug, Clone, Serialize)]
+pub struct RelayChangedEvent {
+    pub peer_node: u32,
+    /// "offered", "incoming", "active", "rotation" or "none".
+    pub state: &'static str,
+    /// For an incoming offer: whether the peer uses our broker.
+    pub same_broker: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -385,10 +409,22 @@ impl Engine {
                 })));
                 self.ack(from_node, ack, now, actions);
             }
-            Inbound::Caps { features, ack, .. } => {
+            Inbound::Caps {
+                features,
+                reply_requested,
+                ack,
+            } => {
                 tracing::info!("Node {from_node} announced features {features:#x}");
-                self.mark_features(from_node, features & SUPPORTED_FEATURES);
+                self.mark_features(from_node, features & KNOWN_FEATURES);
                 self.ack(from_node, ack, now, actions);
+                if reply_requested
+                    && self
+                        .protection
+                        .caps_reply_per_node
+                        .try_fire(&from_node, now)
+                {
+                    actions.push(Action::AnnounceCaps { peer: from_node });
+                }
             }
             Inbound::Duplicate { message_id, ack } => {
                 tracing::debug!("Duplicate frame from {from_node} suppressed");
@@ -401,6 +437,15 @@ impl Engine {
             }
             Inbound::PeerAck { acked } => {
                 tracing::info!("Peer ACK from {from_node} for {acked}");
+                // One of our relay control messages: stop its retries.
+                match self.update_relay(|b| b.control_acked(my_node, from_node, &acked)) {
+                    Ok(true) => return,
+                    Ok(false) => {}
+                    Err(e) => {
+                        tracing::warn!("Relay control ACK not saved: {e}");
+                        return;
+                    }
+                }
                 let probed = self
                     .protection
                     .caps_probes
@@ -430,13 +475,15 @@ impl Engine {
                     "Pair request ({version:?}) from node {from_node} — already have key"
                 );
             }
-            Inbound::Relay { message_id, .. } => {
-                // This build does not announce FEATURE_RELAY yet, so peers do
-                // not send these. Ignored unacknowledged, and the id is
-                // forgotten so a retry is not taken for a handled duplicate
-                // (and acknowledged) either (ADR-006 P2).
-                self.protection.dedup.forget(&sender, &message_id);
-                tracing::info!("Relay control message from {from_node} ignored");
+            Inbound::Relay {
+                message_id,
+                control,
+                ack,
+                ..
+            } => {
+                self.on_relay_control(
+                    my_node, from_node, &sender, message_id, &control, ack, now, actions,
+                );
             }
             Inbound::Dropped(reason) => {
                 tracing::info!("Dropped frame from {from_node}: {reason:?}");
@@ -451,6 +498,88 @@ impl Engine {
                 });
             }
         }
+    }
+
+    /// A relay control message (ADR-006 §4): the exchange state is saved
+    /// before the id is committed and the ACK sent; if saving fails, the id
+    /// is forgotten and nothing is acknowledged, so the sender retries.
+    #[allow(clippy::too_many_arguments)]
+    fn on_relay_control(
+        &mut self,
+        my_node: u32,
+        from_node: u32,
+        sender: &PeerIdentity,
+        message_id: MessageId,
+        control: &meshguard_core::relay::RelayControl,
+        ack: Option<Vec<u8>>,
+        now: u64,
+        actions: &mut Vec<Action>,
+    ) {
+        use crate::relay::{ContactRelay, ControlOutcome};
+        let me = self.relay_identity();
+        let before_topics = me
+            .as_ref()
+            .map(|m| self.relay.inbound_topics(my_node, m))
+            .unwrap_or_default();
+        let had_outgoing = self.relay.outgoing.len();
+        let outcome = match self
+            .update_relay(|b| b.on_control(my_node, from_node, control, me.as_ref(), now))
+        {
+            Ok(o) => o,
+            Err(e) => {
+                tracing::warn!("Relay message from {from_node} not saved ({e}); not acknowledged");
+                self.protection.dedup.forget(sender, &message_id);
+                return;
+            }
+        };
+        if let Err(e) = self.save_dedup() {
+            tracing::warn!("Could not persist dedup cache: {e}");
+            // The change is saved and idempotent; a retry is applied again.
+            self.protection.dedup.forget(sender, &message_id);
+            return;
+        }
+        tracing::info!("Relay message from {from_node}: {outcome:?}");
+        let state = match self.relay.state(my_node, from_node) {
+            None => "none",
+            Some(ContactRelay::Offered { .. }) => "offered",
+            Some(ContactRelay::Incoming { .. }) => "incoming",
+            Some(ContactRelay::Active {
+                rotation: Some(_), ..
+            }) => "rotation",
+            Some(ContactRelay::Active { .. }) => "active",
+        };
+        let same_broker = match outcome {
+            ControlOutcome::OfferReceived { same_broker } => {
+                let name = self
+                    .peer_title(from_node)
+                    .unwrap_or_else(|| format!("!{from_node:08x}"));
+                actions.push(Action::Notify {
+                    title: format!("{name} wants to use internet relay"),
+                    body: "Open the chat to accept or decline.".into(),
+                    node: from_node,
+                });
+                Some(same_broker)
+            }
+            _ => None,
+        };
+        if outcome != ControlOutcome::Handled || same_broker.is_some() {
+            actions.push(Action::Emit(Event::RelayChanged(RelayChangedEvent {
+                peer_node: from_node,
+                state,
+                same_broker,
+            })));
+        }
+        let after_topics = me
+            .as_ref()
+            .map(|m| self.relay.inbound_topics(my_node, m))
+            .unwrap_or_default();
+        if after_topics != before_topics {
+            actions.push(Action::RelayTopicsChanged);
+        }
+        if self.relay.outgoing.len() > had_outgoing {
+            actions.push(Action::RelayControlsDue);
+        }
+        self.ack(from_node, ack, now, actions);
     }
 
     /// Keep an undecryptable frame as a pending chat request and, subject
@@ -792,29 +921,103 @@ mod tests {
         assert!(!a.iter().any(|a| matches!(a, Action::Undecryptable { .. })));
     }
 
+    fn relay_frame(control: &meshguard_core::relay::RelayControl, id: MessageId) -> Vec<u8> {
+        meshguard_core::outbound::seal_relay(
+            control,
+            id,
+            &key(),
+            &PeerIdentity::meshtastic_node(PEER),
+            &PeerIdentity::meshtastic_node(ME),
+            NOW as u32,
+            DEFAULT_FRAME_BUDGET,
+        )
+        .unwrap()
+    }
+
+    fn offer() -> meshguard_core::relay::RelayControl {
+        meshguard_core::relay::RelayControl::Offer(meshguard_core::relay::RelayOffer {
+            secret: meshguard_core::relay::RelaySecret::random(),
+            broker_tag: meshguard_core::relay::broker_tag("broker.example", 8883),
+            inbox: "mg-pppppppppppppppppppp".into(),
+        })
+    }
+
     #[test]
-    fn relay_controls_are_not_acknowledged_while_relay_is_unsupported() {
-        use meshguard_core::relay::{RelayControl, RelayRevoke};
-        let mut e = engine("relay-ignored", WireProtocol::V2, true);
+    fn a_relay_offer_is_saved_before_it_is_acknowledged() {
+        let mut e = engine("relay-offer", WireProtocol::V2, true);
         let id = MessageId::random();
-        let control = RelayControl::Revoke(RelayRevoke { confirm: [1; 16] });
-        for _ in 0..3 {
-            // Each retry: same id, fresh nonce.
-            let f = meshguard_core::outbound::seal_relay(
-                &control,
-                id,
+        let a = e.on_mesh_packet(&packet(PEER, relay_frame(&offer(), id)), ME, NOW);
+        assert_eq!(acks(&a), 1);
+        assert!(a.iter().any(|a| matches!(
+            a,
+            Action::Emit(Event::RelayChanged(RelayChangedEvent {
+                state: "incoming",
+                ..
+            }))
+        )));
+        assert!(a.iter().any(|a| matches!(a, Action::Notify { .. })));
+        // Saved: a fresh engine on the same folder sees it.
+        let mut again = Engine::new(e.config_dir.clone(), NOW);
+        again.open_history(Some(&SessionKey::from_bytes([1; 32])));
+        assert!(again.relay.state(ME, PEER).is_some());
+        // A retry is a duplicate: acknowledged again, nothing new.
+        let a = e.on_mesh_packet(&packet(PEER, relay_frame(&offer_copy(&e), id)), ME, NOW);
+        assert_eq!(acks(&a), 1);
+        assert!(!a.iter().any(|a| matches!(a, Action::Notify { .. })));
+    }
+
+    /// The offer as stored, re-encoded (same secret) for a retry.
+    fn offer_copy(e: &Engine) -> meshguard_core::relay::RelayControl {
+        let Some(crate::relay::ContactRelay::Incoming {
+            secret,
+            peer_inbox,
+            peer_tag: _,
+        }) = e.relay.state(ME, PEER)
+        else {
+            panic!("no offer");
+        };
+        meshguard_core::relay::RelayControl::Offer(meshguard_core::relay::RelayOffer {
+            secret: secret.secret().unwrap(),
+            broker_tag: meshguard_core::relay::broker_tag("broker.example", 8883),
+            inbox: peer_inbox.clone(),
+        })
+    }
+
+    #[test]
+    fn without_a_vault_relay_messages_are_not_acknowledged() {
+        let mut e = engine("relay-novault", WireProtocol::V2, false);
+        let id = MessageId::random();
+        for _ in 0..2 {
+            let a = e.on_mesh_packet(&packet(PEER, relay_frame(&offer(), id)), ME, NOW);
+            assert_eq!(acks(&a), 0, "{a:?}");
+        }
+        let sender = PeerIdentity::meshtastic_node(PEER);
+        assert!(!e.protection.dedup.contains(&sender, &id));
+        assert!(e.relay.state(ME, PEER).is_none());
+    }
+
+    #[test]
+    fn caps_requests_are_answered_once_per_hour() {
+        let mut e = engine("caps-reply", WireProtocol::V2, true);
+        let req = || {
+            meshguard_core::outbound::seal_caps_request(
+                meshguard_core::relay::FEATURE_RELAY | FEATURE_STATUS,
                 &key(),
                 &PeerIdentity::meshtastic_node(PEER),
                 &PeerIdentity::meshtastic_node(ME),
                 NOW as u32,
                 DEFAULT_FRAME_BUDGET,
             )
-            .unwrap();
-            let a = e.on_mesh_packet(&packet(PEER, f), ME, NOW);
-            assert_eq!(acks(&a), 0, "{a:?}");
-        }
-        let sender = PeerIdentity::meshtastic_node(PEER);
-        assert!(!e.protection.dedup.contains(&sender, &id));
+            .unwrap()
+            .frame
+        };
+        let a = e.on_mesh_packet(&packet(PEER, req()), ME, NOW);
+        assert!(a
+            .iter()
+            .any(|a| matches!(a, Action::AnnounceCaps { peer: PEER })));
+        assert!(e.peer_supports_relay(PEER), "relay bit remembered");
+        let a = e.on_mesh_packet(&packet(PEER, req()), ME, NOW + 60);
+        assert!(!a.iter().any(|a| matches!(a, Action::AnnounceCaps { .. })));
     }
 
     #[test]

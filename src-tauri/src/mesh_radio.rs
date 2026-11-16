@@ -1192,6 +1192,17 @@ async fn run_actions(ctx: &ListenerCtx, actions: Vec<Action>, now: u64) {
                 let more = lock_engine(&ctx.engine).note_pair_request(from, payload, now);
                 Box::pin(run_actions(ctx, more, now)).await;
             }
+            Action::AnnounceCaps { peer } => {
+                let app = ctx.app_handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    use tauri::Manager;
+                    let state = app.state::<crate::state::AppState>();
+                    crate::status_tx::announce_caps(&state, peer).await;
+                });
+            }
+            // The relay client (ADR-006 P2e) follows topic changes; control
+            // messages go out with the outbox loop.
+            Action::RelayTopicsChanged | Action::RelayControlsDue => {}
             Action::ProbePeers => {
                 let app = ctx.app_handle.clone();
                 tauri::async_runtime::spawn(async move {
@@ -1268,6 +1279,7 @@ pub fn emit_event(app: &tauri::AppHandle, event: Event) {
         Event::IncomingStatus(e) => app.emit(name, e),
         Event::PeerProtocol(e) => app.emit(name, e),
         Event::PairRequest(e) | Event::PairAccepted(e) => app.emit(name, e),
+        Event::RelayChanged(e) => app.emit(name, e),
     };
 }
 

@@ -625,6 +625,8 @@ pub async fn remove_peer(
         // whoever pairs as this node next). The raised send generation is
         // saved with the removal.
         let cancelled = engine.cancel_sends_to(peer_node_num);
+        // The relay with a removed contact ends too, without telling it.
+        engine.relay_forget(peer_node_num, unix_now().into());
         engine.config.peers.retain(|p| p.node_num != peer_node_num);
         if let Err(e) = engine.config.save(&state.config_dir) {
             engine.config = prev_config;
@@ -681,6 +683,7 @@ pub async fn block_node(
         // Same critical section: nothing queued for the node is sent any
         // more; the raised send generation is saved with the block.
         let cancelled = engine.cancel_sends_to(node_num);
+        engine.relay_forget(node_num, unix_now().into());
         if let Err(e) = engine.config.save(&state.config_dir) {
             engine.config = prev_config;
             if let Some(key) = prev_key {

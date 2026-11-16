@@ -192,6 +192,7 @@ async fn outbox_tick(app: &tauri::AppHandle) {
     for e in events {
         emit_state(app, Some(e));
     }
+    send_relay_controls(&state, now).await;
     if let Some(t) = resend {
         let (attempt, _) = transmit(app, &t, now).await;
         tracing::info!(
@@ -204,6 +205,27 @@ async fn outbox_tick(app: &tauri::AppHandle) {
                 Attempt::Unavailable => "radio unavailable",
             }
         );
+    }
+}
+
+/// Send the relay control messages that are due (ADR-006 §4) over the
+/// radio they were sealed for, at most one per tick (shared airtime).
+async fn send_relay_controls(state: &AppState, now: u64) {
+    let live = live_radio(state).await;
+    let Some(c) = state
+        .engine()
+        .relay_due_controls(now)
+        .into_iter()
+        .find(|c| Some(c.my_node) == live)
+    else {
+        return;
+    };
+    let sent = crate::commands::send_as(state, c.my_node, c.peer, c.frame).await;
+    if let Err(e) = &sent {
+        tracing::info!("Relay control to {} not sent: {e}", c.peer);
+    }
+    if state.engine().relay_control_attempted(&c.message_id, now) {
+        tracing::info!("Relay control to {} given up", c.peer);
     }
 }
 
