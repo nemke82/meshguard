@@ -44,11 +44,14 @@ struct client_entry {
 	struct sub_entry *subs;
 	double tokens;
 	double last;      /* last publish (rate bucket) */
-	double seen;      /* last activity of any kind */
+	double offline;   /* when the last connection ended */
+	int online;       /* live connections with this client id */
 	UT_hash_handle hh;
 };
 
-/* Longer than any session can live (persistent_client_expiration 3d). */
+/* An entry is dropped once its client has been offline for longer than any
+ * session can live (persistent_client_expiration 3d): its session, and with
+ * it its subscriptions, is gone by then. Connected clients are never dropped. */
 #define IDLE_DROP_S (4.0 * 24 * 3600)
 
 static void clear_subs(struct client_entry *e)
@@ -97,7 +100,7 @@ static struct client_entry *entry_for(struct mosquitto *client)
 	}
 	e->tokens = burst;
 	e->last = now_s();
-	e->seen = e->last;
+	e->offline = e->last;
 	HASH_ADD_KEYPTR(hh, clients, e->id, strlen(e->id), e);
 	return e;
 }
@@ -113,7 +116,7 @@ static int on_connect(int event, void *event_data, void *userdata)
 	if(e == NULL){
 		return MOSQ_ERR_SUCCESS;
 	}
-	e->seen = now_s();
+	e->online++;
 	if(mosquitto_client_sub_count(ed->client) == 0){
 		clear_subs(e); /* nothing left in the session */
 	}
@@ -132,7 +135,6 @@ static int on_subscribe(int event, void *event_data, void *userdata)
 	if(e == NULL || ed->data.topic_filter == NULL){
 		return MOSQ_ERR_NOMEM;
 	}
-	e->seen = now_s();
 	HASH_FIND_STR(e->subs, ed->data.topic_filter, s);
 	if(s){
 		return MOSQ_ERR_SUCCESS; /* already subscribed: always allowed */
@@ -176,7 +178,33 @@ static int on_unsubscribe(int event, void *event_data, void *userdata)
 	return MOSQ_ERR_SUCCESS;
 }
 
-/* Drop entries of clients idle longer than any session can live. */
+/* A connection ended (one of DISCONNECT or CLIENT_OFFLINE fires per
+ * connection). */
+static int on_gone(int event, void *event_data, void *userdata)
+{
+	struct mosquitto *client;
+	struct client_entry *e = NULL;
+	const char *id;
+	(void)userdata;
+
+	client = event == MOSQ_EVT_DISCONNECT
+		? ((struct mosquitto_evt_disconnect *)event_data)->client
+		: ((struct mosquitto_evt_client_offline *)event_data)->client;
+	id = mosquitto_client_id(client);
+	if(id == NULL){
+		return MOSQ_ERR_SUCCESS;
+	}
+	HASH_FIND_STR(clients, id, e);
+	if(e){
+		if(e->online > 0){
+			e->online--;
+		}
+		e->offline = now_s();
+	}
+	return MOSQ_ERR_SUCCESS;
+}
+
+/* Drop entries of clients offline longer than any session can live. */
 static int on_tick(int event, void *event_data, void *userdata)
 {
 	static double last_sweep = 0.0;
@@ -191,7 +219,7 @@ static int on_tick(int event, void *event_data, void *userdata)
 	}
 	last_sweep = t;
 	HASH_ITER(hh, clients, e, etmp){
-		if(t - e->seen > IDLE_DROP_S && t - e->last > IDLE_DROP_S){
+		if(e->online == 0 && t - e->offline > IDLE_DROP_S){
 			clear_subs(e);
 			HASH_DEL(clients, e);
 			free(e->id);
@@ -226,7 +254,6 @@ static int on_message_in(int event, void *event_data, void *userdata)
 		return MOSQ_ERR_QUOTA_EXCEEDED;
 	}
 	e->tokens -= 1.0;
-	e->seen = t;
 	return MOSQ_ERR_SUCCESS;
 }
 
@@ -253,6 +280,12 @@ int mosquitto_plugin_init(mosquitto_plugin_id_t *identifier, void **user_data,
 	}
 	if(rc == MOSQ_ERR_SUCCESS){
 		rc = mosquitto_callback_register(pid, MOSQ_EVT_CONNECT, on_connect, NULL, NULL);
+	}
+	if(rc == MOSQ_ERR_SUCCESS){
+		rc = mosquitto_callback_register(pid, MOSQ_EVT_DISCONNECT, on_gone, NULL, NULL);
+	}
+	if(rc == MOSQ_ERR_SUCCESS){
+		rc = mosquitto_callback_register(pid, MOSQ_EVT_CLIENT_OFFLINE, on_gone, NULL, NULL);
 	}
 	if(rc == MOSQ_ERR_SUCCESS){
 		rc = mosquitto_callback_register(pid, MOSQ_EVT_TICK, on_tick, NULL, NULL);
