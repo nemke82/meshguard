@@ -233,6 +233,35 @@ pub struct RelayBook {
     /// durably, so an entry that outlived a failed save is ignored.
     #[serde(default)]
     pub generations: BTreeMap<String, u64>,
+    /// MeshGuard relay accounts to delete on the server (ADR-007 §6): each
+    /// is kept until the server confirms, so deletion survives being
+    /// offline and a later account never replaces an earlier one here.
+    #[serde(default)]
+    pub pending_deletes: Vec<PendingDelete>,
+    /// Write-ahead record of a relay settings change: saved atomically with
+    /// the credentials it belongs to, applied to the settings file, then
+    /// cleared. Replayed at load if the process stopped in between.
+    #[serde(default)]
+    pub pending_settings: Option<PendingSettings>,
+}
+
+/// The relay settings a transaction is installing (`None`: none).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingSettings {
+    pub settings: Option<crate::config::RelaySettings>,
+}
+
+/// Credentials of a managed relay account awaiting deletion.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingDelete {
+    pub username: String,
+    pub password: String,
+}
+
+impl std::fmt::Debug for PendingDelete {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PendingDelete(<redacted>)")
+    }
 }
 
 fn contact_key(my_node: u32, peer: u32) -> String {
@@ -954,6 +983,7 @@ impl crate::Engine {
             Ok(book) => {
                 self.relay = book;
                 self.sync_relay_generations();
+                self.replay_relay_settings();
             }
             Err(e) => {
                 tracing::warn!("Relay settings could not be opened ({e}); starting new ones");
@@ -965,6 +995,25 @@ impl crate::Engine {
                     tracing::warn!("Could not move the relay book aside: {e}");
                 }
             }
+        }
+    }
+
+    /// Finish a relay settings change that was interrupted after the book
+    /// (with credentials and intended settings) was saved: apply the
+    /// settings, then clear the record.
+    fn replay_relay_settings(&mut self) {
+        let Some(p) = self.relay.pending_settings.clone() else {
+            return;
+        };
+        self.config.relay = p.settings;
+        match self.config.save(&self.config_dir) {
+            Ok(()) => {
+                tracing::info!("Finished an interrupted relay settings change");
+                if let Err(e) = self.update_relay(|b| b.pending_settings = None) {
+                    tracing::warn!("Relay journal not cleared: {e}");
+                }
+            }
+            Err(e) => tracing::warn!("Relay settings change not finished yet: {e}"),
         }
     }
 

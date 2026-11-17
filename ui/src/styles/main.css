@@ -2021,3 +2021,15 @@ html.qr-scanning #app {
 #btn-relay-chat.relay-pending {
   color: var(--warning);
 }
+
+#relay-overlay [hidden] {
+  display: none !important;
+}
+
+.relay-managed {
+  margin-bottom: 16px;
+}
+
+.relay-managed .field-hint {
+  margin: 4px 0 10px;
+}

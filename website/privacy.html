@@ -4,12 +4,12 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Privacy Policy — MeshGuard</title>
-  <meta name="description" content="MeshGuard privacy policy: no accounts, no servers, no analytics. What the app stores on your device and why it asks for each permission.">
+  <meta name="description" content="MeshGuard privacy policy: no analytics, no accounts unless you turn on the optional relay. What the app stores on your device and why it asks for each permission.">
   <link rel="canonical" href="https://meshguard.net/privacy">
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#f8faf9">
   <meta property="og:title" content="Privacy Policy — MeshGuard">
-  <meta property="og:description" content="MeshGuard privacy policy: no accounts, no servers, no analytics. What the app stores on your device and why it asks for each permission.">
+  <meta property="og:description" content="MeshGuard privacy policy: no analytics, no accounts unless you turn on the optional relay. What the app stores on your device and why it asks for each permission.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://meshguard.net/privacy">
   <meta property="og:site_name" content="MeshGuard">
@@ -55,12 +55,12 @@
     <div class="container narrow">
       <article class="prose page-head">
       <h1>Privacy Policy</h1>
-      <p class="updated">Last updated: 16 November 2026</p>
+      <p class="updated">Last updated: 17 November 2026</p>
 
-      <p>MeshGuard is an open-source, peer-to-peer messenger for Meshtastic radios. It has no accounts, no servers and no analytics. This policy covers the MeshGuard apps for Android, Linux and macOS, and this website.</p>
+      <p>MeshGuard is an open-source, peer-to-peer messenger for Meshtastic radios. It has no analytics and needs no account or server; the only server is an optional internet relay that you can turn on (see <a href="#relay">MeshGuard relay</a>). This policy covers the MeshGuard apps for Android, Linux and macOS, and this website.</p>
 
       <h2>What we collect</h2>
-      <p><strong>Nothing.</strong> The MeshGuard developers do not operate any server that receives your messages, contacts, location or usage data. The app contains no analytics, advertising or crash-reporting libraries, and it does not share data with third parties.</p>
+      <p><strong>Nothing, unless you turn on the MeshGuard relay.</strong> The app contains no analytics, advertising or crash-reporting libraries, and it does not share data with third parties. The only server the MeshGuard developers run is the optional <strong>MeshGuard relay</strong> (relay.meshguard.net), which is off until you turn it on; what it processes is described under <a href="#relay">MeshGuard relay</a> below. It never receives your messages in readable form, your contacts' names or your location.</p>
 
       <h2>What the app stores on your device</h2>
       <ul>
@@ -70,7 +70,7 @@
         <li><strong>Message history</strong> — the messages, check-ins and SOS alerts you send and receive, with their time and delivery status, so a conversation is still there after you close the app, and unsent messages can be retried when your radio is back. Message text and contact names are encrypted on the device with a key derived from the same device key; the time, node numbers and delivery status are stored unencrypted so the app can sort and retry messages. History is kept until you delete the conversation. It is never uploaded. If the device has no Keystore or keyring available, history is kept in memory only while the app runs.</li>
         <li><strong>Duplicate-protection records</strong> — message IDs and timestamps used to detect replayed or relayed copies. They never contain message text.</li>
         <li><strong>Blocked nodes</strong> — the node number and name of each node you blocked, and when.</li>
-        <li><strong>Internet relay settings</strong> (only if you set it up) — your MQTT broker's address, your broker username and the broker's certificate authority if you added one. The broker password and the relay keys of your contacts are encrypted with the same device key as chat keys. <em>Remove relay settings</em> deletes them.</li>
+        <li><strong>Internet relay settings</strong> (only if you set it up) — the broker's address (relay.meshguard.net or yours), your relay username and the broker's certificate authority if you added one. The password and the relay keys of your contacts are encrypted with the same device key as chat keys. <em>Remove</em> deletes them.</li>
         <li><strong>Terms of use</strong> — which version of the <a href="/terms">terms of use</a> you accepted.</li>
         <li><strong>Notification settings</strong>, including a custom sound if you choose one.</li>
       </ul>
@@ -81,7 +81,17 @@
 
       <h2>What leaves your device</h2>
       <p>Messages are encrypted on your device (AES-256-GCM) and sent through your own Meshtastic radio, over Bluetooth, Wi-Fi/TCP or USB, to the LoRa mesh. Other mesh nodes relay the encrypted packets; only the contact who holds the key for your conversation (from the QR code you scanned together, or from your shared passphrase) can read them. Like any radio transmission, Meshtastic packets reveal metadata such as node numbers, signal strength and timing to radios within range.</p>
-      <p><strong>Internet relay (optional, off by default).</strong> If you set up internet relay and turn it on for a contact who accepts it, MeshGuard also sends that contact's messages and delivery confirmations through the MQTT broker <em>you</em> configured, over an encrypted TLS connection. The messages are the same end-to-end encrypted packets as on the radio; the broker cannot read them. The broker, and whoever runs it, does see metadata: your IP address, when you are connected, your broker username, which accounts exchange packets, and their size and timing. It may keep encrypted packets for a phone that is offline: each packet carries the remaining lifetime of its message (one hour for a text, up to six hours for SOS, a day for relay setup messages), and the broker keeps a disconnected phone's session for the offline period chosen in the app (1 to 7 days, counted from its last disconnection). How long the broker really keeps data also depends on how its operator set it up. The MeshGuard developers do not run a broker and receive nothing.</p>
+      <p><strong>Internet relay (optional, off by default).</strong> If you turn on internet relay and use it with a contact who accepts it, MeshGuard also sends that contact's messages and delivery confirmations through an MQTT broker over an encrypted TLS connection: either the MeshGuard relay (below) or a broker <em>you</em> configured. The messages are the same end-to-end encrypted packets as on the radio; the broker cannot read them. The broker, and whoever runs it, does see metadata: your IP address, when you are connected, your broker username, which accounts exchange packets, and their size and timing. It may keep encrypted packets for a phone that is offline: each packet carries the remaining lifetime of its message (one hour for a text, up to six hours for SOS, a day for relay setup messages), and the broker keeps a disconnected phone's session for the offline period chosen in the app (1 to 7 days, counted from its last disconnection). How long a broker you configured really keeps data depends on how its operator set it up.</p>
+
+      <h2 id="relay">MeshGuard relay (relay.meshguard.net)</h2>
+      <p>If you choose <em>Use MeshGuard relay</em>, the app creates a random relay account on our server (a name like <code>mg-k3v7q2x9p4m8n6r5t2wz</code> and a random password; nothing about you) and connects to it. While you use it, the relay:</p>
+      <ul>
+        <li><strong>forwards</strong> end-to-end encrypted packets between you and the contacts who accepted the relay. It cannot read them: the keys never leave your phones.</li>
+        <li><strong>sees</strong> your IP address, when you are connected, your random relay name, which relay names exchange packets, and their size and timing.</li>
+        <li><strong>never writes packets to disk.</strong> A packet for a phone that is offline waits in the relay's memory and is never delivered more than 24 hours after it was sent; an expired packet can stay in memory until that phone reconnects, or at most 3 days if it stays offline.</li>
+        <li><strong>stores</strong> only your random relay name, two hashes of your random password (one to check your login, one to authorize renewing or deleting the account) and the date of your last renewal. It keeps no connection or access logs. IP addresses are counted in memory for a short time to limit abuse and are never written.</li>
+      </ul>
+      <p>The app renews the account about once a month while you use it. <em>Stop using the MeshGuard relay</em> (or <em>Remove</em>) deletes the account on the server, as soon as the relay is reachable; accounts not renewed for 90 days are deleted automatically. Turning the relay switch off only disconnects.</p>
 
       <h2>Permissions (Android)</h2>
       <ul>
@@ -89,7 +99,7 @@
         <li><strong>Location</strong> — requested only on Android 11 and older, where the system requires it for Bluetooth scanning. MeshGuard does not read or store your location.</li>
         <li><strong>Notifications</strong> — to alert you to incoming messages.</li>
         <li><strong>Camera</strong> — only to scan a pairing QR code when you tap <em>Scan code</em>. No photo or video is stored or sent.</li>
-        <li><strong>Internet</strong> — for finding Meshtastic radios on your local network (mDNS, when you tap Scan Network) and connecting to one over Wi-Fi/TCP, and, only if you set it up, for connecting to your own MQTT broker for internet relay. MeshGuard does not contact any other server.</li>
+        <li><strong>Internet</strong> — for finding Meshtastic radios on your local network (mDNS, when you tap Scan Network) and connecting to one over Wi-Fi/TCP, and, only if you turn on internet relay, for connecting to the MeshGuard relay or your own MQTT broker. MeshGuard does not contact any other server.</li>
       </ul>
 
       <h2>This website</h2>

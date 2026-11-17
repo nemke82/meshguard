@@ -2,6 +2,11 @@
 
 Versions are dates (`vYYYY.MM.DD`). Each release on [GitHub Releases](https://github.com/nemke82/meshguard/releases) has the downloads and the full list of pull requests.
 
+## Unreleased
+
+### Added
+- **MeshGuard relay (relay.meshguard.net).** Internet relay in one tap: **Settings → Internet relay → Use MeshGuard relay** creates a random relay account and connects; no broker to set up. The relay forwards end-to-end encrypted packets, never writes messages to disk and never delivers a packet more than 24 hours after it was sent; it stores only the random account name, password hashes and the last renewal date. *Stop using the MeshGuard relay* deletes the account. Your own broker remains an option. See [ADR-007](docs/adr/007-managed-relay.md) and the updated [privacy policy](https://www.meshguard.net/privacy#relay).
+
 ## v2026.11.17
 
 Scan code fixed, terms of use with blocking and reporting, and an experimental internet relay (Private MQTT).

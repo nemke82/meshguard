@@ -210,6 +210,16 @@ pub struct RelaySettings {
     pub session_expiry_secs: u32,
     #[serde(default)]
     pub preference: RelayPreference,
+    /// The MeshGuard relay (relay.meshguard.net, ADR-007): the account was
+    /// created by the app; the client id equals the username.
+    #[serde(default)]
+    pub managed: bool,
+    /// Managed relay: last successful enrollment or renewal (unix seconds).
+    #[serde(default)]
+    pub renewed_at: u64,
+    /// Managed relay: do not retry a failed renewal before this time.
+    #[serde(default)]
+    pub renew_retry_at: u64,
 }
 
 /// A node the user blocked: its MeshGuard messages, chat requests, check-ins

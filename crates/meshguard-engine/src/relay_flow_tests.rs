@@ -25,6 +25,9 @@ fn settings(user: &str) -> RelaySettings {
         client_id: "mg-test".into(),
         session_expiry_secs: 86_400,
         preference: RelayPreference::Auto,
+        managed: false,
+        renewed_at: 0,
+        renew_retry_at: 0,
     }
 }
 
@@ -357,4 +360,27 @@ fn a_frame_refused_on_a_retiring_topic_still_counts_over_lora() {
             ..
         }
     )));
+}
+
+#[test]
+fn an_interrupted_settings_change_is_finished_on_load() {
+    use crate::relay::PendingSettings;
+    let (mut a, _b) = paired("t7");
+    // As if the process stopped after the book (credentials + intended
+    // settings) was saved but before the settings file was written.
+    let mut intended = a.config.relay.clone().unwrap();
+    intended.username = "mg-zzzzzzzzzzzzzzzzzzzz".into();
+    a.relay.password = Some("new".into());
+    a.relay.pending_settings = Some(PendingSettings {
+        settings: Some(intended.clone()),
+    });
+    a.save_relay().unwrap();
+    let mut reopened = Engine::new(a.config_dir.clone(), NOW);
+    reopened.open_history(Some(&SessionKey::from_bytes([A as u8; 32])));
+    assert_eq!(reopened.config.relay.as_ref(), Some(&intended));
+    assert!(reopened.relay.pending_settings.is_none());
+    assert_eq!(reopened.relay.password.as_deref(), Some("new"));
+    // And the settings file itself was written.
+    let from_disk = crate::config::AppConfig::load(&a.config_dir);
+    assert_eq!(from_disk.relay.as_ref(), Some(&intended));
 }
