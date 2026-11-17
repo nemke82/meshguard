@@ -1,6 +1,7 @@
 //! Live tests of the relay server kit: the patched Mosquitto with Dynamic
 //! Security and meshguard-limits, and this enrollment service. Ignored by
 //! default; `server/relay/test/run-tests.sh` starts both and runs them.
+#![allow(clippy::unwrap_used)]
 
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -284,9 +285,41 @@ async fn per_client_limits_hold() {
     })
     .await;
     assert!(refused >= 15, "ok {ok}, refused {refused}");
-    // Subscriptions: the 65th distinct filter ends the connection.
+    // Subscriptions: 64 filters, then a reconnect that re-subscribes all of
+    // them (as the app does) must work.
     let (bc, mut bel) = raw(&b, &pb).await;
-    for i in 0..65 {
+    for i in 0..64 {
+        bc.subscribe(format!("mg/r1/{b}/s/{i}"), QoS::AtLeastOnce)
+            .await
+            .unwrap();
+    }
+    let mut subacks = 0;
+    while subacks < 64 {
+        if let Event::Incoming(Packet::SubAck(_)) = bel.poll().await.expect("still connected") {
+            subacks += 1;
+        }
+    }
+    bc.disconnect().await.unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(2), async {
+        while bel.poll().await.is_ok() {}
+    })
+    .await;
+    drop(bel);
+    let (bc, mut bel) = raw(&b, &pb).await;
+    for i in 0..64 {
+        bc.subscribe(format!("mg/r1/{b}/s/{i}"), QoS::AtLeastOnce)
+            .await
+            .unwrap();
+    }
+    let mut again = 0;
+    while again < 64 {
+        if let Event::Incoming(Packet::SubAck(_)) = bel.poll().await.expect("re-subscribing works")
+        {
+            again += 1;
+        }
+    }
+    // A 65th distinct filter ends the connection.
+    for i in 64..65 {
         bc.subscribe(format!("mg/r1/{b}/s/{i}"), QoS::AtLeastOnce)
             .await
             .unwrap();
@@ -303,7 +336,7 @@ async fn per_client_limits_hold() {
     })
     .await
     .unwrap_or(false);
-    assert!(ended && subacks <= 64, "ended {ended}, subacks {subacks}");
+    assert!(ended && subacks == 0, "ended {ended}, subacks {subacks}");
     delete(&a, &pa);
     delete(&b, &pb);
 }

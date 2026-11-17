@@ -1,14 +1,17 @@
 /*
  * meshguard-limits: per-client limits for the MeshGuard relay (ADR-007).
  *
- *  - Subscriptions: at most max_subscriptions per client, counted by the
- *    broker itself (mosquitto_client_sub_count), so expired sessions, clean
- *    starts and deleted accounts need no bookkeeping here. A SUBSCRIBE
- *    beyond that is refused (Mosquitto then disconnects the client).
+ *  - Subscriptions: at most max_subscriptions distinct filters per client.
+ *    Re-subscribing to a filter the client already has is always allowed
+ *    (clients resubscribe after every reconnect); only a new filter beyond
+ *    the limit is refused (Mosquitto then disconnects the client). The
+ *    filters known per client are reset whenever a client connects without
+ *    any subscriptions left in its session (new session, clean start,
+ *    expired), so they follow the broker's own state.
  *  - Publish rate: a token bucket per client id, BURST publishes, refilled at
  *    RATE per second. Excess publishes get QUOTA_EXCEEDED. The bucket
- *    survives reconnects; entries idle for an hour (full again by then) are
- *    dropped, so memory follows active clients only.
+ *    survives reconnects; entries of clients idle longer than any session
+ *    can live are dropped, so memory follows real clients only.
  *
  * The 24-hour message lifetime cap is a small patch to the broker
  * (0001-meshguard-clamp-message-expiry.patch): a plugin cannot see or change
@@ -31,12 +34,32 @@
 
 MOSQUITTO_PLUGIN_DECLARE_VERSION(5);
 
-struct client_entry {
-	char *id;
-	double tokens;
-	double last;
+struct sub_entry {
+	char *filter;
 	UT_hash_handle hh;
 };
+
+struct client_entry {
+	char *id;
+	struct sub_entry *subs;
+	double tokens;
+	double last;      /* last publish (rate bucket) */
+	double seen;      /* last activity of any kind */
+	UT_hash_handle hh;
+};
+
+/* Longer than any session can live (persistent_client_expiration 3d). */
+#define IDLE_DROP_S (4.0 * 24 * 3600)
+
+static void clear_subs(struct client_entry *e)
+{
+	struct sub_entry *s, *stmp;
+	HASH_ITER(hh, e->subs, s, stmp){
+		HASH_DEL(e->subs, s);
+		free(s->filter);
+		free(s);
+	}
+}
 
 static mosquitto_plugin_id_t *pid = NULL;
 static struct client_entry *clients = NULL;
@@ -74,24 +97,86 @@ static struct client_entry *entry_for(struct mosquitto *client)
 	}
 	e->tokens = burst;
 	e->last = now_s();
+	e->seen = e->last;
 	HASH_ADD_KEYPTR(hh, clients, e->id, strlen(e->id), e);
 	return e;
+}
+
+static int on_connect(int event, void *event_data, void *userdata)
+{
+	struct mosquitto_evt_connect *ed = event_data;
+	struct client_entry *e;
+	(void)event;
+	(void)userdata;
+
+	e = entry_for(ed->client);
+	if(e == NULL){
+		return MOSQ_ERR_SUCCESS;
+	}
+	e->seen = now_s();
+	if(mosquitto_client_sub_count(ed->client) == 0){
+		clear_subs(e); /* nothing left in the session */
+	}
+	return MOSQ_ERR_SUCCESS;
 }
 
 static int on_subscribe(int event, void *event_data, void *userdata)
 {
 	struct mosquitto_evt_subscribe *ed = event_data;
+	struct client_entry *e;
+	struct sub_entry *s = NULL;
 	(void)event;
 	(void)userdata;
 
-	if(mosquitto_client_sub_count(ed->client) >= (int)max_subs){
+	e = entry_for(ed->client);
+	if(e == NULL || ed->data.topic_filter == NULL){
+		return MOSQ_ERR_NOMEM;
+	}
+	e->seen = now_s();
+	HASH_FIND_STR(e->subs, ed->data.topic_filter, s);
+	if(s){
+		return MOSQ_ERR_SUCCESS; /* already subscribed: always allowed */
+	}
+	if(HASH_COUNT(e->subs) >= max_subs
+			|| mosquitto_client_sub_count(ed->client) >= (int)max_subs){
 		mosquitto_log_printf(MOSQ_LOG_WARNING, "meshguard-limits: subscription limit reached");
 		return MOSQ_ERR_ACL_DENIED;
+	}
+	s = calloc(1, sizeof(*s));
+	if(s == NULL){
+		return MOSQ_ERR_NOMEM;
+	}
+	s->filter = strdup(ed->data.topic_filter);
+	if(s->filter == NULL){
+		free(s);
+		return MOSQ_ERR_NOMEM;
+	}
+	HASH_ADD_KEYPTR(hh, e->subs, s->filter, strlen(s->filter), s);
+	return MOSQ_ERR_SUCCESS;
+}
+
+static int on_unsubscribe(int event, void *event_data, void *userdata)
+{
+	struct mosquitto_evt_unsubscribe *ed = event_data;
+	struct client_entry *e;
+	struct sub_entry *s = NULL;
+	(void)event;
+	(void)userdata;
+
+	e = entry_for(ed->client);
+	if(e == NULL || ed->data.topic_filter == NULL){
+		return MOSQ_ERR_SUCCESS;
+	}
+	HASH_FIND_STR(e->subs, ed->data.topic_filter, s);
+	if(s){
+		HASH_DEL(e->subs, s);
+		free(s->filter);
+		free(s);
 	}
 	return MOSQ_ERR_SUCCESS;
 }
 
-/* Drop rate-limit entries idle for an hour. */
+/* Drop entries of clients idle longer than any session can live. */
 static int on_tick(int event, void *event_data, void *userdata)
 {
 	static double last_sweep = 0.0;
@@ -106,7 +191,8 @@ static int on_tick(int event, void *event_data, void *userdata)
 	}
 	last_sweep = t;
 	HASH_ITER(hh, clients, e, etmp){
-		if(t - e->last > 3600.0){
+		if(t - e->seen > IDLE_DROP_S && t - e->last > IDLE_DROP_S){
+			clear_subs(e);
 			HASH_DEL(clients, e);
 			free(e->id);
 			free(e);
@@ -140,6 +226,7 @@ static int on_message_in(int event, void *event_data, void *userdata)
 		return MOSQ_ERR_QUOTA_EXCEEDED;
 	}
 	e->tokens -= 1.0;
+	e->seen = t;
 	return MOSQ_ERR_SUCCESS;
 }
 
@@ -162,6 +249,12 @@ int mosquitto_plugin_init(mosquitto_plugin_id_t *identifier, void **user_data,
 	mosquitto_plugin_set_info(identifier, PLUGIN_NAME, PLUGIN_VERSION);
 	rc = mosquitto_callback_register(pid, MOSQ_EVT_SUBSCRIBE, on_subscribe, NULL, NULL);
 	if(rc == MOSQ_ERR_SUCCESS){
+		rc = mosquitto_callback_register(pid, MOSQ_EVT_UNSUBSCRIBE, on_unsubscribe, NULL, NULL);
+	}
+	if(rc == MOSQ_ERR_SUCCESS){
+		rc = mosquitto_callback_register(pid, MOSQ_EVT_CONNECT, on_connect, NULL, NULL);
+	}
+	if(rc == MOSQ_ERR_SUCCESS){
 		rc = mosquitto_callback_register(pid, MOSQ_EVT_TICK, on_tick, NULL, NULL);
 	}
 	if(rc == MOSQ_ERR_SUCCESS){
@@ -178,6 +271,7 @@ int mosquitto_plugin_cleanup(void *user_data, struct mosquitto_opt *opts, int op
 	(void)opt_count;
 
 	HASH_ITER(hh, clients, e, etmp){
+		clear_subs(e);
 		HASH_DEL(clients, e);
 		free(e->id);
 		free(e);

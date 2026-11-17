@@ -58,6 +58,7 @@ for _ in $(seq 1 300); do (exec 3<>/dev/tcp/127.0.0.1/18080) 2>/dev/null && brea
 
 export ENROLL_URL=http://127.0.0.1:18080 MQTT_PORT=18883 MQTT_CA="$GEN/ca.crt"
 status=0
+cd "$KIT/test/live"
 cargo test -q --test live -- --ignored --test-threads=1 "$@" || status=$?
 if [ "$status" -ne 0 ]; then echo "── broker log ──"; "$RUN" logs "$NAME" 2>&1 | tail -30; echo "── enroll log ──"; tail -30 "$GEN/enroll.log"; fi
 exit "$status"

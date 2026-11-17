@@ -198,6 +198,10 @@ jobs:
       - name: Test
         run: cargo test
 
+      - name: Live test crate (fmt, clippy)
+        working-directory: server/relay/test/live
+        run: cargo fmt --check && cargo clippy --all-targets -- -D warnings
+
       - name: Live tests (patched Mosquitto + enrollment)
         env:
           MG_CONTAINER: docker

@@ -23,8 +23,3 @@ thiserror = "2"
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
-# Live tests against a local broker (server/relay/test/run-tests.sh).
-meshguard-mqtt = { path = "../../../crates/meshguard-mqtt" }
-rumqttc = { version = "0.25.1", default-features = false, features = ["use-rustls-no-provider"] }
-ureq = { version = "2", features = ["json"] }
-zeroize = "1"
