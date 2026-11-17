@@ -353,12 +353,38 @@
           </p>
           <p class="relay-status" id="relay-status" role="status">Off</p>
 
+          <div class="relay-managed" id="relay-managed-box">
+            <span class="field-label">MeshGuard relay</span>
+            <p class="field-hint" id="relay-managed-text">
+              One tap, no setup: our relay at relay.meshguard.net forwards your
+              end-to-end encrypted packets and never writes messages to disk. It sees
+              your IP address, when you are online, and a random relay name.
+            </p>
+            <button type="button" id="relay-use-managed" class="btn btn-primary btn-full">Use MeshGuard relay</button>
+          </div>
+
           <label class="field toggle-field">
             <span class="field-label">Use internet relay</span>
             <input type="checkbox" id="relay-enabled" />
             <span class="toggle-switch"></span>
           </label>
 
+          <label class="field">
+            <span class="field-label">Delivery</span>
+            <select id="relay-preference">
+              <option value="auto">Auto: internet first, then LoRa</option>
+              <option value="lora_preferred">LoRa first, internet as backup</option>
+            </select>
+          </label>
+
+          <p class="field-hint">
+            Turning this on does not use it for any contact yet: open a chat and tap
+            the globe to offer it, and your contact has to accept. While the app is
+            closed, Android may stop the connection; messages then wait.
+          </p>
+
+          <details class="field relay-own" id="relay-own">
+            <summary class="field-label">Use your own MQTT broker instead</summary>
           <label class="field">
             <span class="field-label">Broker</span>
             <input type="text" id="relay-broker" placeholder="mqtts://broker.example.org:8883" autocomplete="off" autocapitalize="off" spellcheck="false" />
@@ -395,24 +421,12 @@
             </select>
           </label>
 
-          <label class="field">
-            <span class="field-label">Delivery</span>
-            <select id="relay-preference">
-              <option value="auto">Auto: internet first, then LoRa</option>
-              <option value="lora_preferred">LoRa first, internet as backup</option>
-            </select>
-          </label>
-
-          <p class="field-hint">
-            Turning this on does not use it for any contact yet: open a chat and tap
-            the globe to offer it, and your contact has to accept. While the app is
-            closed, Android may stop the connection; messages then wait.
-          </p>
-
           <div class="btn-group">
             <button type="button" id="relay-save" class="btn btn-primary">Save</button>
             <button type="button" id="relay-test" class="btn btn-secondary">Test connection</button>
           </div>
+          </details>
+
           <div class="btn-group">
             <button type="button" id="relay-remove" class="btn btn-secondary btn-danger-text">Remove relay settings</button>
             <button type="button" id="relay-close" class="btn btn-secondary">Close</button>

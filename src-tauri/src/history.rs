@@ -202,6 +202,7 @@ async fn outbox_tick(app: &tauri::AppHandle) {
     let state = app.state::<AppState>();
     let now = now_secs();
     crate::relay::sync_topics(app).await;
+    crate::relay::housekeeping(app);
     let routes = routes(&state).await;
     let (events, resend) = state.engine().outbox_step(now, routes);
     for e in events {

@@ -96,6 +96,8 @@ pub fn run() {
             relay::relay_contact_enable,
             relay::relay_contact_disable,
             relay::relay_acl_lines,
+            relay::relay_use_managed,
+            relay::relay_set_preference,
             history::list_conversations,
             history::get_messages,
             history::mark_conversation_read,

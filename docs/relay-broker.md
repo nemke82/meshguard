@@ -1,6 +1,9 @@
 # Internet relay: running your own MQTT broker
 
-MeshGuard's internet relay (ADR-006) is **off by default**. It sends the same end-to-end encrypted packets as LoRa through an MQTT broker that **you** run. MeshGuard does not run one, and there is no public MeshGuard broker.
+MeshGuard's internet relay (ADR-006) is **off by default**. It sends the same end-to-end encrypted packets as LoRa through an MQTT broker.
+
+- **One tap:** the **MeshGuard relay** at `relay.meshguard.net` ([ADR-007](adr/007-managed-relay.md); server kit in [`server/relay`](../server/relay)).
+- **Your own broker:** this guide.
 
 This guide sets up Mosquitto 2 for a family or a small group.
 

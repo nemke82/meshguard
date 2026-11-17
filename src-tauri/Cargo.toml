@@ -30,6 +30,9 @@ meshguard-core = { path = "../crates/meshguard-core" }
 meshguard-store = { path = "../crates/meshguard-store" }
 meshguard-engine = { path = "../crates/meshguard-engine" }
 meshguard-mqtt = { path = "../crates/meshguard-mqtt" }
+# HTTPS to the MeshGuard relay enrollment service (ADR-007); rustls with ring.
+ureq = { version = "2", default-features = false, features = ["tls", "json"] }
+sha2 = "0.10"
 zeroize = "1"
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 

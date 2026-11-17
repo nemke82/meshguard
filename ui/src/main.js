@@ -2723,10 +2723,32 @@ async function openRelaySettings() {
     alert("Could not load the relay settings: " + err);
     return;
   }
-  $("#relay-broker").value = s.broker || "";
-  $("#relay-username").value = s.username || "";
+  // MeshGuard relay (one tap) or your own broker.
+  const managedText = $("#relay-managed-text");
+  const useManaged = $("#relay-use-managed");
+  relayView = s;
+  if (s.managed) {
+    managedText.textContent = s.enrolled
+      ? `Using the MeshGuard relay (relay.meshguard.net) as ${s.username}. It forwards end-to-end encrypted packets and never writes messages to disk; it sees your IP address and when you are online.`
+      : "Setting up the MeshGuard relay did not finish. Tap below to try again.";
+    useManaged.hidden = s.enrolled;
+    useManaged.textContent = "Finish setting up the MeshGuard relay";
+  } else {
+    managedText.textContent = s.deleting
+      ? "Deleting your previous MeshGuard relay account on the server\u2026"
+      : "One tap, no setup: our relay at relay.meshguard.net forwards your end-to-end encrypted packets and never writes messages to disk. It sees your IP address, when you are online, and a random relay name.";
+    useManaged.hidden = false;
+    useManaged.textContent = s.configured ? "Switch to the MeshGuard relay" : "Use MeshGuard relay";
+  }
+  $("#relay-own").open = s.configured && !s.managed;
+  $("#relay-test").hidden = s.managed;
+  $("#relay-remove").textContent = s.managed
+    ? "Stop using the MeshGuard relay (delete account)"
+    : "Remove relay settings";
+  $("#relay-broker").value = s.managed ? "" : s.broker || "";
+  $("#relay-username").value = s.managed ? "" : s.username || "";
   $("#relay-password").value = "";
-  $("#relay-password").placeholder = s.has_password ? "Saved \u2014 leave empty to keep" : "";
+  $("#relay-password").placeholder = s.has_password && !s.managed ? "Saved \u2014 leave empty to keep" : "";
   $("#relay-ca").value = s.ca_pem || "";
   $("#relay-days").value = String(s.session_days || 3);
   $("#relay-preference").value = s.preference || "auto";
@@ -2743,6 +2765,31 @@ async function openRelaySettings() {
 let relayFromSettings = false;
 
 $("#btn-relay-settings").addEventListener("click", openRelaySettings);
+
+$("#relay-use-managed").addEventListener("click", async () => {
+  const btn = $("#relay-use-managed");
+  btn.disabled = true;
+  const label = btn.textContent;
+  btn.textContent = "Setting up\u2026";
+  try {
+    await invoke("relay_use_managed");
+    Toast.show({ sender: "Internet relay", text: "MeshGuard relay is on. Open a chat and tap the globe to offer it to a contact." });
+    await openRelaySettings();
+  } catch (err) {
+    alert(String(err));
+    btn.textContent = label;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$("#relay-preference").addEventListener("change", async (e) => {
+  try {
+    await invoke("relay_set_preference", { preference: e.target.value });
+  } catch (err) {
+    console.error("Relay preference:", err);
+  }
+});
 $("#relay-close").addEventListener("click", () => {
   relayOverlay.style.display = "none";
   if (relayFromSettings) notifOverlay.style.display = "flex";
@@ -2780,7 +2827,15 @@ $("#relay-save").addEventListener("click", async () => {
   }
 });
 
+let relayView = null;
+
 $("#relay-enabled").addEventListener("change", async (e) => {
+  // An account that never finished enrolling is set up, not just enabled.
+  if (e.target.checked && relayView && relayView.managed && !relayView.enrolled) {
+    e.target.checked = false;
+    $("#relay-use-managed").click();
+    return;
+  }
   try {
     await invoke("relay_set_enabled", { enabled: e.target.checked });
   } catch (err) {
