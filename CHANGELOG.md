@@ -2,6 +2,14 @@
 
 Versions are dates (`vYYYY.MM.DD`). Each release on [GitHub Releases](https://github.com/nemke82/meshguard/releases) has the downloads and the full list of pull requests.
 
+## v2026.11.19
+
+Fixes from the first two-phone test of the MeshGuard relay.
+
+### Fixed
+- **Replies over the internet relay.** After you turned the relay on with a contact, replies from the phone that accepted could be lost for minutes: it sent over the relay before the other phone was listening. It now uses LoRa until the other phone confirms, and that phone confirms only once the relay has its subscription.
+- **Bluetooth off.** The app says Bluetooth is off and reconnects within seconds when it is back. While the internet relay is connected, losing the radio or tapping **Stop** keeps you in the chat; contacts with the relay on still get your messages.
+
 ## v2026.11.18
 
 Internet relay in one tap: the MeshGuard relay at relay.meshguard.net.
