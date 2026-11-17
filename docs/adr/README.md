@@ -8,5 +8,6 @@
 | [004](004-qr-pairing.md) | Offline QR pairing (random secret, no passphrase) | Accepted |
 | [005](005-message-store.md) | Message store: encrypted history, inbox and outbox (SQLite) | Accepted; store and outbox in the app, history UI next |
 | [006](006-private-mqtt-relay.md) | Private Encrypted MQTT relay (Internet Relay) | Accepted; experimental, device tests pending |
+| [007](007-managed-relay.md) | MeshGuard relay at relay.meshguard.net (managed broker, self-enrollment) | Proposed |
 
 The design context is in [`../design/MESHGUARD_2_0_DESIGN_RFC.md`](../design/MESHGUARD_2_0_DESIGN_RFC.md), and the starting point is described in [`../audit/p0-baseline.md`](../audit/p0-baseline.md).
