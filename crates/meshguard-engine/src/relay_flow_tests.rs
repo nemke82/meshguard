@@ -384,3 +384,88 @@ fn an_interrupted_settings_change_is_finished_on_load() {
     let from_disk = crate::config::AppConfig::load(&a.config_dir);
     assert_eq!(from_disk.relay.as_ref(), Some(&intended));
 }
+
+#[test]
+fn the_reply_travels_back_over_the_relay() {
+    let (mut a, mut b) = paired("t8");
+    let t = b
+        .enqueue(A, &Content::Text("reply".into()), NOW, relay_only())
+        .unwrap();
+    assert_eq!(t.route, Route::Relay);
+    let topic = t.topic.clone().unwrap();
+    assert_eq!(
+        a.relay_inbound_topics().get(&topic),
+        Some(&B),
+        "A listens on B's outbound topic"
+    );
+    let actions = a.on_relay_frame(&topic, &t.frame, NOW);
+    assert_eq!(incoming_texts(&actions), 1, "{actions:?}");
+}
+
+#[test]
+fn the_accepting_side_waits_for_the_ack_before_using_the_relay() {
+    let mut a = engine("t9-a", A, B, "mg-aaaaaaaaaaaaaaaaaaaa");
+    let mut b = engine("t9-b", B, A, "mg-bbbbbbbbbbbbbbbbbbbb");
+    a.relay_enable(B, NOW).unwrap();
+    lora_controls(&mut a, A, &mut b, B);
+    b.relay_enable(A, NOW).unwrap(); // accepts; A has not heard it yet
+    let both = Routes {
+        radio: Some(B),
+        relay: true,
+    };
+    let t = b
+        .enqueue(A, &Content::Text("early".into()), NOW, both)
+        .unwrap();
+    assert_eq!(t.route, Route::Radio, "A is not listening on the relay yet");
+    lora_controls(&mut b, B, &mut a, A); // accept delivered and ACKed
+    let t = b
+        .enqueue(A, &Content::Text("later".into()), NOW, both)
+        .unwrap();
+    assert_eq!(t.route, Route::Relay);
+    assert!(a
+        .relay_inbound_topics()
+        .contains_key(t.topic.as_ref().unwrap()));
+}
+
+#[test]
+fn an_accept_given_up_unanswered_keeps_the_relay_closed() {
+    let mut a = engine("t10-a", A, B, "mg-aaaaaaaaaaaaaaaaaaaa");
+    let mut b = engine("t10-b", B, A, "mg-bbbbbbbbbbbbbbbbbbbb");
+    a.relay_enable(B, NOW).unwrap();
+    lora_controls(&mut a, A, &mut b, B);
+    b.relay_enable(A, NOW).unwrap();
+    // The accept is never delivered; its retries run out.
+    let late = NOW + 2 * 24 * 3600;
+    let id = b.relay.outgoing[0].message_id.clone();
+    assert!(!b.relay.reserve_attempt(&id, late));
+    assert!(b.relay.outgoing.is_empty());
+    assert!(b.relay_accept_unconfirmed(A), "still unconfirmed");
+    let both = Routes {
+        radio: Some(B),
+        relay: true,
+    };
+    let t = b
+        .enqueue(A, &Content::Text("x".into()), late, both)
+        .unwrap();
+    assert_eq!(t.route, Route::Radio);
+    drop(a);
+}
+
+#[test]
+fn a_relay_frame_from_the_peer_confirms_it_listens() {
+    let mut a = engine("t11-a", A, B, "mg-aaaaaaaaaaaaaaaaaaaa");
+    let mut b = engine("t11-b", B, A, "mg-bbbbbbbbbbbbbbbbbbbb");
+    a.relay_enable(B, NOW).unwrap();
+    lora_controls(&mut a, A, &mut b, B);
+    b.relay_enable(A, NOW).unwrap();
+    // A gets the accept, but its ACK to B is lost.
+    for c in b.relay_due_controls(NOW) {
+        a.on_mesh_packet(&packet(B, A, c.frame), A, NOW);
+    }
+    assert!(b.relay_accept_unconfirmed(A));
+    let t = a
+        .enqueue(B, &Content::Text("hi".into()), NOW, relay_only())
+        .unwrap();
+    b.on_relay_frame(t.topic.as_ref().unwrap(), &t.frame, NOW);
+    assert!(!b.relay_accept_unconfirmed(A));
+}

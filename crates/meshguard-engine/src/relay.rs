@@ -238,6 +238,12 @@ pub struct RelayBook {
     /// offline and a later account never replaces an earlier one here.
     #[serde(default)]
     pub pending_deletes: Vec<PendingDelete>,
+    /// Contacts whose offer we accepted, until the peer shows it listens on
+    /// the new topics (it ACKs our accept, or a relay frame arrives from
+    /// it). Until then messages to it go over LoRa. Kept apart from the
+    /// retry queue: an accept given up unanswered stays unconfirmed.
+    #[serde(default)]
+    pub awaiting_peer: BTreeSet<String>,
     /// Write-ahead record of a relay settings change: saved atomically with
     /// the credentials it belongs to, applied to the settings file, then
     /// cleared. Replayed at load if the process stopped in between.
@@ -501,6 +507,7 @@ impl RelayBook {
                 rotation: None,
             },
         );
+        self.awaiting_peer.insert(contact_key(my_node, peer));
         // A topic accepted again must not be removed from the session.
         if let Some((inbound, _)) = self.topics_of(my_node, peer, me) {
             self.unsubscribe.remove(&inbound);
@@ -681,6 +688,7 @@ impl RelayBook {
         self.note_unsubscribe(my_node, peer, me);
         self.retiring.remove(&contact_key(my_node, peer));
         self.contacts.remove(&contact_key(my_node, peer));
+        self.awaiting_peer.remove(&contact_key(my_node, peer));
         self.drop_outgoing(
             my_node,
             peer,
@@ -803,6 +811,8 @@ impl RelayBook {
                     return ControlOutcome::Handled;
                 }
                 self.retiring.remove(&key);
+                // We offered: the peer listens already.
+                self.awaiting_peer.remove(&key);
                 self.contacts.insert(
                     key,
                     ContactRelay::Active {
@@ -929,6 +939,9 @@ impl RelayBook {
             return false;
         };
         let p = self.outgoing.remove(i);
+        if matches!(p.control, StoredControl::Accept { .. }) {
+            self.awaiting_peer.remove(&contact_key(my_node, peer));
+        }
         let revokes_left = self.outgoing.iter().any(|q| {
             q.my_node == my_node
                 && q.peer == peer
@@ -1148,6 +1161,33 @@ impl crate::Engine {
                 .then(|| (r.inbound.clone(), (peer, r.outbound.clone())))
             })
             .collect()
+    }
+
+    /// Whether our accept to `peer` still waits for its AppAck. Until then
+    /// the peer may not listen on the new topics yet (it learns them from
+    /// the accept), so messages must not be sent over the relay: they would
+    /// be lost there while LoRa could deliver them.
+    pub fn relay_accept_unconfirmed(&self, peer: u32) -> bool {
+        let Some(my_node) = self.keys_owner else {
+            return false;
+        };
+        self.relay
+            .awaiting_peer
+            .contains(&contact_key(my_node, peer))
+    }
+
+    /// An authenticated frame from `peer` arrived on one of our current
+    /// relay topics: it listens there, so the relay may carry messages.
+    pub(crate) fn relay_peer_heard(&mut self, my_node: u32, peer: u32) {
+        let key = contact_key(my_node, peer);
+        if !self.relay.awaiting_peer.contains(&key) {
+            return;
+        }
+        if let Err(e) = self.update_relay(|b| {
+            b.awaiting_peer.remove(&key);
+        }) {
+            tracing::warn!("Relay state not saved: {e}");
+        }
     }
 
     /// The topic to publish to `peer` on, when the relay is active with it.

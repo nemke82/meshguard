@@ -362,7 +362,10 @@ impl Engine {
                     && protocol == WireProtocol::V2
                     && self.keys_owner == Some(my_node) =>
             {
+                // Not before the peer confirmed our accept: it may not be
+                // listening yet.
                 self.relay_outbound_topic(peer)
+                    .filter(|_| !self.relay_accept_unconfirmed(peer))
             }
             _ => None,
         };

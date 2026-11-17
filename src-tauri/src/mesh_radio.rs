@@ -1200,10 +1200,10 @@ async fn run_actions(ctx: &ListenerCtx, actions: Vec<Action>, now: u64) {
                     crate::status_tx::announce_caps(&state, peer).await;
                 });
             }
-            Action::RelayTopicsChanged => {
-                let app = ctx.app_handle.clone();
-                tauri::async_runtime::spawn(async move { crate::relay::sync_topics(&app).await });
-            }
+            // Awaited, not spawned: the subscription goes out before the ACK
+            // that follows it (an accepted relay: the peer starts publishing
+            // once it has the ACK).
+            Action::RelayTopicsChanged => crate::relay::sync_topics(&ctx.app_handle).await,
             // Control messages go out with the outbox loop.
             Action::RelayControlsDue => {}
             Action::ProbePeers => {

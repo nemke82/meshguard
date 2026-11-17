@@ -73,6 +73,20 @@ pub struct ReconnectEvent {
     pub target: String,
     pub attempt: u32,
     pub retry_in_secs: u64,
+    /// The last attempt failed because Bluetooth is switched off.
+    pub bluetooth_off: bool,
+}
+
+/// While Bluetooth is off, check this often whether it is back (each check
+/// fails at once, without radio traffic).
+const BLUETOOTH_OFF_RETRY: Duration = Duration::from_secs(5);
+
+/// Whether a connect error means the phone's Bluetooth is switched off.
+fn is_bluetooth_off(err: &str) -> bool {
+    let e = err.to_ascii_lowercase();
+    e.contains("bluetooth is turned off")
+        || e.contains("powered off")
+        || e.contains("adapter is off")
 }
 
 fn connect_params(
@@ -255,6 +269,7 @@ pub async fn start_reconnect_loop(app: tauri::AppHandle) -> bool {
         let state = app_for_loop.state::<AppState>();
         let mut delay = FIRST_RETRY;
         let mut attempt: u32 = 0;
+        let mut bluetooth_off = false;
         loop {
             if state.link.reconnect_gen.load(Ordering::SeqCst) != my_loop {
                 return;
@@ -266,6 +281,7 @@ pub async fn start_reconnect_loop(app: tauri::AppHandle) -> bool {
                     target: target.label(),
                     attempt,
                     retry_in_secs: delay.as_secs(),
+                    bluetooth_off,
                 },
             );
             {
@@ -299,6 +315,7 @@ pub async fn start_reconnect_loop(app: tauri::AppHandle) -> bool {
                         return;
                     }
                     Err(e) => {
+                        bluetooth_off = is_bluetooth_off(&e.to_string());
                         tracing::info!(
                             "Reconnect to {} failed (attempt {attempt}): {e}",
                             target.label()
@@ -315,6 +332,13 @@ pub async fn start_reconnect_loop(app: tauri::AppHandle) -> bool {
                     target = moved;
                     continue;
                 }
+            }
+            if bluetooth_off {
+                // Reconnect soon after Bluetooth comes back; the back-off
+                // starts over then.
+                tokio::time::sleep(BLUETOOTH_OFF_RETRY).await;
+                delay = FIRST_RETRY;
+                continue;
             }
             tokio::time::sleep(delay).await;
             delay = (delay * 2).min(MAX_RETRY);

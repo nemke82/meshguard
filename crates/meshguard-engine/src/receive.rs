@@ -368,6 +368,9 @@ impl Engine {
                 .iter()
                 .any(|p| p.node_num == from_node && p.confirmed);
             crate::config::mark_peer_confirmed(&mut self.config, &self.config_dir, from_node);
+            if route == Route::Relay && !self.relay_controls_only {
+                self.relay_peer_heard(my_node, from_node);
+            }
             let newly = !before && self.config.peers.iter().any(|p| p.node_num == from_node);
             if newly {
                 actions.push(Action::ProbePeers);
