@@ -76,12 +76,15 @@ fn delete(user: &str, pw: &str) -> (u16, Value) {
 fn settings(user: &str, pw: &str, client_id: &str) -> BrokerSettings {
     BrokerSettings {
         address: BrokerAddress {
-            host: "localhost".into(),
+            host: std::env::var("MQTT_HOST").unwrap_or_else(|_| "localhost".into()),
             port: env("MQTT_PORT").parse().unwrap(),
         },
         username: user.into(),
         password: Zeroizing::new(pw.into()),
-        ca_pem: Some(std::fs::read_to_string(env("MQTT_CA")).unwrap()),
+        // No MQTT_CA: the system roots (production, Let's Encrypt).
+        ca_pem: std::env::var("MQTT_CA")
+            .ok()
+            .map(|p| std::fs::read_to_string(p).unwrap()),
         client_id: client_id.into(),
         session_expiry_secs: 86_400,
     }
@@ -339,4 +342,36 @@ async fn per_client_limits_hold() {
     assert!(ended && subacks == 0, "ended {ended}, subacks {subacks}");
     delete(&a, &pa);
     delete(&b, &pb);
+}
+
+/// The app adds an inbox topic while already connected (a contact accepted
+/// the relay); frames published to it afterwards must arrive.
+#[tokio::test]
+#[ignore]
+async fn a_topic_added_while_connected_receives() {
+    let (a, pa) = random_user();
+    let (b, pb) = random_user();
+    assert_eq!(enroll(&a, &pa).1["status"], "created");
+    assert_eq!(enroll(&b, &pb).1["status"], "created");
+    let b_to_a = format!("mg/r1/{a}/{b}/x2");
+    let (ca, mut arx) = RelayClient::start(&settings(&a, &pa, &a), set(&[]), set(&[])).unwrap();
+    let (cb, _brx) = RelayClient::start(&settings(&b, &pb, &b), set(&[]), set(&[])).unwrap();
+    connected(&ca).await;
+    connected(&cb).await;
+    assert!(
+        !ca.wait_subscribed(&b_to_a, Duration::from_millis(200))
+            .await
+    );
+    ca.set_topics(set(&[&b_to_a])).unwrap();
+    assert!(
+        ca.wait_subscribed(&b_to_a, Duration::from_secs(10)).await,
+        "SUBACK confirmed"
+    );
+    cb.publish(&b_to_a, b"reply", 60).await.unwrap();
+    let f = tokio::time::timeout(Duration::from_secs(5), arx.recv()).await;
+    ca.stop().await;
+    cb.stop().await;
+    delete(&a, &pa);
+    delete(&b, &pb);
+    assert_eq!(f.expect("nothing arrived").unwrap().payload, b"reply");
 }

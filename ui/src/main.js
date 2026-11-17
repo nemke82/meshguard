@@ -187,6 +187,9 @@ const connectProgress = $("#connect-progress");
 const linkStatus = $("#link-status");
 const linkStatusText = $("#link-status-text");
 const btnLinkStop = $("#btn-link-stop");
+/** The internet relay is connected (from relay-status events). */
+let relayConnected = false;
+
 const connectProgressText = $("#connect-progress-text");
 
 const blePin = $("#ble-pin");
@@ -1393,6 +1396,11 @@ async function setupEventListeners() {
     }
 
     if (s === "disconnected") {
+      // The internet relay still carries messages: stay in the chat.
+      if (relayConnected && !screenConnect.classList.contains("active")) {
+        showLinkStatus("No radio \u2014 contacts with internet relay on still get your messages");
+        return;
+      }
       showScreen(screenConnect);
       connectProgress.style.display = "none";
       btnScan.disabled = false;
@@ -1402,8 +1410,16 @@ async function setupEventListeners() {
   // The radio dropped (battery, range, reboot): the backend retries on its
   // own. Stay on the current screen and show the status bar.
   await listen("reconnecting", (event) => {
-    const { target, attempt, retry_in_secs } = event.payload;
-    showLinkStatus(attempt <= 1 ? `Connecting to ${target}…` : `Waiting for ${target}…`);
+    const { target, attempt, retry_in_secs, bluetooth_off } = event.payload;
+    if (bluetooth_off) {
+      showLinkStatus(
+        relayConnected
+          ? "Bluetooth is off \u2014 contacts with internet relay on still get your messages"
+          : "Bluetooth is off \u2014 turn it on to reach your radio",
+      );
+    } else {
+      showLinkStatus(attempt <= 1 ? `Connecting to ${target}…` : `Waiting for ${target}…`);
+    }
     linkStatus.title = `Attempt ${attempt}, next retry in ${retry_in_secs}s`;
   });
 
@@ -1592,7 +1608,10 @@ async function setupEventListeners() {
     }
   });
 
-  await listen("relay-status", (event) => renderRelayStatus(event.payload));
+  await listen("relay-status", (event) => {
+    relayConnected = !!event.payload && event.payload.state === "connected";
+    renderRelayStatus(event.payload);
+  });
 
   await listen("pair-request", (event) => {
     const data = event.payload;
@@ -2542,6 +2561,8 @@ async function init() {
   await ensureTermsAccepted();
   await loadBlocked();
   await setupEventListeners();
+  // Events are not replayed: take the relay state as it is now.
+  refreshRelaySummary();
   await loadPresets();
 
   try {
@@ -2589,6 +2610,11 @@ btnLinkStop.addEventListener("click", async () => {
   try {
     await invoke("disconnect_device");
   } catch (_) {}
+  // Without a radio the internet relay still works: stay where we are.
+  if (relayConnected) {
+    showLinkStatus("No radio \u2014 contacts with internet relay on still get your messages");
+    return;
+  }
   showScreen(screenConnect);
 });
 
@@ -2704,11 +2730,12 @@ function renderRelayStatus(st) {
 async function refreshRelaySummary() {
   try {
     const s = await invoke("relay_get_settings");
+    relayConnected = !!s.enabled && s.status && s.status.state === "connected";
     $("#relay-summary").textContent = !s.vault
       ? "Not available: this device has no secure key store."
       : s.configured
         ? `${s.enabled ? "On" : "Off"} \u2014 ${RELAY_STATUS_TEXT[s.status.state] || s.status.state}`
-        : "Off. Chat over the internet through your own MQTT broker when you are out of radio range.";
+        : "Off. Chat over the internet when you are out of radio range.";
     $("#btn-relay-settings").textContent = s.configured ? "Internet relay settings" : "Set up internet relay";
   } catch (err) {
     console.error("Relay settings:", err);

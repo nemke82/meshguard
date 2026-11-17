@@ -251,6 +251,17 @@ pub async fn restart(app: &tauri::AppHandle) {
     });
 }
 
+/// Wait (up to 10 s) until the broker confirmed our subscription to
+/// `topic`. False without a running relay.
+pub async fn wait_subscribed(app: &tauri::AppHandle, topic: &str) -> bool {
+    let Some(client) = app.state::<AppState>().relay.client().await else {
+        return false;
+    };
+    client
+        .wait_subscribed(topic, std::time::Duration::from_secs(10))
+        .await
+}
+
 /// Hand the current inbound topics to the client and remember the topics
 /// still to be removed from the broker session (survives restarts).
 pub async fn sync_topics(app: &tauri::AppHandle) {
@@ -359,7 +370,13 @@ async fn run_actions(app: &tauri::AppHandle, actions: Vec<Action>) {
                 frame,
                 route: Route::Relay,
                 reply: Some(reply),
+                after_subscribed,
             } => {
+                if let Some(topic) = after_subscribed {
+                    if !wait_subscribed(app, &topic).await {
+                        continue;
+                    }
+                }
                 // Same gate as block/remove: re-checked right before the
                 // hand-over to the broker.
                 let _gate = state.relay.send_gate.lock().await;

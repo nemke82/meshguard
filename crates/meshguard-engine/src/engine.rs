@@ -104,6 +104,9 @@ pub struct Engine {
     pub(crate) in_flight: crate::outbox::InFlight,
     /// Set while handling a frame on a retiring relay topic.
     pub(crate) relay_controls_only: bool,
+    /// Ids of relay accepts received (peer, id), so a repeated copy's ACK
+    /// waits for the subscription too. Small and in memory only.
+    pub(crate) relay_accept_ids: std::collections::VecDeque<(u32, meshguard_core::MessageId)>,
     /// Attempts per route of messages being sent (in memory).
     pub(crate) route_counts: HashMap<MessageId, crate::outbox::RouteCounts>,
     /// Private MQTT relay state (sealed in `relay_secrets.json`).
@@ -129,6 +132,7 @@ impl Engine {
             history: Slot::Closed,
             in_flight: Default::default(),
             relay_controls_only: false,
+            relay_accept_ids: std::collections::VecDeque::new(),
             route_counts: HashMap::new(),
             relay: Default::default(),
             vault: None,

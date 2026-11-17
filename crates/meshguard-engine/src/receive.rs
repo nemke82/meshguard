@@ -46,6 +46,11 @@ pub enum Action {
         route: Route,
         /// For `Route::Relay`: where to publish it (captured on arrival).
         reply: Option<crate::relay::RelayReply>,
+        /// Send only once the broker confirmed our subscription to this
+        /// topic (the ACK of a relay accept: the peer publishes there as
+        /// soon as it has the ACK). Not confirmed in time: no ACK; the
+        /// peer retries the accept.
+        after_subscribed: Option<String>,
     },
     /// Tell the UI.
     Emit(Event),
@@ -368,6 +373,9 @@ impl Engine {
                 .iter()
                 .any(|p| p.node_num == from_node && p.confirmed);
             crate::config::mark_peer_confirmed(&mut self.config, &self.config_dir, from_node);
+            if route == Route::Relay && !self.relay_controls_only {
+                self.relay_peer_heard(my_node, from_node);
+            }
             let newly = !before && self.config.peers.iter().any(|p| p.node_num == from_node);
             if newly {
                 actions.push(Action::ProbePeers);
@@ -496,7 +504,11 @@ impl Engine {
                 // so the first copy is saved by now unless saving failed
                 // (then its id was forgotten and this is not a duplicate).
                 if self.protection.dedup.contains(&sender, &message_id) {
+                    let acks_before = actions.len();
                     self.ack(from_node, ack, route, now, actions);
+                    if self.relay_accept_ids.contains(&(from_node, message_id)) {
+                        self.gate_accept_acks(my_node, from_node, &mut actions[acks_before..]);
+                    }
                 }
             }
             Inbound::PeerAck { acked } => {
@@ -646,7 +658,34 @@ impl Engine {
         if self.relay.outgoing.len() > had_outgoing {
             actions.push(Action::RelayControlsDue);
         }
+        let acks_before = actions.len();
         self.ack(from_node, ack, route, now, actions);
+        // Our offer accepted: ACK only once we listen on the topic the peer
+        // will publish to. Repeated copies come as duplicates (above).
+        if matches!(control, meshguard_core::relay::RelayControl::Accept(_)) {
+            if self.relay_accept_ids.len() >= 64 {
+                self.relay_accept_ids.pop_front();
+            }
+            self.relay_accept_ids.push_back((from_node, message_id));
+            self.gate_accept_acks(my_node, from_node, &mut actions[acks_before..]);
+        }
+    }
+
+    /// Make ACKs of a relay accept from `peer` wait for our subscription to
+    /// its inbound topic.
+    fn gate_accept_acks(&self, my_node: u32, peer: u32, acks: &mut [Action]) {
+        let inbound = self
+            .relay_identity()
+            .and_then(|m| self.relay.topics_of(my_node, peer, &m))
+            .map(|(inbound, _)| inbound);
+        for a in acks {
+            if let Action::SendAck {
+                after_subscribed, ..
+            } = a
+            {
+                after_subscribed.clone_from(&inbound);
+            }
+        }
     }
 
     /// Keep an undecryptable frame as a pending chat request and, subject
@@ -711,6 +750,7 @@ impl Engine {
             frame,
             route,
             reply: None,
+            after_subscribed: None,
         });
     }
 

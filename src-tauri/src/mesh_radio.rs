@@ -1162,7 +1162,20 @@ fn spawn_listener(mut listener: meshtastic::packet::PacketReceiver, ctx: Listene
 async fn run_actions(ctx: &ListenerCtx, actions: Vec<Action>, now: u64) {
     for action in actions {
         match action {
-            Action::SendAck { to, frame, .. } => send_ack(ctx, to, frame).await,
+            Action::SendAck {
+                to,
+                frame,
+                after_subscribed,
+                ..
+            } => {
+                if let Some(topic) = after_subscribed {
+                    if !crate::relay::wait_subscribed(&ctx.app_handle, &topic).await {
+                        tracing::info!("Relay accept from {to} not ACKed yet: not subscribed");
+                        continue;
+                    }
+                }
+                send_ack(ctx, to, frame).await
+            }
             Action::Emit(event) => emit_event(&ctx.app_handle, event),
             Action::Notify { title, body, node } => {
                 #[cfg(target_os = "android")]
@@ -1200,10 +1213,10 @@ async fn run_actions(ctx: &ListenerCtx, actions: Vec<Action>, now: u64) {
                     crate::status_tx::announce_caps(&state, peer).await;
                 });
             }
-            Action::RelayTopicsChanged => {
-                let app = ctx.app_handle.clone();
-                tauri::async_runtime::spawn(async move { crate::relay::sync_topics(&app).await });
-            }
+            // Awaited, not spawned: the subscription goes out before the ACK
+            // that follows it (an accepted relay: the peer starts publishing
+            // once it has the ACK).
+            Action::RelayTopicsChanged => crate::relay::sync_topics(&ctx.app_handle).await,
             // Control messages go out with the outbox loop.
             Action::RelayControlsDue => {}
             Action::ProbePeers => {
