@@ -2561,6 +2561,8 @@ async function init() {
   await ensureTermsAccepted();
   await loadBlocked();
   await setupEventListeners();
+  // Events are not replayed: take the relay state as it is now.
+  refreshRelaySummary();
   await loadPresets();
 
   try {

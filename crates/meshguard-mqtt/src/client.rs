@@ -207,6 +207,9 @@ struct Shared {
     status: watch::Sender<RelayStatus>,
     topics: Mutex<BTreeSet<String>>,
     refused: Mutex<BTreeSet<String>>,
+    /// Topics the broker confirmed (SUBACK success) on the current
+    /// connection. Emptied at every CONNACK until the resync confirms them.
+    confirmed: watch::Sender<BTreeSet<String>>,
     /// The live connection: its generation and client. `None` between
     /// connections. Changed only together with `slot` (under its lock).
     conn: Mutex<Option<(u64, AsyncClient)>>,
@@ -300,6 +303,7 @@ impl RelayClient {
             status,
             topics: Mutex::new(topics),
             refused: Mutex::new(BTreeSet::new()),
+            confirmed: watch::channel(BTreeSet::new()).0,
             conn: Mutex::new(None),
             slot: Mutex::new(Slot::Idle),
             ctl_wait: Mutex::new(None),
@@ -320,6 +324,25 @@ impl RelayClient {
 
     pub fn status(&self) -> RelayStatus {
         self.shared.status.borrow().clone()
+    }
+
+    /// Wait until the broker has confirmed our subscription to `topic` on
+    /// the current connection (SUBACK success), at most `timeout`. Frames
+    /// published to it before that may be lost.
+    pub async fn wait_subscribed(&self, topic: &str, timeout: Duration) -> bool {
+        let mut rx = self.shared.confirmed.subscribe();
+        tokio::time::timeout(timeout, async {
+            loop {
+                if rx.borrow_and_update().contains(topic) {
+                    return true;
+                }
+                if rx.changed().await.is_err() {
+                    return false;
+                }
+            }
+        })
+        .await
+        .unwrap_or(false)
     }
 
     /// Follow status changes.
@@ -599,6 +622,7 @@ async fn control(shared: Arc<Shared>, mut rx: mpsc::UnboundedReceiver<Resync>) {
         let topics: Vec<String> = lock(&shared.topics).iter().cloned().collect();
         if topics.is_empty() {
             lock(&shared.refused).clear();
+            shared.confirmed.send_replace(BTreeSet::new());
             continue;
         }
         let filters: Vec<Filter> = topics
@@ -610,12 +634,17 @@ async fn control(shared: Arc<Shared>, mut rx: mpsc::UnboundedReceiver<Resync>) {
         else {
             continue;
         };
-        let refused: BTreeSet<String> = topics
+        let (ok, refused): (Vec<_>, Vec<_>) = topics
             .into_iter()
             .zip(codes)
-            .filter(|(_, c)| !matches!(c, SubscribeReasonCode::Success(_)))
-            .map(|(t, _)| t)
-            .collect();
+            .partition(|(_, c)| matches!(c, SubscribeReasonCode::Success(_)));
+        let refused: BTreeSet<String> = refused.into_iter().map(|(t, _)| t).collect();
+        // Only while that connection is still the live one.
+        if shared.live().is_some_and(|(g, _)| g == gen) {
+            shared
+                .confirmed
+                .send_replace(ok.into_iter().map(|(t, _)| t).collect());
+        }
         if !refused.is_empty() {
             tracing::warn!(
                 "MQTT relay: broker refused {} subscription(s)",
@@ -640,6 +669,7 @@ fn on_event(
                 // The broker has no session for us: nothing to unsubscribe.
                 lock(&shared.unsub_pending).clear();
             }
+            shared.confirmed.send_replace(BTreeSet::new());
             shared.set_status(RelayStatus::Connected);
             // (Re-)subscribe on every connection: cheap, and correct
             // whether or not the broker kept the session.

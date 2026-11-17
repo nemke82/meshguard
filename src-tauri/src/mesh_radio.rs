@@ -1162,7 +1162,20 @@ fn spawn_listener(mut listener: meshtastic::packet::PacketReceiver, ctx: Listene
 async fn run_actions(ctx: &ListenerCtx, actions: Vec<Action>, now: u64) {
     for action in actions {
         match action {
-            Action::SendAck { to, frame, .. } => send_ack(ctx, to, frame).await,
+            Action::SendAck {
+                to,
+                frame,
+                after_subscribed,
+                ..
+            } => {
+                if let Some(topic) = after_subscribed {
+                    if !crate::relay::wait_subscribed(&ctx.app_handle, &topic).await {
+                        tracing::info!("Relay accept from {to} not ACKed yet: not subscribed");
+                        continue;
+                    }
+                }
+                send_ack(ctx, to, frame).await
+            }
             Action::Emit(event) => emit_event(&ctx.app_handle, event),
             Action::Notify { title, body, node } => {
                 #[cfg(target_os = "android")]

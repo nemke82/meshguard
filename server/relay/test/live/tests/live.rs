@@ -358,8 +358,15 @@ async fn a_topic_added_while_connected_receives() {
     let (cb, _brx) = RelayClient::start(&settings(&b, &pb, &b), set(&[]), set(&[])).unwrap();
     connected(&ca).await;
     connected(&cb).await;
+    assert!(
+        !ca.wait_subscribed(&b_to_a, Duration::from_millis(200))
+            .await
+    );
     ca.set_topics(set(&[&b_to_a])).unwrap();
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(
+        ca.wait_subscribed(&b_to_a, Duration::from_secs(10)).await,
+        "SUBACK confirmed"
+    );
     cb.publish(&b_to_a, b"reply", 60).await.unwrap();
     let f = tokio::time::timeout(Duration::from_secs(5), arx.recv()).await;
     ca.stop().await;

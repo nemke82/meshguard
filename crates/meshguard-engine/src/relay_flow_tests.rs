@@ -469,3 +469,23 @@ fn a_relay_frame_from_the_peer_confirms_it_listens() {
     b.on_relay_frame(t.topic.as_ref().unwrap(), &t.frame, NOW);
     assert!(!b.relay_accept_unconfirmed(A));
 }
+
+#[test]
+fn the_ack_of_an_accept_waits_for_the_subscription() {
+    let mut a = engine("t12-a", A, B, "mg-aaaaaaaaaaaaaaaaaaaa");
+    let mut b = engine("t12-b", B, A, "mg-bbbbbbbbbbbbbbbbbbbb");
+    a.relay_enable(B, NOW).unwrap();
+    lora_controls(&mut a, A, &mut b, B);
+    b.relay_enable(A, NOW).unwrap();
+    let accept = b.relay_due_controls(NOW).remove(0);
+    for _ in 0..2 {
+        // The first accept, then a retry of it: both ACKs wait.
+        let actions = a.on_mesh_packet(&packet(B, A, accept.frame.clone()), A, NOW);
+        let want = a.relay_inbound_topics().into_keys().next();
+        assert!(want.is_some());
+        let gated = actions.iter().any(
+            |x| matches!(x, Action::SendAck { after_subscribed, .. } if *after_subscribed == want),
+        );
+        assert!(gated, "{actions:?}");
+    }
+}
