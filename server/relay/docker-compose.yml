@@ -1,0 +1,61 @@
+# MeshGuard relay (ADR-007). All services use the host network: no Docker
+# NAT, and the host firewall (nftables) is the only firewall. Data lives in
+# ./data; message payloads are never written to disk (persistence off).
+name: meshguard-relay
+
+services:
+  caddy:
+    image: docker.io/library/caddy:2.11.9
+    container_name: relay-caddy
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./data/caddy:/data
+      - ./data/caddy-config:/config
+
+  mosquitto:
+    build:
+      context: ./mosquitto
+      # Docker's own firewall/NAT is off on this host (iptables: false), so
+      # builds use the host network to download packages.
+      network: host
+    image: meshguard-relay-mosquitto:2.1.2-mg1
+    container_name: relay-mosquitto
+    network_mode: host
+    restart: unless-stopped
+    read_only: true
+    environment:
+      # Only used to create the dynsec admin on first start.
+      MOSQUITTO_DYNSEC_PASSWORD: ${DYNSEC_ADMIN_PASSWORD:?set in .env}
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./data/mosquitto:/mosquitto/data
+      - ./data/certs:/mosquitto/certs:ro
+    ulimits:
+      core: 0
+
+  enroll:
+    build:
+      context: ./enroll
+      network: host
+    image: meshguard-relay-enroll:0.1.0
+    container_name: relay-enroll
+    network_mode: host
+    restart: unless-stopped
+    read_only: true
+    depends_on:
+      - mosquitto
+    environment:
+      DYNSEC_ADMIN_PASSWORD: ${DYNSEC_ADMIN_PASSWORD:?set in .env}
+      DB_PATH: /data/accounts.db
+      LISTEN: 127.0.0.1:8080
+      BROKER_PORT: "1884"
+      POW_BITS: ${POW_BITS:-20}
+      MAX_ACCOUNTS: ${MAX_ACCOUNTS:-10000}
+      ENROLL_PER_IP_PER_HOUR: ${ENROLL_PER_IP_PER_HOUR:-10}
+      ENROLL_GLOBAL_PER_HOUR: ${ENROLL_GLOBAL_PER_HOUR:-500}
+    volumes:
+      - ./data/enroll:/data
+    ulimits:
+      core: 0
