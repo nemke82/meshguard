@@ -45,7 +45,10 @@ struct client_entry {
 	double tokens;
 	double last;      /* last publish (rate bucket) */
 	double offline;   /* when the last connection ended */
-	int online;       /* live connections with this client id */
+	/* Connections that completed CONNECT with this client id (a takeover
+	 * briefly has two). Only these count as online. */
+	struct mosquitto *conns[4];
+	int online;
 	UT_hash_handle hh;
 };
 
@@ -116,7 +119,9 @@ static int on_connect(int event, void *event_data, void *userdata)
 	if(e == NULL){
 		return MOSQ_ERR_SUCCESS;
 	}
-	e->online++;
+	if(e->online < (int)(sizeof(e->conns) / sizeof(e->conns[0]))){
+		e->conns[e->online++] = ed->client;
+	}
 	if(mosquitto_client_sub_count(ed->client) == 0){
 		clear_subs(e); /* nothing left in the session */
 	}
@@ -195,11 +200,17 @@ static int on_gone(int event, void *event_data, void *userdata)
 		return MOSQ_ERR_SUCCESS;
 	}
 	HASH_FIND_STR(clients, id, e);
-	if(e){
-		if(e->online > 0){
-			e->online--;
+	if(e == NULL){
+		return MOSQ_ERR_SUCCESS;
+	}
+	/* Only a connection that registered in on_connect counts (not, e.g., a
+	 * failed login that used the same client id). */
+	for(int i = 0; i < e->online; i++){
+		if(e->conns[i] == client){
+			e->conns[i] = e->conns[--e->online];
+			e->offline = now_s();
+			break;
 		}
-		e->offline = now_s();
 	}
 	return MOSQ_ERR_SUCCESS;
 }
