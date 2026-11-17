@@ -1,0 +1,18 @@
+# HTTPS for the enrollment service, and the Let's Encrypt certificate that
+# the broker also uses (copied by cert-sync). No access logs.
+{
+	admin off
+}
+
+relay.meshguard.net {
+	header -Server
+	handle /v1/* {
+		request_body {
+			max_size 4KB
+		}
+		reverse_proxy 127.0.0.1:8080
+	}
+	handle {
+		respond "MeshGuard relay. See https://www.meshguard.net/privacy" 200
+	}
+}

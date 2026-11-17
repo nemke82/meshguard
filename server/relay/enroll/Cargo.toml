@@ -1,0 +1,30 @@
+[package]
+name = "meshguard-relay-enroll"
+version = "0.1.0"
+edition = "2021"
+description = "Self-enrollment for the MeshGuard relay (ADR-007): accounts on the broker via Mosquitto Dynamic Security"
+license = "MIT"
+publish = false
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.37", features = ["bundled"] }
+sha2 = "0.10"
+rand = "0.8"
+hex = "0.4"
+rumqttc = { version = "0.25.1", default-features = false }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+# Live tests against a local broker (server/relay/test/run-tests.sh).
+meshguard-mqtt = { path = "../../../crates/meshguard-mqtt" }
+rumqttc = { version = "0.25.1", default-features = false, features = ["use-rustls-no-provider"] }
+ureq = { version = "2", features = ["json"] }
+zeroize = "1"

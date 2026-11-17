@@ -1,0 +1,16 @@
+--- a/src/handle_publish.c
++++ b/src/handle_publish.c
+@@ -297,6 +297,13 @@
+ 	}
+ 	mosquitto_property_free_all(&properties);
+ 
++	/* MeshGuard relay (ADR-007): no message is delivered more than 24 hours
++	 * after it was published, whatever expiry the publisher asked for,
++	 * including none. */
++	if(message_expiry_interval == MSG_EXPIRY_INFINITE || message_expiry_interval > 86400){
++		message_expiry_interval = 86400;
++	}
++
+ 	if(topic_alias == 0 || (context->listener && topic_alias > context->listener->max_topic_alias)){
+ 		db__msg_store_free(base_msg);
+ 		return MOSQ_ERR_TOPIC_ALIAS_INVALID;
